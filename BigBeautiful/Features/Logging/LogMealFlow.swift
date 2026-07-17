@@ -268,7 +268,7 @@ struct LogMealFlow: View {
         switch locationService.authorization {
         case .denied, .restricted: "Location is off. You can still search."
         case .notDetermined: "Turn on location for nearby results, or search instead."
-        default: locationService.isSearching || locationService.currentLocation == nil ? "Looking around…" : "No nearby matches. Search below."
+        default: locationService.isSearching || locationService.usableCurrentLocation == nil ? "Looking around…" : "No nearby matches. Search below."
         }
     }
 
@@ -287,7 +287,6 @@ struct LogMealFlow: View {
         guard let choice else { return }
         let existing: RestaurantLocation? = if case .existing(let value) = choice.source { value } else { nil }
         oldRank = existing.flatMap { location in store.score(for: location)?.categoryRank }
-        let currentCoordinate = locationService.currentLocation.map { ($0.coordinate.latitude, $0.coordinate.longitude) }
         let (location, visit) = store.performBatch { () -> (RestaurantLocation, VisitEntity) in
             let location: RestaurantLocation
             switch choice.source {
@@ -299,9 +298,10 @@ struct LogMealFlow: View {
                     sourceIdentifier: candidate.id, cuisines: candidate.cuisines
                 )
             case .manual(let name):
-                location = store.createLocation(name: name, category: DiningCategory.suggested(for: name), coordinate: currentCoordinate)
+                location = store.createLocation(name: name, category: DiningCategory.suggested(for: name))
             }
-            let visit = store.logVisit(at: location, reaction: reaction, coordinate: currentCoordinate)
+            let verifiedVisitCoordinate = locationService.currentVisitCoordinate(near: location.coordinate)
+            let visit = store.logVisit(at: location, reaction: reaction, coordinate: verifiedVisitCoordinate)
             return (location, visit)
         }
         savedVisit = visit
@@ -448,7 +448,7 @@ private struct ChangeVisitRestaurantView: View {
         switch locationService.authorization {
         case .denied, .restricted: "Location is off. You can still search."
         case .notDetermined: "Turn on location for nearby results, or search instead."
-        default: locationService.isSearching || locationService.currentLocation == nil ? "Looking around…" : "No nearby matches. Search below."
+        default: locationService.isSearching || locationService.usableCurrentLocation == nil ? "Looking around…" : "No nearby matches. Search below."
         }
     }
 
@@ -678,7 +678,12 @@ struct AddMoreVisitView: View {
                 }
             }
             let pendingCount = photoItems.count
-            PhotosPicker(selection: $photoItems, maxSelectionCount: 12, matching: .images) {
+            PhotosPicker(
+                selection: $photoItems,
+                maxSelectionCount: 12,
+                matching: .images,
+                preferredItemEncoding: .current
+            ) {
                 Label(pendingCount == 0 ? "Choose photos" : "\(pendingCount) selected to add", systemImage: "photo.on.rectangle")
             }
         }

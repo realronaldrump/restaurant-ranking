@@ -10,6 +10,7 @@ struct GrandOpeningView: View {
     @State private var partnerName = ""
     @State private var circleName = ""
     @State private var isImporting = false
+    @State private var isProcessingImport = false
     @State private var importedCount = 0
     @State private var importMessage: String?
     @State private var seedNames = ["", "", ""]
@@ -114,10 +115,15 @@ struct GrandOpeningView: View {
             VStack(alignment: .leading, spacing: 22) {
                 pageHeading(number: "02", title: "Import past visits", detail: "Choose a Beli-style CSV, or skip this step. We can import place, date, score, cuisine, dish, and note columns.")
                 Button { isImporting = true } label: {
-                    Label("Choose a CSV", systemImage: "tablecells.badge.ellipsis")
+                    Label(
+                        isProcessingImport ? "Importing…" : "Choose a CSV",
+                        systemImage: isProcessingImport ? "hourglass" : "tablecells.badge.ellipsis"
+                    )
                         .font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
                 }
-                .buttonStyle(.plain).ledgerCard(padding: 0)
+                .buttonStyle(.plain)
+                .disabled(isProcessingImport)
+                .ledgerCard(padding: 0)
                 if let importMessage {
                     Label(importMessage, systemImage: importedCount > 0 ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
                         .font(.callout).foregroundStyle(importedCount > 0 ? BBTheme.sage : BBTheme.oxblood)
@@ -135,6 +141,7 @@ struct GrandOpeningView: View {
                     Spacer()
                     Button(importedCount > 0 ? "Imported \(importedCount). Continue" : "Continue without import") { page = 3 }
                         .font(.headline)
+                        .disabled(isProcessingImport)
                 }
                 .frame(minHeight: 50)
             }
@@ -257,11 +264,23 @@ struct GrandOpeningView: View {
     }
 
     private func importCSV(_ result: Result<URL, Error>) {
+        Task { await processCSVImport(result) }
+    }
+
+    private func processCSVImport(_ result: Result<URL, Error>) async {
+        isProcessingImport = true
+        importMessage = nil
+        defer { isProcessingImport = false }
+
         do {
             let url = try result.get()
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            let summary = try CSVImporter.parse(data: Data(contentsOf: url))
+            let summary = try await Task.detached(priority: .userInitiated) {
+                let data = try Data(contentsOf: url, options: .mappedIfSafe)
+                return try CSVImporter.parse(data: data)
+            }.value
+            try Task.checkCancellation()
             ensureCircle()
             store.performBatch {
                 for meal in summary.meals {

@@ -17,12 +17,53 @@ struct PlaceCandidate: Identifiable, Hashable {
     var coordinate: CLLocationCoordinate2D { .init(latitude: latitude, longitude: longitude) }
 }
 
+enum LocationQualityPolicy {
+    static let maximumAge: TimeInterval = 60
+    static let maximumNearbyHorizontalAccuracy: CLLocationAccuracy = 200
+    static let maximumVisitHorizontalAccuracy: CLLocationAccuracy = 100
+    static let maximumVisitDistanceFromEstablishment: CLLocationDistance = 250
+
+    static func usableLocation(
+        _ location: CLLocation?,
+        asOf now: Date = .now,
+        maximumHorizontalAccuracy: CLLocationAccuracy = maximumNearbyHorizontalAccuracy
+    ) -> CLLocation? {
+        guard let location,
+              CLLocationCoordinate2DIsValid(location.coordinate),
+              location.horizontalAccuracy >= 0,
+              location.horizontalAccuracy <= maximumHorizontalAccuracy,
+              abs(now.timeIntervalSince(location.timestamp)) <= maximumAge else { return nil }
+        return location
+    }
+
+    static func visitCoordinate(
+        from location: CLLocation?,
+        near establishmentCoordinate: CLLocationCoordinate2D?,
+        asOf now: Date = .now
+    ) -> CLLocationCoordinate2D? {
+        guard let establishmentCoordinate,
+              CLLocationCoordinate2DIsValid(establishmentCoordinate),
+              let location = usableLocation(
+                location,
+                asOf: now,
+                maximumHorizontalAccuracy: maximumVisitHorizontalAccuracy
+              ) else { return nil }
+        let establishment = CLLocation(
+            latitude: establishmentCoordinate.latitude,
+            longitude: establishmentCoordinate.longitude
+        )
+        guard location.distance(from: establishment) <= maximumVisitDistanceFromEstablishment else { return nil }
+        return location.coordinate
+    }
+}
+
 @MainActor
 @Observable
 final class LocationService: NSObject, CLLocationManagerDelegate {
     @ObservationIgnored private let manager = CLLocationManager()
 
     private(set) var authorization: CLAuthorizationStatus
+    private(set) var accuracyAuthorization: CLAccuracyAuthorization
     private(set) var currentLocation: CLLocation?
     private(set) var nearby: [PlaceCandidate] = []
     private(set) var isSearching = false
@@ -30,25 +71,53 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
     override init() {
         authorization = manager.authorizationStatus
+        accuracyAuthorization = manager.accuracyAuthorization
         super.init()
         manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+    }
+
+    var usableCurrentLocation: CLLocation? {
+        LocationQualityPolicy.usableLocation(currentLocation)
+    }
+
+    func currentVisitCoordinate(
+        near establishmentCoordinate: (latitude: Double, longitude: Double)?
+    ) -> (Double, Double)? {
+        let coordinate = establishmentCoordinate.map {
+            CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude)
+        }
+        return LocationQualityPolicy.visitCoordinate(from: currentLocation, near: coordinate).map {
+            ($0.latitude, $0.longitude)
+        }
     }
 
     func requestNearby() {
         switch authorization {
         case .notDetermined: manager.requestWhenInUseAuthorization()
-        case .authorizedAlways, .authorizedWhenInUse: manager.requestLocation()
-        case .denied, .restricted: errorMessage = "Location is off. You can still search."
+        case .authorizedAlways, .authorizedWhenInUse:
+            errorMessage = nil
+            currentLocation = nil
+            nearby = []
+            manager.requestLocation()
+        case .denied, .restricted:
+            currentLocation = nil
+            nearby = []
+            errorMessage = "Location is off. You can still search."
         @unknown default: break
         }
     }
 
-    func search(_ query: String, around coordinate: CLLocationCoordinate2D? = nil, radius: CLLocationDistance = 9_000) async -> [PlaceCandidate] {
+    func search(
+        _ query: String,
+        around coordinate: CLLocationCoordinate2D? = nil,
+        radius: CLLocationDistance = 9_000,
+        fallbackToCurrentLocation: Bool = true
+    ) async -> [PlaceCandidate] {
         let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let request = MKLocalSearch.Request()
         request.naturalLanguageQuery = value.isEmpty ? "restaurant cafe bakery bar" : value
-        let center = coordinate ?? currentLocation?.coordinate
+        let center = coordinate ?? (fallbackToCurrentLocation ? usableCurrentLocation?.coordinate : nil)
         if let center {
             request.region = MKCoordinateRegion(center: center, latitudinalMeters: radius * 2, longitudinalMeters: radius * 2)
         }
@@ -59,17 +128,11 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
             let response = try await MKLocalSearch(request: request).start()
             let values = response.mapItems.compactMap(Self.candidate(from:))
             let filtered: [PlaceCandidate]
-            if let center, radius < 9_000 {
+            if let center {
                 let origin = CLLocation(latitude: center.latitude, longitude: center.longitude)
                 filtered = values.filter { candidate in
                     origin.distance(from: CLLocation(latitude: candidate.latitude, longitude: candidate.longitude)) <= radius
                 }.sorted { lhs, rhs in
-                    origin.distance(from: CLLocation(latitude: lhs.latitude, longitude: lhs.longitude)) <
-                    origin.distance(from: CLLocation(latitude: rhs.latitude, longitude: rhs.longitude))
-                }
-            } else if let center {
-                let origin = CLLocation(latitude: center.latitude, longitude: center.longitude)
-                filtered = values.sorted { lhs, rhs in
                     origin.distance(from: CLLocation(latitude: lhs.latitude, longitude: lhs.longitude)) <
                     origin.distance(from: CLLocation(latitude: rhs.latitude, longitude: rhs.longitude))
                 }
@@ -89,20 +152,39 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         let status = manager.authorizationStatus
+        let accuracy = manager.accuracyAuthorization
         if status == .authorizedWhenInUse || status == .authorizedAlways { manager.requestLocation() }
-        Task { @MainActor in authorization = status }
+        Task { @MainActor in
+            authorization = status
+            accuracyAuthorization = accuracy
+            if status != .authorizedWhenInUse && status != .authorizedAlways {
+                currentLocation = nil
+                nearby = []
+            }
+        }
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard let latest = locations.last else { return }
+        let latest = locations.reversed().compactMap { LocationQualityPolicy.usableLocation($0) }.first
         Task { @MainActor in
+            guard let latest else {
+                currentLocation = nil
+                nearby = []
+                errorMessage = "Your current location was too old or imprecise. Try again, or search instead."
+                return
+            }
             currentLocation = latest
+            errorMessage = nil
             await refreshNearby()
         }
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        Task { @MainActor in errorMessage = error.localizedDescription }
+        Task { @MainActor in
+            currentLocation = nil
+            nearby = []
+            errorMessage = error.localizedDescription
+        }
     }
 
     private static func candidate(from item: MKMapItem) -> PlaceCandidate? {

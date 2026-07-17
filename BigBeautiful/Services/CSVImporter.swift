@@ -1,6 +1,6 @@
 import Foundation
 
-struct ImportedMeal: Identifiable {
+struct ImportedMeal: Identifiable, Sendable {
     let id = UUID()
     let establishment: String
     let address: String?
@@ -13,7 +13,7 @@ struct ImportedMeal: Identifiable {
     let hazy: Bool
 }
 
-struct CSVImportSummary {
+struct CSVImportSummary: Sendable {
     let meals: [ImportedMeal]
     let skippedRows: Int
 }
@@ -45,6 +45,8 @@ enum CSVImporter {
         let dishIndex = index(of: ["dish", "item", "food"], in: normalized)
         let memoryIndex = index(of: ["memory", "notes", "note", "review"], in: normalized)
         let addressIndex = index(of: ["address", "streetaddress"], in: normalized)
+        let dateParser = DateParser()
+        let fallbackDate = Date.now
 
         var meals: [ImportedMeal] = []
         var skipped = 0
@@ -59,7 +61,7 @@ enum CSVImporter {
                 address: optionalValue(row, addressIndex),
                 category: category,
                 cuisines: cuisine,
-                date: optionalValue(row, dateIndex).flatMap(parseDate) ?? .now,
+                date: optionalValue(row, dateIndex).flatMap(dateParser.parse) ?? fallbackDate,
                 reaction: optionalValue(row, scoreIndex).flatMap(parseReaction),
                 dish: optionalValue(row, dishIndex),
                 memory: optionalValue(row, memoryIndex),
@@ -74,20 +76,32 @@ enum CSVImporter {
         var row: [String] = []
         var field = ""
         var quoted = false
-        let characters = Array(text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n"))
-        var index = 0
-        while index < characters.count {
-            let character = characters[index]
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            let nextIndex = text.index(after: index)
             if character == "\"" {
-                if quoted, index + 1 < characters.count, characters[index + 1] == "\"" {
-                    field.append("\""); index += 1
+                if quoted, nextIndex < text.endIndex, text[nextIndex] == "\"" {
+                    field.append("\"")
+                    index = text.index(after: nextIndex)
+                    continue
                 } else { quoted.toggle() }
             } else if character == ",", !quoted {
                 row.append(field); field = ""
-            } else if character == "\n", !quoted {
+            } else if (character == "\n" || character == "\r"), !quoted {
                 row.append(field); rows.append(row); row = []; field = ""
+                if character == "\r", nextIndex < text.endIndex, text[nextIndex] == "\n" {
+                    index = text.index(after: nextIndex)
+                    continue
+                }
+            } else if character == "\r", quoted {
+                field.append("\n")
+                if nextIndex < text.endIndex, text[nextIndex] == "\n" {
+                    index = text.index(after: nextIndex)
+                    continue
+                }
             } else { field.append(character) }
-            index += 1
+            index = nextIndex
         }
         if !field.isEmpty || !row.isEmpty { row.append(field); rows.append(row) }
         return rows.filter { $0.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } }
@@ -105,16 +119,22 @@ enum CSVImporter {
         let result = value(row, index).trimmingCharacters(in: .whitespacesAndNewlines)
         return result.isEmpty ? nil : result
     }
-    private static func parseDate(_ value: String) -> Date? {
-        let iso = ISO8601DateFormatter()
-        if let date = iso.date(from: value) { return date }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        for format in ["yyyy-MM-dd", "MM/dd/yyyy", "M/d/yyyy", "yyyy-MM-dd HH:mm:ss", "MMM d, yyyy"] {
-            formatter.dateFormat = format
-            if let date = formatter.date(from: value) { return date }
+    private final class DateParser {
+        private let iso = ISO8601DateFormatter()
+        private let formatter: DateFormatter = {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            return formatter
+        }()
+
+        func parse(_ value: String) -> Date? {
+            if let date = iso.date(from: value) { return date }
+            for format in ["yyyy-MM-dd", "MM/dd/yyyy", "M/d/yyyy", "yyyy-MM-dd HH:mm:ss", "MMM d, yyyy"] {
+                formatter.dateFormat = format
+                if let date = formatter.date(from: value) { return date }
+            }
+            return nil
         }
-        return nil
     }
     private static func parseReaction(_ value: String) -> Reaction? {
         if let reaction = Reaction.allCases.first(where: { $0.rawValue.localizedCaseInsensitiveCompare(value) == .orderedSame }) { return reaction }

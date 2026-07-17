@@ -90,7 +90,14 @@ struct SettingsView: View {
     }
 
     private var locationDescription: String {
-        switch locationService.authorization { case .authorizedAlways, .authorizedWhenInUse: "Allowed while using"; case .denied: "Denied"; case .restricted: "Restricted"; case .notDetermined: "Not requested"; @unknown default: "Unknown" }
+        switch locationService.authorization {
+        case .authorizedAlways, .authorizedWhenInUse:
+            locationService.accuracyAuthorization == .fullAccuracy ? "Allowed · Precise" : "Allowed · Approximate"
+        case .denied: "Denied"
+        case .restricted: "Restricted"
+        case .notDetermined: "Not requested"
+        @unknown default: "Unknown"
+        }
     }
     private var photoDescription: String {
         switch PHPhotoLibrary.authorizationStatus(for: .readWrite) { case .authorized: "Full access"; case .limited: "Limited"; case .denied: "Denied"; case .restricted: "Restricted"; case .notDetermined: "Not requested"; @unknown default: "Unknown" }

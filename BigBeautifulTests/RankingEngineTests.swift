@@ -184,6 +184,55 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertNil(sanitizedProperties[kCGImagePropertyExifDictionary])
     }
 
+    func testLocationQualityRejectsStaleInvalidAndImpreciseReadings() {
+        let now = Date(timeIntervalSince1970: 1_721_234_567)
+        func location(age: TimeInterval, accuracy: CLLocationAccuracy) -> CLLocation {
+            CLLocation(
+                coordinate: .init(latitude: 40.7600, longitude: -111.8900),
+                altitude: 0,
+                horizontalAccuracy: accuracy,
+                verticalAccuracy: -1,
+                course: -1,
+                speed: -1,
+                timestamp: now.addingTimeInterval(-age)
+            )
+        }
+
+        XCTAssertNotNil(LocationQualityPolicy.usableLocation(location(age: 10, accuracy: 25), asOf: now))
+        XCTAssertNil(LocationQualityPolicy.usableLocation(location(age: 61, accuracy: 25), asOf: now))
+        XCTAssertNil(LocationQualityPolicy.usableLocation(location(age: 10, accuracy: 201), asOf: now))
+        XCTAssertNil(LocationQualityPolicy.usableLocation(location(age: 10, accuracy: -1), asOf: now))
+    }
+
+    func testVisitCoordinateRequiresARecentPreciseReadingNearTheRestaurant() {
+        let now = Date(timeIntervalSince1970: 1_721_234_567)
+        let restaurant = CLLocationCoordinate2D(latitude: 40.7600, longitude: -111.8900)
+        func location(latitude: Double, accuracy: CLLocationAccuracy = 25) -> CLLocation {
+            CLLocation(
+                coordinate: .init(latitude: latitude, longitude: -111.8900),
+                altitude: 0,
+                horizontalAccuracy: accuracy,
+                verticalAccuracy: -1,
+                course: -1,
+                speed: -1,
+                timestamp: now.addingTimeInterval(-10)
+            )
+        }
+
+        XCTAssertNotNil(LocationQualityPolicy.visitCoordinate(
+            from: location(latitude: 40.7605), near: restaurant, asOf: now
+        ))
+        XCTAssertNil(LocationQualityPolicy.visitCoordinate(
+            from: location(latitude: 40.7700), near: restaurant, asOf: now
+        ))
+        XCTAssertNil(LocationQualityPolicy.visitCoordinate(
+            from: location(latitude: 40.7605, accuracy: 150), near: restaurant, asOf: now
+        ))
+        XCTAssertNil(LocationQualityPolicy.visitCoordinate(
+            from: location(latitude: 40.7605), near: nil, asOf: now
+        ))
+    }
+
     func testSanitizedBackfillPhotoBoundsStoredPixelDimensions() throws {
         let source = UIGraphicsImageRenderer(size: CGSize(width: 3_000, height: 2_400)).image { context in
             UIColor.systemOrange.setFill()

@@ -1,6 +1,6 @@
 import Foundation
 
-enum DiningCategory: String, CaseIterable, Codable, Identifiable {
+enum DiningCategory: String, CaseIterable, Codable, Identifiable, Sendable {
     case fullService = "Full-Service Restaurants"
     case counterService = "Counter Service and Fast Food"
     case coffeeTea = "Coffee and Tea"
@@ -47,7 +47,7 @@ enum DiningCategory: String, CaseIterable, Codable, Identifiable {
     }
 }
 
-enum Reaction: String, CaseIterable, Codable, Identifiable {
+enum Reaction: String, CaseIterable, Codable, Identifiable, Sendable {
     case loved = "Loved It"
     case liked = "Liked It"
     case fine = "It Was Fine"

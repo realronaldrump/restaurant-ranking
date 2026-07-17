@@ -81,8 +81,8 @@ struct EstablishmentDetailView: View {
             VStack(alignment: .leading, spacing: 12) {
                 EditorialSectionHeader("Best & worst dishes", eyebrow: "The order")
                 HStack(spacing: 12) {
-                    dishHonor("THE MOVE", item: scores.first, positive: true)
-                    dishHonor("THINK TWICE", item: scores.count > 1 ? scores.last : nil, positive: false)
+                    dishHonor("HIGHEST RATED", item: scores.first, positive: true)
+                    dishHonor("LOWEST RATED", item: scores.count > 1 ? scores.last : nil, positive: false)
                 }
             }.padding(.horizontal, 16)
         }
@@ -117,7 +117,7 @@ struct EstablishmentDetailView: View {
 
     private var scoreBreakdown: some View {
         VStack(alignment: .leading, spacing: 15) {
-            EditorialSectionHeader("Why this score", eyebrow: "The particulars")
+            EditorialSectionHeader("Score details", eyebrow: "Your ratings")
             if let summary = breakdown {
                 Text(summary.explanation).font(BBTheme.display(20, weight: .regular))
                 metricBar("Food & overall", value: summary.food)
@@ -125,7 +125,7 @@ struct EstablishmentDetailView: View {
                 metricBar("Service", value: summary.service)
                 metricBar("Atmosphere", value: summary.atmosphere)
                 if summary.value == nil || summary.service == nil || summary.atmosphere == nil {
-                    Text("Unrated particulars stay neutral. They never count against a place.")
+                    Text("Unrated details do not change the score.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             } else { Text("More detail will appear after rated visits.").foregroundStyle(.secondary) }
@@ -136,7 +136,7 @@ struct EstablishmentDetailView: View {
         let points = scorePoints
         if points.count > 1 {
             VStack(alignment: .leading, spacing: 12) {
-                EditorialSectionHeader("Score over time", eyebrow: "A living prediction")
+                EditorialSectionHeader("Score history", eyebrow: "By visit")
                 ScoreSparkline(points: points).frame(height: 110).accessibilityLabel("Score history from \(points.first?.formatted(.number.precision(.fractionLength(1))) ?? "") to \(points.last?.formatted(.number.precision(.fractionLength(1))) ?? "")")
             }.padding(.horizontal, 16)
         }
@@ -144,7 +144,7 @@ struct EstablishmentDetailView: View {
 
     private var practicalInformation: some View {
         VStack(alignment: .leading, spacing: 14) {
-            EditorialSectionHeader("Practical information", eyebrow: "Best effort")
+            EditorialSectionHeader("Practical information")
             if location.hasCoordinates {
                 Map(initialPosition: .region(.init(center: .init(latitude: location.latitude, longitude: location.longitude), latitudinalMeters: 1_400, longitudinalMeters: 1_400))) {
                     Marker(location.name, coordinate: .init(latitude: location.latitude, longitude: location.longitude)).tint(BBTheme.oxblood)
@@ -165,7 +165,7 @@ struct EstablishmentDetailView: View {
     private var couple: CoupleLocationScore? { store.coupleRanked().first { $0.id == location.id } }
 
     private func compactScore(name: String, value: Double?) -> some View {
-        VStack(alignment: .leading, spacing: 2) { Text(name.uppercased()).font(.caption2.weight(.bold)).foregroundStyle(.secondary); Text(value?.formatted(.number.precision(.fractionLength(1))) ?? "—").font(BBTheme.score(25)) }.frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 2) { Text(name.uppercased()).font(.caption2.weight(.bold)).foregroundStyle(.secondary); Text(value?.formatted(.number.precision(.fractionLength(1))) ?? "N/A").font(BBTheme.score(25)) }.frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var dishScores: [(name: String, score: Double)] {
@@ -180,7 +180,7 @@ struct EstablishmentDetailView: View {
     private func dishHonor(_ eyebrow: String, item: (name: String, score: Double)?, positive: Bool) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(eyebrow).font(.caption2.weight(.bold)).tracking(1).foregroundStyle(positive ? BBTheme.sage : BBTheme.oxblood)
-            Text(item?.name ?? "Not enough evidence").font(BBTheme.display(19)).lineLimit(2)
+            Text(item?.name ?? "Not enough ratings").font(BBTheme.display(19)).lineLimit(2)
             if let item { Text(item.score.formatted(.number.precision(.fractionLength(0)))).font(BBTheme.score(25)).foregroundStyle(.secondary) }
         }.frame(maxWidth: .infinity, minHeight: 110, alignment: .topLeading).ledgerCard()
     }
@@ -198,11 +198,11 @@ struct EstablishmentDetailView: View {
         let rated: [(String, Double)] = [("food", food)] + [("value", value), ("service", service), ("atmosphere", atmosphere)].compactMap { name, score in score.map { (name, $0) } }
         let explanation: String
         if rated.count <= 1 {
-            explanation = "Built on your overall reactions alone."
+            explanation = "Based on your overall ratings."
         } else if let strongest = rated.max(by: { $0.1 < $1.1 }), let weakest = rated.min(by: { $0.1 < $1.1 }), strongest.0 != weakest.0, strongest.1 - weakest.1 > 2 {
-            explanation = "Strongest on \(strongest.0), with \(weakest.0) leaving the most room."
+            explanation = "Highest for \(strongest.0) and lowest for \(weakest.0)."
         } else {
-            explanation = "Remarkably consistent across the particulars."
+            explanation = "Your ratings are consistent across categories."
         }
         return .init(food: food, value: value, service: service, atmosphere: atmosphere, explanation: explanation)
     }
@@ -212,7 +212,7 @@ struct EstablishmentDetailView: View {
             HStack {
                 Text(title).font(.callout.weight(.semibold))
                 Spacer()
-                Text(value.map { $0.formatted(.number.precision(.fractionLength(0))) } ?? "—").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                Text(value.map { $0.formatted(.number.precision(.fractionLength(0))) } ?? "Not rated").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {

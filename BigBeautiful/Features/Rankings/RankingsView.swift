@@ -44,8 +44,8 @@ struct RankingsView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 15) {
-            Eyebrow("A living prediction")
-            Text("Where would you most like to return?").font(BBTheme.display(34))
+            Eyebrow("Your ranking")
+            Text("Where would you go back?").font(BBTheme.display(34))
             Picker("Whose ranking", selection: $scope) {
                 Text(store.currentPerson?.name ?? "Me").tag(RankingScope.me)
                 if store.partner != nil { Text(store.partner?.name ?? "Partner").tag(RankingScope.partner); Text("Us").tag(RankingScope.us) }

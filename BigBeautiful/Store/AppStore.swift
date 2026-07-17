@@ -63,11 +63,11 @@ final class AppStore {
         }
     }
 
-    func bootstrap(myName: String, partnerName: String?, circleName: String = "The Table") {
+    func bootstrap(myName: String, partnerName: String?, circleName: String = "Big Beautiful Testers") {
         guard circles.isEmpty else { return }
         let circle = CircleEntity(context: context)
         circle.id = UUID(); circle.name = circleName; circle.createdAt = .now
-        let me = makePerson(name: myName.trimmedOr("Davis"), isMe: true, isCircleMember: true, color: "6F1D2B", circle: circle)
+        let me = makePerson(name: myName.trimmedOr("George"), isMe: true, isCircleMember: true, color: "6F1D2B", circle: circle)
         if let partnerName, !partnerName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             _ = makePerson(name: partnerName, isMe: false, isCircleMember: true, color: "2F5964", circle: circle)
         }
@@ -405,7 +405,7 @@ final class AppStore {
     }
 
     func seedSampleLedger() {
-        if circles.isEmpty { bootstrap(myName: "Davis", partnerName: "Kelsey") }
+        if circles.isEmpty { bootstrap(myName: "George", partnerName: "Michelle") }
         guard locations.isEmpty, let me = currentPerson, let partner else { return }
         performBatch { seedSampleVisits(me: me, partner: partner) }
     }

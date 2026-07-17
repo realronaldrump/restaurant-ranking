@@ -13,7 +13,7 @@ struct SharedVisitRatingView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     CategoryArtwork(category: visit.location?.category ?? .fullService, height: 150)
-                    VStack(alignment: .leading, spacing: 6) { Eyebrow("Shared visit · \(visit.date.formatted(date: .abbreviated, time: .omitted))"); Text(visit.location?.name ?? "Shared visit").font(BBTheme.display(34)); Text("The facts are already here. Add only your opinion.").foregroundStyle(.secondary) }
+                    VStack(alignment: .leading, spacing: 6) { Eyebrow("Shared visit · \(visit.date.formatted(date: .abbreviated, time: .omitted))"); Text(visit.location?.name ?? "Shared visit").font(BBTheme.display(34)); Text("Choose your reaction for this visit.").foregroundStyle(.secondary) }
                     ReactionPicker(selected: reaction) { reaction = $0 }
                     if !visit.dishEntryArray.isEmpty {
                         EditorialSectionHeader("Dish reactions", eyebrow: "Optional · skipped unless chosen")
@@ -72,11 +72,11 @@ struct CircleSharingView: View {
                 if let payload { CloudSharingController(payload: payload) }
                 else {
                     ScrollView { VStack(alignment: .leading, spacing: 20) {
-                        Eyebrow("Private iCloud circle"); Text("One meal. Independent opinions.").font(BBTheme.display(36)); Text("Invite up to six trusted people. Everyone in the circle can see the shared record; each rating feeds only its author’s ranking.").foregroundStyle(.secondary)
+                        Eyebrow("Private iCloud circle"); Text("Share with your circle").font(BBTheme.display(36)); Text("Invite up to six people. Everyone can see shared visits, while rankings stay personal.").foregroundStyle(.secondary)
                         VStack(alignment: .leading, spacing: 12) { ForEach(store.circleMembers) { person in Label(person.name + (person.id == store.currentPerson?.id ? " (this device)" : ""), systemImage: "person.crop.circle.fill") }; if store.circleMembers.count < 6 { HStack { TextField("Circle member", text: $newPerson); Button("Add") { _ = store.addPerson(name: newPerson); newPerson = "" }.disabled(newPerson.trimmingCharacters(in: .whitespaces).isEmpty) } } }.ledgerCard()
                         Button { prepare() } label: { if isPreparing { ProgressView().frame(maxWidth: .infinity) } else { Label("Create or Manage iCloud Invitation", systemImage: "person.badge.plus").frame(maxWidth: .infinity) } }.buttonStyle(PrimaryButtonStyle()).disabled(isPreparing || store.activeCircle == nil)
                         if let error { Text(error).font(.caption).foregroundStyle(BBTheme.oxblood) }
-                        Text("Invitations and shared records use Apple CloudKit directly. The developer never receives them.").font(.footnote).foregroundStyle(.secondary)
+                        Text("Apple iCloud handles invitations and shared records. The developer does not receive them.").font(.footnote).foregroundStyle(.secondary)
                     }.padding(20).readablePageWidth() }.editorialPage()
                 }
             }.navigationTitle("Your Circle").navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }

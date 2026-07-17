@@ -63,7 +63,7 @@ struct LogMealFlow: View {
     }
 
     private var stageTitle: String {
-        switch stage { case .place: "Log a Meal · 1 of 2"; case .reaction: "Log a Meal · 2 of 2"; case .payoff: "Entered into the record"; case .quickComparisons: "Optional placement" }
+        switch stage { case .place: "Log a Meal · 1 of 2"; case .reaction: "Log a Meal · 2 of 2"; case .payoff: "Meal saved"; case .quickComparisons: "Optional comparisons" }
     }
 
     private var leadingButtonTitle: String {
@@ -148,7 +148,7 @@ struct LogMealFlow: View {
                         Eyebrow("Your immediate verdict")
                         ReactionPicker(selected: nil) { reaction in save(reaction) }
                     }.frame(maxWidth: .infinity, alignment: .leading)
-                    Text("This is a complete, full-weight rating. Everything else is optional.")
+                    Text("That’s enough to save the visit. Everything else is optional.")
                         .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 }
             }.padding(20).readablePageWidth()
@@ -161,9 +161,9 @@ struct LogMealFlow: View {
                 Spacer(minLength: 16)
                 if let visit = savedVisit, let location = visit.location, let score = savedScore {
                     VStack(spacing: 8) {
-                        Eyebrow("The new order")
+                        Eyebrow("Current ranking")
                         Text(location.name).font(BBTheme.display(35)).multilineTextAlignment(.center)
-                        ScoreMark(score: score.score, caption: "your expected next visit", size: 74, provisional: score.isProvisional)
+                        ScoreMark(score: score.score, caption: "current score", size: 74, provisional: score.isProvisional)
                     }
                     .padding(.bottom, 4)
                     .scaleEffect(payoffAppeared ? 1 : 0.85)
@@ -178,7 +178,7 @@ struct LogMealFlow: View {
                     Button("Add Dishes, Photos & Details") { addMoreVisit = visit }.buttonStyle(PrimaryButtonStyle())
                     Button("Done") { dismiss() }.font(.headline).frame(minHeight: 48)
                     if store.ranked().filter({ $0.location.category == location.category }).count > 1 {
-                        Text("Want finer placement? Settle the Score can ask a few optional head-to-heads later.")
+                        Text("You can compare close rankings later from More.")
                             .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 420)
                     }
                 }
@@ -190,31 +190,30 @@ struct LogMealFlow: View {
     }
 
     private var quickComparison: some View {
-        Group {
+        ScrollView {
             if quickIndex >= quickQuestions.count {
                 VStack(spacing: 18) {
-                    Spacer()
+                    Spacer(minLength: 12)
                     Image(systemName: "checkmark.seal.fill").font(.system(size: 54, weight: .light)).foregroundStyle(BBTheme.oxblood)
-                    Eyebrow("Placement complete")
-                    Text("That’s enough evidence for now.").font(BBTheme.display(34)).multilineTextAlignment(.center)
+                    Eyebrow("Done")
+                    Text("Ranking updated").font(BBTheme.display(34)).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
                     Button("Return to the Result") { refreshPayoff(); stage = .payoff }.buttonStyle(PrimaryButtonStyle())
-                    Spacer()
+                    Spacer(minLength: 12)
                 }.padding(22).readablePageWidth()
             } else {
                 let question = quickQuestions[quickIndex]
                 VStack(spacing: 18) {
                     HStack { Eyebrow("Optional \(quickIndex + 1) of \(quickQuestions.count)"); Spacer() }
-                    Spacer()
-                    Text("Which would you rather revisit tonight?").font(BBTheme.display(33)).multilineTextAlignment(.center)
+                    Spacer(minLength: 12)
+                    Text("Which would you rather revisit tonight?").font(BBTheme.display(33)).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
                     quickChoice(question.a, outcome: .a, question: question)
                     Text("OR").font(.caption2.weight(.bold)).tracking(2).foregroundStyle(.secondary)
                     quickChoice(question.b, outcome: .b, question: question)
                     Button("Too Close to Call") { recordQuick(.tie, question: question) }.buttonStyle(.bordered).buttonBorderShape(.roundedRectangle(radius: 2)).frame(minHeight: 48)
                     Button("Skip") { quickIndex += 1 }.frame(minHeight: 44)
                     Button("Finish Now") { refreshPayoff(); stage = .payoff }.font(.callout).foregroundStyle(.secondary).frame(minHeight: 44)
-                    Spacer()
-                    Text("A tie is evidence. A skip is not.").font(.footnote).foregroundStyle(.secondary)
-                }.padding(22).readablePageWidth()
+                    Text("You can skip or choose a tie.").font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }.padding(22).padding(.bottom, 12).readablePageWidth()
             }
         }
     }
@@ -234,7 +233,7 @@ struct LogMealFlow: View {
             RankChip(text: "#\(score.categoryRank) in \(score.location.category.shortTitle)", emphasized: true)
             if let oldRank, oldRank != score.categoryRank {
                 Text("Moved from #\(oldRank) to #\(score.categoryRank)").font(.callout.weight(.semibold))
-            } else if oldRank == nil { Text("A new name enters the ledger.").font(BBTheme.display(18, weight: .regular)) }
+            } else if oldRank == nil { Text("Added to your ranking.").font(BBTheme.display(18, weight: .regular)) }
             HStack(spacing: 14) {
                 neighbor(above, label: "Sits behind")
                 Divider().frame(height: 50)
@@ -246,14 +245,14 @@ struct LogMealFlow: View {
     private func neighbor(_ score: LocationScore?, label: String) -> some View {
         VStack(spacing: 4) {
             Text(label.uppercased()).font(.caption2.weight(.bold)).foregroundStyle(.secondary)
-            Text(score?.location.name ?? "—").font(.callout.weight(.semibold)).multilineTextAlignment(.center).lineLimit(2)
+            Text(score?.location.name ?? "None").font(.callout.weight(.semibold)).multilineTextAlignment(.center).lineLimit(2)
         }.frame(maxWidth: .infinity)
     }
 
     private var nearbyEmptyMessage: String {
         switch locationService.authorization {
-        case .denied, .restricted: "Location is off — search still works beautifully."
-        case .notDetermined: "The nearby guess needs location, or just search."
+        case .denied, .restricted: "Location is off. You can still search."
+        case .notDetermined: "Turn on location for nearby results, or search instead."
         default: locationService.isSearching || locationService.currentLocation == nil ? "Looking around…" : "No nearby matches. Search below."
         }
     }
@@ -449,8 +448,8 @@ struct AddMoreVisitView: View {
             Picker("Would order again", selection: $wouldOrderAgain) {
                 Text("Not set").tag(Bool?.none); Text("Yes").tag(Bool?.some(true)); Text("No").tag(Bool?.some(false))
             }
-        } header: { Text("The optional particulars") } footer: {
-            if reaction == nil { Text("These refine your verdict, so they apply once a reaction is chosen.") }
+        } header: { Text("Optional ratings") } footer: {
+            if reaction == nil { Text("Choose an overall reaction before adding these ratings.") }
         }
     }
 
@@ -502,11 +501,11 @@ struct AddMoreVisitView: View {
     private var memorySection: some View {
         Section {
             DisclosureGroup(isExpanded: $memoryExpanded) {
-                TextField("A birthday, a freezing patio, the burrito move…", text: $memory, axis: .vertical).lineLimit(3...8)
+                TextField("What do you want to remember?", text: $memory, axis: .vertical).lineLimit(3...8)
             } label: {
                 Label(memory.isEmpty ? "Add a Memory" : "Memory", systemImage: "text.quote")
             }
-        } footer: { Text("The only free-text field in the app. Searchable, dictation-friendly, and never scored.") }
+        } footer: { Text("Memories are searchable and never affect the score.") }
     }
 
     private var myDishEntries: [DishEntryEntity] {

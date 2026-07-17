@@ -57,12 +57,12 @@ struct HomeView: View {
         Button { router.sheet = .logMeal; Haptics.impact() } label: {
             HStack {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("THE THREE-TAP RITUAL")
+                    Text("NEW VISIT")
                         .font(BBTheme.eyebrow)
                         .tracking(1.2)
                         .foregroundStyle(BBTheme.paper.opacity(0.8))
                     Text("Log a Meal").font(BBTheme.display(34)).foregroundStyle(BBTheme.paper)
-                    Text("Place. Reaction. Done.").font(.callout).foregroundStyle(BBTheme.paper.opacity(0.72))
+                    Text("Choose a place and a reaction.").font(.callout).foregroundStyle(BBTheme.paper.opacity(0.72))
                 }
                 Spacer()
                 Image(systemName: "arrow.up.right").font(.title2)
@@ -139,9 +139,9 @@ struct HomeView: View {
                     Text("\(count)").font(BBTheme.score(28)).foregroundStyle(BBTheme.oxblood)
                 }
                 VStack(alignment: .leading, spacing: 4) {
-                    Eyebrow("One minute")
+                    Eyebrow(count == 1 ? "1 question" : "\(count) questions")
                     Text("Settle the Score").font(BBTheme.display(25))
-                    Text(count == 0 ? "The ledger is unusually certain." : "A few close calls could use your judgment.").font(.caption).foregroundStyle(.secondary)
+                    Text(count == 0 ? "No comparisons needed right now." : "Review a few close rankings.").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer(); Image(systemName: "arrow.right")
             }.padding(.vertical, 4)

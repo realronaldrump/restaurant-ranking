@@ -56,12 +56,12 @@ struct SettingsView: View {
                 ForEach(ScoreAnchor.ladder) { anchor in HStack(alignment: .firstTextBaseline) { Text(anchor.score.formatted(.number.precision(.fractionLength(0)))).font(BBTheme.score(24)).foregroundStyle(BBTheme.oxblood).frame(width: 38, alignment: .leading); Text(anchor.statement).font(.callout) } }
             }
             Section("Privacy") {
-                Text("No developer server. No analytics. No ads. Structured records live locally and in your private or shared iCloud databases. Map searches use Apple MapKit; photos are processed on-device.")
+                Text("Records stay on your device and in your private or shared iCloud database. Map search uses Apple Maps, and photos are processed on device. The app has no ads or analytics.")
                 NavigationLink("Read the full privacy policy") { PrivacyPolicyView() }
                 Link("Privacy policy on the web", destination: URL(string: "https://realronaldrump.github.io/restaurant-ranking/privacy.html")!)
                 Link("Support & privacy choices", destination: URL(string: "https://realronaldrump.github.io/restaurant-ranking/support.html")!)
             }
-            Section { LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0") } footer: { Text("Big Beautiful Restaurant Log keeps every meal in the record.") }
+            Section { LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0") }
         }
         .scrollContentBackground(.hidden).background(PaperBackground()).tint(BBTheme.oxblood)
         .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)

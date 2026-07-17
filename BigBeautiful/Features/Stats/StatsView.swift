@@ -7,7 +7,7 @@ struct StatsView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 24) {
-                VStack(alignment: .leading, spacing: 7) { Eyebrow("The state of the table"); Text("Statistics, with dignity.").font(BBTheme.display(37)); Text("Patterns from your record. No engagement metrics were harmed.").foregroundStyle(.secondary) }
+                VStack(alignment: .leading, spacing: 7) { Eyebrow("Your dining history"); Text("Statistics").font(BBTheme.display(37)); Text("A summary of the places and meals you’ve logged.").foregroundStyle(.secondary) }
                 metricGrid
                 reactionDistribution
                 contested
@@ -55,7 +55,7 @@ struct StatsView: View {
 
     private var categoryLeaders: some View {
         VStack(alignment: .leading, spacing: 12) {
-            EditorialSectionHeader("Category leaders", eyebrow: "Seven small crowns")
+            EditorialSectionHeader("Category leaders", eyebrow: "Top rated")
             ForEach(DiningCategory.allCases) { category in
                 let leader = store.ranked().first { $0.location.category == category }
                 HStack { Image(systemName: category.symbol).foregroundStyle(BBTheme.oxblood).frame(width: 28); VStack(alignment: .leading) { Text(category.shortTitle).font(.caption).foregroundStyle(.secondary); Text(leader?.location.name ?? "No entrant").font(.headline) }; Spacer(); if let leader { Text(leader.displayScore).font(BBTheme.score(22)) } }

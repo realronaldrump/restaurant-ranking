@@ -10,12 +10,12 @@ struct WantToTryView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 7) {
-                    Eyebrow("Saved by the circle")
-                    Text("The list before the list.").font(BBTheme.display(37))
-                    Text("Places someone at the table thought deserved a future evening.").foregroundStyle(.secondary)
+                    Eyebrow("Saved places")
+                    Text("Want to Try").font(BBTheme.display(37))
+                    Text("Places you or someone in your circle saved for later.").foregroundStyle(.secondary)
                 }.padding(.top, 8)
                 if entries.isEmpty {
-                    EmptyLedgerView(title: "An admirably blank slate", message: "Save a place from search or any establishment page.", symbol: "bookmark")
+                    EmptyLedgerView(title: "Nothing saved yet", message: "Save a place from search or a restaurant page.", symbol: "bookmark")
                     Button("Add a Place") { router.sheet = .addWant }.buttonStyle(PrimaryButtonStyle())
                 } else {
                     ForEach(entries) { entry in

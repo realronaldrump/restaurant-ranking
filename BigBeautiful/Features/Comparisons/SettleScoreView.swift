@@ -26,7 +26,7 @@ struct SettleScoreView: View {
     }
 
     private var empty: some View {
-        EmptyLedgerView(title: "The ledger rests its case", message: "There are no uncertain neighboring places to compare yet. More visits will create useful questions.", symbol: "checkmark.seal")
+        EmptyLedgerView(title: "No comparisons yet", message: "Add a few more ratings and check back.", symbol: "checkmark.seal")
             .padding(20)
     }
 
@@ -39,18 +39,24 @@ struct SettleScoreView: View {
     }
 
     private func comparisonQuestion(_ question: ComparisonQuestion) -> some View {
-        VStack(spacing: 22) {
-            progressHeader
-            Spacer()
-            Text("Which would you rather revisit tonight?").font(BBTheme.display(34)).multilineTextAlignment(.center)
-            comparisonButton(question.a, side: .a, question: question)
-            Text("OR").font(.caption2.weight(.bold)).tracking(2).foregroundStyle(.secondary)
-            comparisonButton(question.b, side: .b, question: question)
-            Button("Too Close to Call") { answer(.tie, question: question) }.buttonStyle(.bordered).buttonBorderShape(.roundedRectangle(radius: 2)).frame(minHeight: 48)
-            Button("Skip") { advance() }.foregroundStyle(.secondary).frame(minHeight: 44)
-            Spacer()
-            Text("All questions are optional. A tie is real evidence.").font(.footnote).foregroundStyle(.secondary)
-        }.padding(22).readablePageWidth()
+        ScrollView {
+            VStack(spacing: 22) {
+                progressHeader
+                Spacer(minLength: 12)
+                Text("Which would you rather revisit tonight?")
+                    .font(BBTheme.display(34))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                comparisonButton(question.a, side: .a, question: question)
+                Text("OR").font(.caption2.weight(.bold)).tracking(2).foregroundStyle(.secondary)
+                comparisonButton(question.b, side: .b, question: question)
+                Button("Too Close to Call") { answer(.tie, question: question) }.buttonStyle(.bordered).buttonBorderShape(.roundedRectangle(radius: 2)).frame(minHeight: 48)
+                Button("Skip") { advance() }.foregroundStyle(.secondary).frame(minHeight: 44)
+                Text("You can skip any question or choose a tie.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }.padding(22).padding(.bottom, 12).readablePageWidth()
+        }
     }
 
     private func anchorQuestion(_ location: RestaurantLocation) -> some View {
@@ -58,9 +64,9 @@ struct SettleScoreView: View {
             VStack(spacing: 18) {
                 progressHeader
                 Spacer(minLength: 18)
-                Eyebrow("Shared-scale calibration")
+                Eyebrow("Score check")
                 Text("Which statement best fits \(location.name)?").font(BBTheme.display(32)).multilineTextAlignment(.center)
-                Text("This keeps a small category honest without forcing a cross-category duel.").font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                Text("Pick the statement that comes closest.").font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 VStack(spacing: 8) {
                     ForEach(ScoreAnchor.ladder) { anchor in
                         Button { store.recordAnchor(for: location, value: anchor.score); answered += 1; Haptics.selection(); advance() } label: {
@@ -99,7 +105,9 @@ struct SettleScoreView: View {
     }
 
     private var complete: some View {
-        VStack(spacing: 19) { Image(systemName: "checkmark.seal.fill").font(.system(size: 58, weight: .light)).foregroundStyle(BBTheme.oxblood); Eyebrow("Session complete"); Text("The order is a little truer.").font(BBTheme.display(36)).multilineTextAlignment(.center); Text("\(answered) new pieces of evidence were added. No score was edited by hand.").foregroundStyle(.secondary).multilineTextAlignment(.center); Button("Done") { dismiss() }.buttonStyle(PrimaryButtonStyle()) }.padding(24).readablePageWidth()
+        ScrollView {
+            VStack(spacing: 19) { Image(systemName: "checkmark.seal.fill").font(.system(size: 58, weight: .light)).foregroundStyle(BBTheme.oxblood); Eyebrow("Done"); Text("Ranking updated").font(BBTheme.display(36)).multilineTextAlignment(.center); Text("\(answered) \(answered == 1 ? "answer" : "answers") added.").foregroundStyle(.secondary).multilineTextAlignment(.center); Button("Done") { dismiss() }.buttonStyle(PrimaryButtonStyle()) }.padding(24).readablePageWidth()
+        }
     }
     private func answer(_ outcome: ComparisonOutcome, question: ComparisonQuestion) { store.recordComparison(a: question.a, b: question.b, outcome: outcome); answered += 1; Haptics.selection(); advance() }
     private func advance() { withAnimation { index += 1 } }
@@ -138,7 +146,9 @@ struct DirectComparisonView: View {
     }
     private var candidates: [RestaurantLocation] { store.locations.filter { $0 != source && !$0.isClosed && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query)) } }
     private func comparison(_ other: RestaurantLocation) -> some View {
-        VStack(spacing: 17) { Spacer(); Text("Which would you rather revisit?").font(BBTheme.display(31)).multilineTextAlignment(.center); choice(source, outcome: .a, against: other); Text("OR").font(.caption2.weight(.bold)); choice(other, outcome: .b, against: other); Button("Too Close to Call") { record(.tie, other) }.buttonStyle(.bordered); Button("Choose another") { opponent = nil }.foregroundStyle(.secondary); Spacer() }.padding(22)
+        ScrollView {
+            VStack(spacing: 17) { Spacer(minLength: 12); Text("Which would you rather revisit?").font(BBTheme.display(31)).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true); choice(source, outcome: .a, against: other); Text("OR").font(.caption2.weight(.bold)); choice(other, outcome: .b, against: other); Button("Too Close to Call") { record(.tie, other) }.buttonStyle(.bordered); Button("Choose another") { opponent = nil }.foregroundStyle(.secondary); Spacer(minLength: 12) }.padding(22)
+        }
     }
     private func choice(_ location: RestaurantLocation, outcome: ComparisonOutcome, against other: RestaurantLocation) -> some View { Button { record(outcome, other) } label: { HStack { Image(systemName: location.category.symbol); Text(location.name).font(BBTheme.display(23)); Spacer(); if let score = store.score(for: location) { Text(score.displayScore).font(BBTheme.score(22)) } }.padding(19).foregroundStyle(BBTheme.paper).background(BBTheme.oxblood) }.buttonStyle(.plain) }
     private func record(_ outcome: ComparisonOutcome, _ other: RestaurantLocation) { store.recordComparison(a: source, b: other, outcome: outcome); Haptics.success(); dismiss() }

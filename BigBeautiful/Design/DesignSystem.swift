@@ -187,8 +187,15 @@ struct EmptyLedgerView: View {
     var body: some View {
         VStack(spacing: 12) {
             Image(systemName: symbol).font(.system(size: 30, weight: .light)).foregroundStyle(BBTheme.oxblood)
-            Text(title).font(BBTheme.display(23)).multilineTextAlignment(.center)
-            Text(message).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 360)
+            Text(title)
+                .font(BBTheme.display(23))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(message)
+                .font(.callout).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 36)
     }

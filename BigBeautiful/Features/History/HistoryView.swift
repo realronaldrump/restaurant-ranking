@@ -16,11 +16,11 @@ struct HistoryView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
                 HStack(alignment: .lastTextBaseline) {
-                    VStack(alignment: .leading) { Eyebrow("Every visit, permanent"); Text("The complete record").font(BBTheme.display(34)) }
+                    VStack(alignment: .leading) { Eyebrow("By date"); Text("Every visit").font(BBTheme.display(34)) }
                     Spacer(); Text("\(filtered.count)").font(BBTheme.score(35)).foregroundStyle(BBTheme.oxblood)
                 }.padding(.top, 7)
                 Picker("History filter", selection: $filter) { ForEach(HistoryFilter.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented)
-                if filtered.isEmpty { EmptyLedgerView(title: "Nothing in this chapter", message: query.isEmpty ? "Your meals will appear here as you log them." : "No visit matches that search.", symbol: "book.pages") }
+                if filtered.isEmpty { EmptyLedgerView(title: query.isEmpty ? "No visits yet" : "No matching visits", message: query.isEmpty ? "Meals will appear here after you log them." : "Try a different search.", symbol: "book.pages") }
                 ForEach(groupedYears, id: \.year) { group in
                     VStack(alignment: .leading, spacing: 12) {
                         Text(String(group.year)).font(BBTheme.score(24)).foregroundStyle(BBTheme.oxblood)

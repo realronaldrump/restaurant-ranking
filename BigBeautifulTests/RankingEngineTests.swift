@@ -11,7 +11,7 @@ final class RankingEngineTests: XCTestCase {
     override func setUp() async throws {
         persistence = PersistenceController(inMemory: true, cloudEnabled: false)
         store = AppStore(persistence: persistence)
-        store.bootstrap(myName: "Davis", partnerName: "Kelsey")
+        store.bootstrap(myName: "George", partnerName: "Michelle")
     }
 
     func testManagedObjectModelMeetsCloudKitAttributeRequirements() {
@@ -98,9 +98,9 @@ final class RankingEngineTests: XCTestCase {
     }
 
     func testDeviceIdentityCanSelectAnotherCircleMember() {
-        let kelsey = try! XCTUnwrap(store.circleMembers.first { !$0.isMe })
-        store.selectCurrentPerson(kelsey.id)
-        XCTAssertEqual(store.currentPerson?.id, kelsey.id)
-        XCTAssertEqual(store.partner?.name, "Davis")
+        let michelle = try! XCTUnwrap(store.circleMembers.first { !$0.isMe })
+        store.selectCurrentPerson(michelle.id)
+        XCTAssertEqual(store.currentPerson?.id, michelle.id)
+        XCTAssertEqual(store.partner?.name, "George")
     }
 }

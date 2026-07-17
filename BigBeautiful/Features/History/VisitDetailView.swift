@@ -117,6 +117,6 @@ struct VisitDetailView: View {
     }
 
     private func subrating(_ title: String, _ reaction: Reaction?) -> some View {
-        VStack(alignment: .leading, spacing: 2) { Text(title.uppercased()).font(.caption2.weight(.bold)).foregroundStyle(.secondary); Text(reaction?.compactTitle ?? "—").font(.caption) }.frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 2) { Text(title.uppercased()).font(.caption2.weight(.bold)).foregroundStyle(.secondary); Text(reaction?.compactTitle ?? "Not rated").font(.caption) }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }

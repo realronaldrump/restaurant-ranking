@@ -39,7 +39,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         switch authorization {
         case .notDetermined: manager.requestWhenInUseAuthorization()
         case .authorizedAlways, .authorizedWhenInUse: manager.requestLocation()
-        case .denied, .restricted: errorMessage = "Location is off. Search still works beautifully."
+        case .denied, .restricted: errorMessage = "Location is off. You can still search."
         @unknown default: break
         }
     }

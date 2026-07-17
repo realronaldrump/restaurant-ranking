@@ -9,14 +9,12 @@ struct MoreView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 circleCard
-                EditorialSectionHeader("The house tools", eyebrow: "Keep it beautiful")
-                tool("Statistics", "The shape of your dining life", "chart.bar.xaxis", .stats)
-                tool("Settle the Score", "Five questions. About one minute.", "scale.3d", .settleScore)
-                tool("Backfill", "Rebuild history from selected photos", "photo.stack", .backfill)
-                tool("Merge Duplicates", "Correct the record without losing a visit", "arrow.triangle.merge", .merge)
+                EditorialSectionHeader("Tools", eyebrow: "Restaurant log")
+                tool("Statistics", "A summary of your visits and ratings", "chart.bar.xaxis", .stats)
+                tool("Settle the Score", "Answer up to five quick questions", "scale.3d", .settleScore)
+                tool("Backfill", "Add past visits from selected photos", "photo.stack", .backfill)
+                tool("Merge Duplicates", "Combine two records without losing visits", "arrow.triangle.merge", .merge)
                 tool("Settings & Privacy", "Circle, permissions, iCloud, and preferences", "gearshape", .settings)
-                Text("Every score is a living prediction. Every visit is permanent history. Every comparison is evidence rather than law.")
-                    .font(BBTheme.display(18, weight: .regular)).foregroundStyle(.secondary).padding(.vertical, 12)
             }.padding(.horizontal, 16).padding(.bottom, 30).readablePageWidth()
         }
         .editorialPage().navigationTitle("More").navigationBarTitleDisplayMode(.inline)
@@ -24,7 +22,7 @@ struct MoreView: View {
 
     private var circleCard: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack { VStack(alignment: .leading, spacing: 4) { Eyebrow("Your circle"); Text(store.activeCircle?.name ?? "The Table").font(BBTheme.display(29)) }; Spacer(); Button("Invite") { router.sheet = .shareCircle }.font(.callout.weight(.bold)) }
+            HStack { VStack(alignment: .leading, spacing: 4) { Eyebrow("Your circle"); Text(store.activeCircle?.name ?? "Big Beautiful Testers").font(BBTheme.display(29)) }; Spacer(); Button("Invite") { router.sheet = .shareCircle }.font(.callout.weight(.bold)) }
             HStack(spacing: -8) {
                 ForEach(store.circleMembers) { person in
                     Text(person.name.prefix(1).uppercased()).font(.headline).foregroundStyle(BBTheme.paper)

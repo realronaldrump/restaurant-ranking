@@ -6,9 +6,9 @@ struct GrandOpeningView: View {
     @Environment(AppStore.self) private var store
     @Binding var isComplete: Bool
     @State private var page = 0
-    @State private var myName = "Davis"
-    @State private var partnerName = "Kelsey"
-    @State private var circleName = "The Table"
+    @State private var myName = "George"
+    @State private var partnerName = "Michelle"
+    @State private var circleName = "Big Beautiful Testers"
     @State private var isImporting = false
     @State private var importedCount = 0
     @State private var importMessage: String?
@@ -56,30 +56,30 @@ struct GrandOpeningView: View {
                 Spacer(minLength: 60)
                 Image(systemName: "star.fill").font(.title2).foregroundStyle(BBTheme.oxblood)
                 VStack(alignment: .leading, spacing: 10) {
-                    Eyebrow("The Grand Opening")
+                    Eyebrow("Welcome")
                     Text("Big Beautiful Restaurant Log")
                         .font(BBTheme.display(48)).minimumScaleFactor(0.62).lineSpacing(-3)
-                    Text("A beautifully kept record of everywhere you’ve eaten—and how excited you are to go back.")
+                    Text("Keep track of where you’ve eaten and where you’d go back.")
                         .font(.title3).foregroundStyle(.secondary).frame(maxWidth: 560, alignment: .leading)
                 }
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 18) {
-                        principle("Three taps", "A complete meal log")
-                        principle("Your iCloud", "No account, no server")
-                        principle("Living scores", "Evidence, never law")
+                        principle("Fast logging", "Place and reaction")
+                        principle("Private by default", "Stored in iCloud")
+                        principle("Personal rankings", "Built from your choices")
                     }
                     VStack(alignment: .leading, spacing: 12) {
-                        principle("Three taps", "A complete meal log")
-                        principle("Your iCloud", "No account, no server")
-                        principle("Living scores", "Evidence, never law")
+                        principle("Fast logging", "Place and reaction")
+                        principle("Private by default", "Stored in iCloud")
+                        principle("Personal rankings", "Built from your choices")
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 Button { page = 1 } label: {
-                    Text("Cut the Ribbon").font(.headline).frame(maxWidth: .infinity).frame(height: 56)
+                    Text("Get Started").font(.headline).frame(maxWidth: .infinity).frame(height: 56)
                 }
                 .buttonStyle(.borderedProminent).buttonBorderShape(.roundedRectangle(radius: 2))
-                Text("No feed. No followers. No guilt. Absolutely no streaks.")
+                Text("No account, ads, or social feed.")
                     .font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity)
                 Spacer(minLength: 30)
             }
@@ -88,54 +88,59 @@ struct GrandOpeningView: View {
     }
 
     private var people: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            pageHeading(number: "01", title: "Who’s at the table?", detail: "Each person keeps an independent ranking. Your shared view is descriptive, never a compromise score.")
-            VStack(spacing: 0) {
-                editorialField("Your name", text: $myName)
-                Divider()
-                editorialField("Partner (optional)", text: $partnerName)
-                Divider()
-                editorialField("Circle name", text: $circleName)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                pageHeading(number: "01", title: "Who’s at the table?", detail: "Rankings stay personal. Shared visits appear for everyone in your circle.")
+                VStack(spacing: 0) {
+                    editorialField("Your name", text: $myName)
+                    Divider()
+                    editorialField("Partner (optional)", text: $partnerName)
+                    Divider()
+                    editorialField("Circle name", text: $circleName)
+                }
+                .ledgerCard(padding: 0)
+                Spacer(minLength: 12)
+                Button("Continue") {
+                    store.bootstrap(myName: myName, partnerName: partnerName, circleName: circleName)
+                    page = 2
+                }
+                .buttonStyle(PrimaryButtonStyle())
             }
-            .ledgerCard(padding: 0)
-            Spacer()
-            Button("Continue") {
-                store.bootstrap(myName: myName, partnerName: partnerName, circleName: circleName)
-                page = 2
-            }
-            .buttonStyle(PrimaryButtonStyle())
+            .padding(24).padding(.bottom, 12).readablePageWidth()
         }
-        .padding(24).readablePageWidth()
     }
 
     private var importPage: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            pageHeading(number: "02", title: "Bring the history.", detail: "Import a Beli-style CSV now, or begin clean. The importer recognizes common names for places, dates, scores, cuisines, dishes, and notes.")
-            Button { isImporting = true } label: {
-                Label("Choose a CSV", systemImage: "tablecells.badge.ellipsis")
-                    .font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                pageHeading(number: "02", title: "Import past visits", detail: "Choose a Beli-style CSV, or skip this step. We can import place, date, score, cuisine, dish, and note columns.")
+                Button { isImporting = true } label: {
+                    Label("Choose a CSV", systemImage: "tablecells.badge.ellipsis")
+                        .font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
+                }
+                .buttonStyle(.plain).ledgerCard(padding: 0)
+                if let importMessage {
+                    Label(importMessage, systemImage: importedCount > 0 ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                        .font(.callout).foregroundStyle(importedCount > 0 ? BBTheme.sage : BBTheme.oxblood)
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("Import stays on this device", systemImage: "lock.shield")
+                    Text("The file is processed locally and left unchanged. You can also add older visits from photos later.")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .ledgerCard()
+                Spacer(minLength: 12)
+                HStack {
+                    Button("Back") { page = 1 }.buttonStyle(.borderless)
+                    Spacer()
+                    Button(importedCount > 0 ? "Imported \(importedCount). Continue" : "Continue without import") { page = 3 }
+                        .font(.headline)
+                }
+                .frame(minHeight: 50)
             }
-            .buttonStyle(.plain).ledgerCard(padding: 0)
-            if let importMessage {
-                Label(importMessage, systemImage: importedCount > 0 ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
-                    .font(.callout).foregroundStyle(importedCount > 0 ? BBTheme.sage : BBTheme.oxblood)
-            }
-            VStack(alignment: .leading, spacing: 10) {
-                Label("Nothing is uploaded", systemImage: "lock.shield")
-                Text("Parsing happens on this device. Your originals are unchanged. You can also rebuild history from selected photos with Backfill after opening.")
-                    .font(.callout).foregroundStyle(.secondary)
-            }
-            .ledgerCard()
-            Spacer()
-            HStack {
-                Button("Back") { page = 1 }.buttonStyle(.borderless)
-                Spacer()
-                Button(importedCount > 0 ? "Imported \(importedCount) — Continue" : "Continue without import") { page = 3 }
-                    .font(.headline)
-            }
-            .frame(minHeight: 50)
+            .padding(24).padding(.bottom, 12).readablePageWidth()
         }
-        .padding(24).readablePageWidth()
     }
 
     private var ready: some View {
@@ -146,11 +151,11 @@ struct GrandOpeningView: View {
                     Circle().stroke(BBTheme.oxblood.opacity(0.18), lineWidth: 1).frame(width: 150, height: 150)
                     Text("100").font(BBTheme.score(66)).foregroundStyle(BBTheme.oxblood)
                 }
-                Eyebrow("The ledger is open")
-                Text("Start with the truth you remember.").font(BBTheme.display(36)).multilineTextAlignment(.center)
-                Text("A first reaction is enough. Comparisons and return visits will quietly sharpen the order over time.")
+                Eyebrow("Setup complete")
+                Text("Your restaurant log is ready.").font(BBTheme.display(36)).multilineTextAlignment(.center)
+                Text("Log a place and choose a reaction. You can add details or compare places later.")
                     .font(.title3).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 520)
-                Button("Open My Ledger") { finish(useSample: false) }.buttonStyle(PrimaryButtonStyle())
+                Button("Open Restaurant Log") { finish(useSample: false) }.buttonStyle(PrimaryButtonStyle())
                 if store.locations.isEmpty {
                     Button("Preview with a sample Salt Lake ledger") { finish(useSample: true) }
                         .font(.callout.weight(.semibold))
@@ -165,10 +170,10 @@ struct GrandOpeningView: View {
     private var calibration: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                pageHeading(number: "03", title: "Give the ledger a head start.", detail: "A few seeded judgments keep the first ranking from feeling cold. Every question is optional and can be corrected later with more evidence.")
+                pageHeading(number: "03", title: "Set up your first ranking", detail: "Add a few familiar places, then answer as many comparisons as you like.")
                 if store.locations.count < 2 {
                     VStack(alignment: .leading, spacing: 14) {
-                        Eyebrow("Rapid quick-add")
+                        Eyebrow("Quick add")
                         Text("Name up to three places you already know.").font(BBTheme.display(24))
                         ForEach(seedNames.indices, id: \.self) { index in
                             VStack(spacing: 8) {
@@ -177,11 +182,11 @@ struct GrandOpeningView: View {
                             }.padding(.vertical, 7)
                             if index < seedNames.count - 1 { Divider() }
                         }
-                        Button("Seed the Ledger") { seedQuickPlaces() }.buttonStyle(PrimaryButtonStyle())
+                        Button("Add Places") { seedQuickPlaces() }.buttonStyle(PrimaryButtonStyle())
                     }.ledgerCard()
                 } else if calibrationPairs.isEmpty, !openingAnchorAnswered, let location = store.ranked().first?.location {
                     VStack(spacing: 12) {
-                        Eyebrow("Absolute calibration")
+                        Eyebrow("Score check")
                         Text("Which statement best fits \(location.name)?").font(BBTheme.display(27)).multilineTextAlignment(.center)
                         ForEach(ScoreAnchor.ladder) { anchor in
                             Button {
@@ -207,8 +212,8 @@ struct GrandOpeningView: View {
                 } else {
                     VStack(spacing: 12) {
                         Image(systemName: "checkmark.seal.fill").font(.system(size: 38, weight: .light)).foregroundStyle(BBTheme.oxblood)
-                        Text("The opening order is set.").font(BBTheme.display(27))
-                        Text("Settle the Score will quietly find better questions over time.").font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                        Text("Your first ranking is ready.").font(BBTheme.display(27))
+                        Text("You can compare places anytime from More.").font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     }.frame(maxWidth: .infinity).ledgerCard()
                 }
                 HStack {
@@ -223,9 +228,15 @@ struct GrandOpeningView: View {
 
     private func pageHeading(number: String, title: String, detail: String) -> some View {
         VStack(alignment: .leading, spacing: 9) {
-            Eyebrow("Act \(number)")
-            Text(title).font(BBTheme.display(39))
-            Text(detail).font(.body).foregroundStyle(.secondary).frame(maxWidth: 620, alignment: .leading)
+            Eyebrow("Step \(number)")
+            Text(title)
+                .font(BBTheme.display(39))
+                .fixedSize(horizontal: false, vertical: true)
+            Text(detail)
+                .font(.body).foregroundStyle(.secondary)
+                .frame(maxWidth: 620, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("onboarding-step-detail")
         }
         .padding(.top, 46)
     }

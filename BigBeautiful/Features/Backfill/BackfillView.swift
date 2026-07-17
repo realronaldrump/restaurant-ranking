@@ -34,7 +34,7 @@ struct BackfillView: View {
 
     private var introduction: some View {
         VStack(alignment: .leading, spacing: 22) {
-            VStack(alignment: .leading, spacing: 8) { Eyebrow("Rebuild the record"); Text("Your camera roll remembers.").font(BBTheme.display(38)); Text("Photos close in time and place become candidate meals. Nothing is ever created until you confirm it.").foregroundStyle(.secondary) }
+            VStack(alignment: .leading, spacing: 8) { Eyebrow("Add past visits"); Text("Find meals in your photos").font(BBTheme.display(38)); Text("Choose photos, then confirm the restaurant. Nothing is added until you approve it.").foregroundStyle(.secondary) }
             VStack(alignment: .leading, spacing: 15) {
                 Eyebrow("Recommended")
                 Text("Choose specific photos").font(BBTheme.display(25))
@@ -42,14 +42,14 @@ struct BackfillView: View {
                 PhotosPicker(selection: $selectedItems, maxSelectionCount: 100, matching: .images) { Label("Choose Meal Photos", systemImage: "photo.badge.plus").frame(maxWidth: .infinity) }.buttonStyle(PrimaryButtonStyle())
             }.ledgerCard()
             VStack(alignment: .leading, spacing: 14) {
-                Eyebrow("Optional library hunt")
+                Eyebrow("Optional full-library search")
                 Text("Scan a date range").font(BBTheme.display(25))
-                Text("This path requests Photo Library access and scans on-device.").font(.callout).foregroundStyle(.secondary)
+                Text("This scans photos on your device and requires Photo Library access.").font(.callout).foregroundStyle(.secondary)
                 DatePicker("From", selection: $startDate, displayedComponents: .date)
                 DatePicker("Through", selection: $endDate, in: startDate..., displayedComponents: .date)
                 Button { Task { await scanLibrary() } } label: { Label("Scan This Range", systemImage: "calendar.badge.magnifyingglass").frame(maxWidth: .infinity) }.buttonStyle(.bordered).buttonBorderShape(.roundedRectangle(radius: 2)).frame(minHeight: 48)
             }.ledgerCard()
-            if isProcessing { HStack { ProgressView(); Text("Reading dates, places, and safe thumbnails…") }.font(.callout) }
+            if isProcessing { HStack { ProgressView(); Text("Reading photo dates and locations…") }.font(.callout) }
             if let errorMessage { Label(errorMessage, systemImage: "exclamationmark.triangle.fill").font(.callout).foregroundStyle(BBTheme.oxblood) }
             privacyNote
         }
@@ -78,7 +78,7 @@ struct BackfillView: View {
                 }
             }
             HStack { Button("Not a Meal", role: .destructive) { rejected += 1; advance() }.frame(minHeight: 44); Spacer(); Button("Skip") { advance() }.frame(minHeight: 44) }
-            Text("A match creates an unrated visit with its original timestamp. You can rate it fully or mark the memory hazy later.").font(.footnote).foregroundStyle(.secondary)
+            Text("Confirming adds an unrated visit at the photo’s date and time. You can rate it now or later.").font(.footnote).foregroundStyle(.secondary)
         }
         .task(id: "\(index)-\(query)") {
             try? await Task.sleep(for: .milliseconds(query.isEmpty ? 10 : 260))
@@ -91,16 +91,16 @@ struct BackfillView: View {
     private var completion: some View {
         VStack(spacing: 18) {
             Spacer(minLength: 60); Image(systemName: "photo.stack.fill").font(.system(size: 55, weight: .light)).foregroundStyle(BBTheme.oxblood)
-            Eyebrow("Backfill complete")
-            Text("The past has been properly filed.").font(BBTheme.display(36)).multilineTextAlignment(.center)
-            Text("\(importedVisits) visits added · \(rejected) non-meal clusters dismissed").foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Eyebrow("Finished")
+            Text("Backfill complete").font(BBTheme.display(36)).multilineTextAlignment(.center)
+            Text("\(importedVisits) visits added · \(rejected) skipped").foregroundStyle(.secondary).multilineTextAlignment(.center)
             Button("Scan More Photos") { clusters = []; index = 0; selectedItems = []; candidates = []; importedVisits = 0; rejected = 0 }.buttonStyle(PrimaryButtonStyle())
             Spacer(minLength: 40)
         }.frame(maxWidth: .infinity)
     }
 
     private var privacyNote: some View {
-        VStack(alignment: .leading, spacing: 7) { Label("On-device by design", systemImage: "lock.shield.fill").font(.headline); Text("Originals are never changed. App-stored copies are re-encoded without GPS metadata. Coordinates leave the phone only for ordinary MapKit lookups.").font(.callout).foregroundStyle(.secondary) }.padding(.vertical, 8)
+        VStack(alignment: .leading, spacing: 7) { Label("Photo privacy", systemImage: "lock.shield.fill").font(.headline); Text("Originals are unchanged. Saved copies have GPS metadata removed. Apple Maps receives coordinates only when you search for a place.").font(.callout).foregroundStyle(.secondary) }.padding(.vertical, 8)
     }
 
     private func loadSelected(_ items: [PhotosPickerItem]) async {
@@ -142,7 +142,7 @@ private struct BackfillRatingView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    Eyebrow("Historical visit filed")
+                    Eyebrow("Past visit")
                     Text(visit.location?.name ?? "Meal").font(BBTheme.display(35))
                     Text(visit.date.formatted(date: .complete, time: .shortened)).foregroundStyle(.secondary)
                     Text("How clearly do you remember it?").font(BBTheme.display(24))

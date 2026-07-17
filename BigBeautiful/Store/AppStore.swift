@@ -26,6 +26,11 @@ final class AppStore {
     private(set) var revision = 0
     var lastError: String?
 
+    @ObservationIgnored private var scoreCache: [UUID: [LocationScore]] = [:]
+    @ObservationIgnored private var coupleScoreCache: [String: [CoupleLocationScore]] = [:]
+    @ObservationIgnored private var cachedScoreRevision = -1
+    @ObservationIgnored private var isBatching = false
+
     var context: NSManagedObjectContext { persistence.container.viewContext }
     var activeCircle: CircleEntity? {
         if let activeCircleID, let selected = circles.first(where: { $0.id == activeCircleID }) { return selected }
@@ -122,6 +127,8 @@ final class AppStore {
         tags: [String] = []
     ) -> RestaurantLocation {
         let normalizedName = name.trimmedOr("Unnamed Establishment")
+        if let sourceIdentifier, !sourceIdentifier.isEmpty,
+           let existing = locations.first(where: { $0.sourceIdentifier == sourceIdentifier }) { return existing }
         if let existing = locations.first(where: {
             $0.name.localizedCaseInsensitiveCompare(normalizedName) == .orderedSame &&
             ($0.address ?? "") == (address ?? "")
@@ -195,6 +202,7 @@ final class AppStore {
         if let reaction { rating.reaction = reaction }
         rating.service = service; rating.atmosphere = atmosphere; rating.value = value
         if let wouldOrderAgain { rating.hasWouldOrderAgain = true; rating.wouldOrderAgain = wouldOrderAgain }
+        else { rating.hasWouldOrderAgain = false; rating.wouldOrderAgain = false }
         if let hazy { rating.hazyMemory = hazy }
         commit()
     }
@@ -255,12 +263,31 @@ final class AppStore {
 
     func ranked(for personID: UUID? = nil) -> [LocationScore] {
         guard let personID = personID ?? currentPerson?.id else { return [] }
-        return rankingEngine.scores(locations: locations, comparisons: comparisons, personID: personID)
+        invalidateScoreCacheIfStale()
+        if let cached = scoreCache[personID] { return cached }
+        let result = rankingEngine.scores(locations: locations, comparisons: comparisons, personID: personID)
+        scoreCache[personID] = result
+        return result
     }
 
     func coupleRanked() -> [CoupleLocationScore] {
         guard let mine = currentPerson?.id, let partner = partner?.id else { return [] }
-        return rankingEngine.coupleScores(locations: locations, comparisons: comparisons, myID: mine, partnerID: partner)
+        invalidateScoreCacheIfStale()
+        let key = "\(mine.uuidString)-\(partner.uuidString)"
+        if let cached = coupleScoreCache[key] { return cached }
+        let result = rankingEngine.coupleScores(locations: locations, comparisons: comparisons, myID: mine, partnerID: partner)
+        coupleScoreCache[key] = result
+        return result
+    }
+
+    /// Reading `revision` here registers an observation dependency for every caller,
+    /// so views recompute whenever the underlying records change.
+    private func invalidateScoreCacheIfStale() {
+        if cachedScoreRevision != revision {
+            scoreCache.removeAll()
+            coupleScoreCache.removeAll()
+            cachedScoreRevision = revision
+        }
     }
 
     func score(for location: RestaurantLocation, personID: UUID? = nil) -> LocationScore? {
@@ -341,15 +368,24 @@ final class AppStore {
 
     func deleteVisit(_ visit: VisitEntity) { context.delete(visit); commit() }
 
+    func deletePhoto(_ photo: PhotoEntity) { context.delete(photo); commit() }
+
+    func deleteDishEntry(_ entry: DishEntryEntity) {
+        let dish = entry.dish
+        let remaining = dish?.entryArray.filter { $0.id != entry.id } ?? []
+        context.delete(entry)
+        if let dish, remaining.isEmpty { context.delete(dish) }
+        commit()
+    }
+
     func settleQuestions(limit: Int = 5, personID: UUID? = nil) -> [ComparisonQuestion] {
         let scores = ranked(for: personID)
+        let comparedPairs = Set(comparisons.filter { !$0.isAnchor }.map { PairKey($0.locationAID, $0.locationBID) })
         var result: [ComparisonQuestion] = []
         for category in DiningCategory.allCases {
-            let categoryScores = scores.filter { $0.location.category == category }.sorted { $0.score > $1.score }
-            for pair in zip(categoryScores, categoryScores.dropFirst()) where result.count < limit {
-                let already = comparisons.contains { comparison in
-                    Set([comparison.locationAID, comparison.locationBID]) == Set([pair.0.id, pair.1.id]) && !comparison.isAnchor
-                }
+            let categoryScores = scores.filter { $0.location.category == category }
+            for pair in zip(categoryScores, categoryScores.dropFirst()) {
+                let already = comparedPairs.contains(PairKey(pair.0.id, pair.1.id))
                 if !already || pair.0.isProvisional || pair.1.isProvisional {
                     result.append(.init(a: pair.0.location, b: pair.1.location))
                 }
@@ -358,9 +394,23 @@ final class AppStore {
         return Array(result.sorted { questionCertainty($0, scores: scores) < questionCertainty($1, scores: scores) }.prefix(limit))
     }
 
+    /// Runs a block of mutations as one unit: intermediate commits refresh the
+    /// in-memory arrays without writing to disk, and a single save happens at the end.
+    func performBatch(_ work: () -> Void) {
+        guard !isBatching else { work(); return }
+        isBatching = true
+        work()
+        isBatching = false
+        commit()
+    }
+
     func seedSampleLedger() {
         if circles.isEmpty { bootstrap(myName: "Davis", partnerName: "Kelsey") }
         guard locations.isEmpty, let me = currentPerson, let partner else { return }
+        performBatch { seedSampleVisits(me: me, partner: partner) }
+    }
+
+    private func seedSampleVisits(me: PersonEntity, partner: PersonEntity) {
         let samples: [(String, DiningCategory, [String], Reaction, Reaction, Int)] = [
             ("The Copper Onion", .fullService, ["New American"], .loved, .loved, 3),
             ("Central 9th Market", .counterService, ["Sandwiches"], .loved, .liked, 2),
@@ -385,7 +435,6 @@ final class AppStore {
         if let ramen = locations.first(where: { $0.name == "Yoko Ramen" }), let normal = locations.first(where: { $0.name == "Normal Ice Cream" }) {
             recordComparison(a: normal, b: ramen, outcome: .a, personID: me.id)
         }
-        commit()
     }
 
     func reload() {
@@ -404,6 +453,9 @@ final class AppStore {
     }
 
     private func commit() {
+        // Fetches include pending changes, so a reload keeps dedupe and lookups
+        // correct mid-batch while deferring the expensive store save to the end.
+        if isBatching { reload(); return }
         do { try persistence.save(); reload() }
         catch { lastError = error.localizedDescription }
     }
@@ -432,6 +484,14 @@ final class AppStore {
         let a = scores.first { $0.id == question.a.id }?.certainty ?? 0
         let b = scores.first { $0.id == question.b.id }?.certainty ?? 0
         return a + b
+    }
+
+    private struct PairKey: Hashable {
+        let low: UUID
+        let high: UUID
+        init(_ a: UUID, _ b: UUID) {
+            if a.uuidString <= b.uuidString { low = a; high = b } else { low = b; high = a }
+        }
     }
 
     private func persistDeviceSelection() {

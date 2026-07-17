@@ -1,4 +1,4 @@
-# Davis’s Big Beautiful Restaurant Ranking App
+# Big Beautiful Restaurant Log
 
 A private, native iPhone dining ledger for effortless meal logging, durable history, and rankings that behave like living predictions rather than permanent grades.
 

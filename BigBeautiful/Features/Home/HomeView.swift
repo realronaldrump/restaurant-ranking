@@ -25,8 +25,12 @@ struct HomeView: View {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(mastheadPossessive).font(BBTheme.eyebrow).foregroundStyle(BBTheme.oxblood)
-                    Text("Big Beautiful").font(BBTheme.display(43)).tracking(-1.1)
-                    Text("Restaurant Ranking App").font(BBTheme.display(23, weight: .regular)).foregroundStyle(.secondary)
+                    Text("Big Beautiful Restaurant Log")
+                        .font(BBTheme.display(40))
+                        .tracking(-1)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.8)
+                        .accessibilityIdentifier("app-title")
                 }
                 Spacer()
                 Text(Date.now, format: .dateTime.month(.abbreviated).day())

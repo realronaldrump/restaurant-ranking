@@ -15,7 +15,7 @@ final class CloudSharingService {
 
     func payload(for circle: CircleEntity, persistence: PersistenceController) async throws -> SharePayload {
         let (_, share, cloudContainer) = try await persistence.container.share([circle], to: nil)
-        share[CKShare.SystemFieldKey.title] = "\(circle.name) — Big Beautiful" as CKRecordValue
+        share[CKShare.SystemFieldKey.title] = "\(circle.name) — Big Beautiful Restaurant Log" as CKRecordValue
         share.publicPermission = .none
         return SharePayload(share: share, container: cloudContainer)
     }

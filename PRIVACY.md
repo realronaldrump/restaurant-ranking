@@ -2,7 +2,7 @@
 
 **Effective July 16, 2026**
 
-Davis’s Big Beautiful Restaurant Ranking App is designed to keep dining history private. The developer does not collect personal data from the app. There is no developer account, developer-operated server, advertising, analytics, data broker, or tracking SDK.
+Big Beautiful Restaurant Log is designed to keep dining history private. The developer does not collect personal data from the app. There is no developer account, developer-operated server, advertising, analytics, data broker, or tracking SDK.
 
 Depending on the features used, the app handles restaurant names and locations, meal dates, ratings, comparisons, dishes, notes, companions, photos, and saved restaurants. Records are stored locally using Apple Core Data and, when iCloud is available, may sync through the user’s private Apple CloudKit database. Records are shared only when the user explicitly invites someone to a CloudKit shared dining circle. The developer does not operate or have access to these databases.
 

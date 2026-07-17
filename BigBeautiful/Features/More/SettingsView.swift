@@ -61,7 +61,7 @@ struct SettingsView: View {
                 Link("Privacy policy on the web", destination: URL(string: "https://realronaldrump.github.io/restaurant-ranking/privacy.html")!)
                 Link("Support & privacy choices", destination: URL(string: "https://realronaldrump.github.io/restaurant-ranking/support.html")!)
             }
-            Section { LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0") } footer: { Text("Davis’s Big Beautiful Restaurant Ranking App takes its name very seriously.") }
+            Section { LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0") } footer: { Text("Big Beautiful Restaurant Log keeps every meal in the record.") }
         }
         .scrollContentBackground(.hidden).background(PaperBackground()).tint(BBTheme.oxblood)
         .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
@@ -86,7 +86,7 @@ struct PrivacyPolicyView: View {
             VStack(alignment: .leading, spacing: 16) {
                 Eyebrow("Effective July 16, 2026")
                 Text("Private by design.").font(BBTheme.display(37))
-                Text("Davis’s Big Beautiful Restaurant Ranking App does not collect, sell, or transmit personal data to the developer. There are no developer-operated servers, advertising SDKs, analytics SDKs, or third-party tracking systems.")
+                Text("Big Beautiful Restaurant Log does not collect, sell, or transmit personal data to the developer. There are no developer-operated servers, advertising SDKs, analytics SDKs, or third-party tracking systems.")
                 Text("Dining records are stored on the device and, when iCloud is enabled, in your private or explicitly shared CloudKit databases. Map coordinates are sent to Apple only for ordinary MapKit searches. Photos are processed on-device; app-stored copies have embedded location metadata removed.")
                 Text("Location is foreground-only and optional. Photo Library access is optional; the standard picker works without full-library permission. Permissions can be revoked at any time in iOS Settings.")
                 Link("Read the complete policy and privacy choices", destination: URL(string: "https://realronaldrump.github.io/restaurant-ranking/privacy.html")!)

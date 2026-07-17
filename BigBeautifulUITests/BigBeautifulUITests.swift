@@ -12,7 +12,7 @@ final class BigBeautifulUITests: XCTestCase {
     }
 
     func testSeededLedgerNavigatesPrimaryTabs() {
-        XCTAssertTrue(app.staticTexts["Big Beautiful"].exists)
+        XCTAssertTrue(app.staticTexts["app-title"].exists)
 
         app.tabBars.buttons["Rankings"].tap()
         XCTAssertTrue(app.navigationBars["Rankings"].waitForExistence(timeout: 3))

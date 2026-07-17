@@ -57,7 +57,7 @@ struct GrandOpeningView: View {
                 Image(systemName: "star.fill").font(.title2).foregroundStyle(BBTheme.oxblood)
                 VStack(alignment: .leading, spacing: 10) {
                     Eyebrow("The Grand Opening")
-                    Text("Davis’s Big Beautiful Restaurant Ranking App")
+                    Text("Big Beautiful Restaurant Log")
                         .font(BBTheme.display(48)).minimumScaleFactor(0.62).lineSpacing(-3)
                     Text("A beautifully kept record of everywhere you’ve eaten—and how excited you are to go back.")
                         .font(.title3).foregroundStyle(.secondary).frame(maxWidth: 560, alignment: .leading)

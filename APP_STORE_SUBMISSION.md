@@ -2,10 +2,10 @@
 
 ## Product identity
 
-- Product: Davis’s Big Beautiful Restaurant Ranking App
+- Product: Big Beautiful Restaurant Log
 - Bundle identifier: `com.davis.bigbeautifulranking`
 - iCloud container: `iCloud.com.davis.bigbeautifulranking`
-- Version: 1.0.0 (build 1)
+- Version: 1.0.1 (build 3)
 - Devices: iPhone only
 - Minimum OS: iOS 17.0
 

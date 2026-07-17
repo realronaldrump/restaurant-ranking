@@ -10,7 +10,7 @@ settings:
     SWIFT_VERSION: "5.9"
     SWIFT_STRICT_CONCURRENCY: minimal
     MARKETING_VERSION: "1.0.1"
-    CURRENT_PROJECT_VERSION: 2
+    CURRENT_PROJECT_VERSION: 3
     DEVELOPMENT_TEAM: CZ3N26YJ75
     CODE_SIGN_STYLE: Automatic
     ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
@@ -30,7 +30,7 @@ targets:
     info:
       path: BigBeautiful/Resources/Info.plist
       properties:
-        CFBundleDisplayName: Big Beautiful
+        CFBundleDisplayName: Big Beautiful Restaurant Log
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false

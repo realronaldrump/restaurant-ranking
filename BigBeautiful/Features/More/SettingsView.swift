@@ -51,7 +51,10 @@ struct SettingsView: View {
                 LabeledContent("iCloud", value: accountStatus)
                 LabeledContent("Foreground location", value: locationDescription)
                 LabeledContent("Photo Library", value: photoDescription)
-                Button("Open iOS Settings") { UIApplication.shared.open(URL(string: UIApplication.openSettingsURLString)!) }
+                Button("Open iOS Settings") {
+                    guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+                    UIApplication.shared.open(url)
+                }
             }
             Section("Experience") { Toggle("Subtle haptics", isOn: $hapticsEnabled) }
             Section("The score ladder") {
@@ -60,8 +63,12 @@ struct SettingsView: View {
             Section("Privacy") {
                 Text("Records stay on your device and in your private or shared iCloud database. Map search uses Apple Maps, and photos are processed on device. The app has no ads or analytics.")
                 NavigationLink("Read the full privacy policy") { PrivacyPolicyView() }
-                Link("Privacy policy on the web", destination: URL(string: "https://realronaldrump.github.io/restaurant-ranking/privacy.html")!)
-                Link("Support & privacy choices", destination: URL(string: "https://realronaldrump.github.io/restaurant-ranking/support.html")!)
+                if let privacyURL = URL(string: "https://realronaldrump.github.io/restaurant-ranking/privacy.html") {
+                    Link("Privacy policy on the web", destination: privacyURL)
+                }
+                if let supportURL = URL(string: "https://realronaldrump.github.io/restaurant-ranking/support.html") {
+                    Link("Support & privacy choices", destination: supportURL)
+                }
             }
             Section("Start over") {
                 Button("Reset App", role: .destructive) {
@@ -80,9 +87,14 @@ struct SettingsView: View {
         .alert("Reset Big Beautiful?", isPresented: $isShowingResetConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Erase Everything", role: .destructive) {
-                guard store.eraseAllData() else { return }
-                hapticsEnabled = true
                 didCompleteGrandOpening = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    guard store.eraseAllData() else {
+                        didCompleteGrandOpening = true
+                        return
+                    }
+                    hapticsEnabled = true
+                }
             }
         } message: {
             Text("This permanently deletes all circles, restaurants, visits, photos, rankings, and app setup from this device and iCloud. Shared-circle data may also be removed for other members. iOS permissions will not change. This cannot be undone.")
@@ -117,8 +129,10 @@ struct PrivacyPolicyView: View {
                 Text("Big Beautiful Restaurant Log does not collect, sell, or transmit personal data to the developer. There are no developer-operated servers, advertising SDKs, analytics SDKs, or third-party tracking systems.")
                 Text("Dining records are stored on the device and, when iCloud is enabled, in your private or explicitly shared CloudKit databases. Map coordinates are sent to Apple only for ordinary MapKit searches. Photos are processed on-device; app-stored copies have embedded location metadata removed.")
                 Text("Location is foreground-only and optional. Photo Library access is optional; the standard picker works without full-library permission. Permissions can be revoked at any time in iOS Settings.")
-                Link("Read the complete policy and privacy choices", destination: URL(string: "https://realronaldrump.github.io/restaurant-ranking/privacy.html")!)
-                    .font(.headline)
+                if let privacyURL = URL(string: "https://realronaldrump.github.io/restaurant-ranking/privacy.html") {
+                    Link("Read the complete policy and privacy choices", destination: privacyURL)
+                        .font(.headline)
+                }
             }
             .padding(20)
             .readablePageWidth()

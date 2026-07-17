@@ -74,6 +74,7 @@ final class BigBeautifulUITests: XCTestCase {
         app.staticTexts["Settings & Privacy"].tap()
 
         let resetButton = app.buttons["reset-app-button"]
+        for _ in 0..<6 where !resetButton.exists { app.swipeUp() }
         XCTAssertTrue(resetButton.waitForExistence(timeout: 3))
         for _ in 0..<6 where !resetButton.isHittable { app.swipeUp() }
         XCTAssertTrue(resetButton.isHittable)

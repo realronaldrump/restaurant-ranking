@@ -161,10 +161,18 @@ struct HomeView: View {
 struct VisitRow: View {
     @Environment(AppStore.self) private var store
     let visit: VisitEntity
-    var body: some View {
+    @ViewBuilder var body: some View {
+        if visit.isDeleted {
+            EmptyView()
+        } else {
+            row
+        }
+    }
+
+    private var row: some View {
         let photos = visit.photoArray
         let ratings = visit.ratingArray
-        HStack(spacing: 13) {
+        return HStack(spacing: 13) {
             ZStack {
                 if let photo = photos.first {
                     PhotoImage(photo: photo).frame(width: 54, height: 54).clipped()

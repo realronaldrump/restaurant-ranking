@@ -3,6 +3,7 @@ import SwiftUI
 @main
 @MainActor
 struct BigBeautifulApp: App {
+    private static var hasSeededSampleData = false
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var store = AppStore()
     @State private var locationService = LocationService()
@@ -54,7 +55,8 @@ struct BigBeautifulApp: App {
                 didCompleteGrandOpening = true
             }
             .onAppear {
-                if ProcessInfo.processInfo.arguments.contains("-seedSampleData") {
+                if ProcessInfo.processInfo.arguments.contains("-seedSampleData"), !Self.hasSeededSampleData {
+                    Self.hasSeededSampleData = true
                     store.seedSampleLedger()
                     didCompleteGrandOpening = true
                 }

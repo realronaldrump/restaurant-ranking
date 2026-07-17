@@ -273,7 +273,7 @@ struct LogMealFlow: View {
 
     private var nearbyEmptyMessage: String {
         if let errorMessage = locationService.errorMessage { return errorMessage }
-        switch locationService.authorization {
+        return switch locationService.authorization {
         case .denied, .restricted: "Location is off. You can still search."
         case .notDetermined: "Turn on location for nearby results, or search instead."
         default: locationService.isSearching || locationService.usableCurrentLocation == nil ? "Looking around…" : "No nearby matches. Search below."
@@ -454,7 +454,7 @@ private struct ChangeVisitRestaurantView: View {
 
     private var nearbyEmptyMessage: String {
         if let errorMessage = locationService.errorMessage { return errorMessage }
-        switch locationService.authorization {
+        return switch locationService.authorization {
         case .denied, .restricted: "Location is off. You can still search."
         case .notDetermined: "Turn on location for nearby results, or search instead."
         default: locationService.isSearching || locationService.usableCurrentLocation == nil ? "Looking around…" : "No nearby matches. Search below."

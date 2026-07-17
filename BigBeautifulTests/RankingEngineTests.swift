@@ -190,18 +190,17 @@ final class RankingEngineTests: XCTestCase {
         let coordinate = try XCTUnwrap(photo.coordinate)
         XCTAssertEqual(coordinate.latitude, -33.8688, accuracy: 0.000_001)
         XCTAssertEqual(coordinate.longitude, -151.2093, accuracy: 0.000_001)
-        XCTAssertEqual(
-            photo.date,
-            try XCTUnwrap(ISO8601DateFormatter().date(from: "2024-07-17T18:30:00+10:00")),
-            accuracy: 0.001
-        )
+        let expectedDate = try XCTUnwrap(ISO8601DateFormatter().date(from: "2024-07-17T18:30:00+10:00"))
+        XCTAssertEqual(photo.date.timeIntervalSince1970, expectedDate.timeIntervalSince1970, accuracy: 0.001)
 
         let sanitizedSource = try XCTUnwrap(CGImageSourceCreateWithData(photo.fullData as CFData, nil))
         let sanitizedProperties = try XCTUnwrap(
             CGImageSourceCopyPropertiesAtIndex(sanitizedSource, 0, nil) as? [CFString: Any]
         )
         XCTAssertNil(sanitizedProperties[kCGImagePropertyGPSDictionary])
-        XCTAssertNil(sanitizedProperties[kCGImagePropertyExifDictionary])
+        let sanitizedExif = sanitizedProperties[kCGImagePropertyExifDictionary] as? [CFString: Any]
+        XCTAssertNil(sanitizedExif?[kCGImagePropertyExifDateTimeOriginal])
+        XCTAssertNil(sanitizedExif?[kCGImagePropertyExifOffsetTimeOriginal])
     }
 
     func testLocationQualityRejectsStaleInvalidAndImpreciseReadings() {

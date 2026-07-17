@@ -82,7 +82,10 @@ enum ImageSanitizer {
             guard var last = clusters.popLast() else {
                 clusters.append(.init(id: UUID(), photos: [photo])); continue
             }
-            let clusterStart = last.photos.first!.date
+            guard let clusterStart = last.photos.first?.date else {
+                clusters.append(.init(id: UUID(), photos: [photo]))
+                continue
+            }
             let closeInTime = photo.date.timeIntervalSince(clusterStart) <= BackfillImportPolicy.clusterTimeInterval
             let closeInSpace: Bool = {
                 guard let coordinate = photo.coordinate else { return true }

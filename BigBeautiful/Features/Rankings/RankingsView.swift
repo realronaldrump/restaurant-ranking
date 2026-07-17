@@ -138,8 +138,8 @@ struct RankingsView: View {
             let tags = row.location.tags
             return (category == nil || row.location.category == category) &&
             (includesClosed || !row.location.isClosed) &&
-            (cuisine == nil || cuisines.contains(cuisine!)) &&
-            (tag == nil || tags.contains(tag!)) &&
+            (cuisine.map(cuisines.contains) ?? true) &&
+            (tag.map(tags.contains) ?? true) &&
             (priceBand == 0 || row.location.hasVisit(inPriceBand: priceBand)) &&
             (effectiveQuery.isEmpty || ([row.location.name] + cuisines + tags).joined(separator: " ").localizedCaseInsensitiveContains(effectiveQuery))
         }

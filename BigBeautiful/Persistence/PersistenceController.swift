@@ -58,7 +58,8 @@ final class PersistenceController {
     }
 
     private func configureDescriptions(cloudEnabled: Bool) {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
         try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         let privateStore = Self.description(
             url: support.appendingPathComponent("BigBeautiful-private.sqlite"),

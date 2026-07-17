@@ -68,4 +68,29 @@ final class BigBeautifulUITests: XCTestCase {
         }
         XCTAssertEqual(undersized, [], "Every visible home button must expose at least a 44×44-point hit target")
     }
+
+    func testOnboardingSupportingTextWrapsAtAccessibilitySize() {
+        app.terminate()
+        app.launchArguments = [
+            "-disableCloudKit",
+            "-resetForUITests",
+            "-UIPreferredContentSizeCategoryName",
+            "UICTContentSizeCategoryAccessibilityExtraExtraLarge"
+        ]
+        app.launch()
+
+        let getStarted = app.buttons["Get Started"]
+        XCTAssertTrue(getStarted.waitForExistence(timeout: 8))
+        getStarted.tap()
+
+        let detail = app.staticTexts["onboarding-step-detail"]
+        XCTAssertTrue(detail.waitForExistence(timeout: 3))
+        XCTAssertEqual(detail.label, "Rankings stay personal. Shared visits appear for everyone in your circle.")
+        XCTAssertGreaterThan(detail.frame.height, 44, "Onboarding supporting copy should occupy multiple lines instead of truncating")
+
+        let continueButton = app.buttons["Continue"]
+        if !continueButton.isHittable { app.swipeUp() }
+        XCTAssertTrue(continueButton.waitForExistence(timeout: 3))
+        XCTAssertTrue(continueButton.isHittable, "The scrollable step should keep its action reachable at large text sizes")
+    }
 }

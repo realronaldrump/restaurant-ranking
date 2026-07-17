@@ -234,8 +234,8 @@ struct GrandOpeningView: View {
                 .fixedSize(horizontal: false, vertical: true)
             Text(detail)
                 .font(.body).foregroundStyle(.secondary)
-                .frame(maxWidth: 620, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 620, alignment: .leading)
                 .accessibilityIdentifier("onboarding-step-detail")
         }
         .padding(.top, 46)

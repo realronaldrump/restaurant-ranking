@@ -194,8 +194,8 @@ struct EmptyLedgerView: View {
             Text(message)
                 .font(.callout).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-                .frame(maxWidth: 360)
                 .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 360)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 36)
     }

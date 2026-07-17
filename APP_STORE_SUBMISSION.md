@@ -5,7 +5,7 @@
 - Product: Big Beautiful Restaurant Log
 - Bundle identifier: `com.davis.bigbeautifulranking`
 - iCloud container: `iCloud.com.davis.bigbeautifulranking`
-- Version: 1.0.1 (build 3)
+- Version: 1.1 (build 5)
 - Devices: iPhone only
 - Minimum OS: iOS 17.0
 

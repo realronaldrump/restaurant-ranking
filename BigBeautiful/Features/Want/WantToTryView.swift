@@ -33,6 +33,13 @@ struct WantToTryView: View {
                                     Spacer(); Image(systemName: "chevron.right").font(.caption)
                                 }.contentShape(Rectangle())
                             }.buttonStyle(.pressable).ledgerCard()
+                            .contextMenu {
+                                Button("Log a Meal Here", systemImage: "plus.circle") { router.sheet = .logMealAt(location.id) }
+                                Button("Remove from Want to Try", systemImage: "bookmark.slash", role: .destructive) {
+                                    store.toggleWant(location)
+                                    Haptics.selection()
+                                }
+                            }
                         }
                     }
                 }

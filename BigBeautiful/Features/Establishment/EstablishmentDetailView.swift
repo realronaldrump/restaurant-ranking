@@ -154,9 +154,13 @@ struct EstablishmentDetailView: View {
         VStack(alignment: .leading, spacing: 14) {
             EditorialSectionHeader("Practical information")
             if location.hasCoordinates {
-                Map(initialPosition: .region(.init(center: .init(latitude: location.latitude, longitude: location.longitude), latitudinalMeters: 1_400, longitudinalMeters: 1_400))) {
-                    Marker(location.name, coordinate: .init(latitude: location.latitude, longitude: location.longitude)).tint(BBTheme.oxblood)
-                }.frame(height: 180).allowsHitTesting(false)
+                Button { openDirections() } label: {
+                    Map(initialPosition: .region(.init(center: .init(latitude: location.latitude, longitude: location.longitude), latitudinalMeters: 1_400, longitudinalMeters: 1_400))) {
+                        Marker(location.name, coordinate: .init(latitude: location.latitude, longitude: location.longitude)).tint(BBTheme.oxblood)
+                    }.frame(height: 180).allowsHitTesting(false)
+                }
+                .buttonStyle(.pressable)
+                .accessibilityLabel("Open directions in Maps")
             }
             if let address = location.address { Label(address, systemImage: "mappin.and.ellipse") }
             if let hours = location.hoursText { Label(hours, systemImage: "clock") }
@@ -169,7 +173,7 @@ struct EstablishmentDetailView: View {
     }
 
     private func compactScore(name: String, value: Double?) -> some View {
-        VStack(alignment: .leading, spacing: 2) { Text(name.uppercased()).font(.caption2.weight(.bold)).foregroundStyle(.secondary); Text(value?.formatted(.number.precision(.fractionLength(1))) ?? "N/A").font(BBTheme.score(25)) }.frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 2) { Text(name.uppercased()).font(.caption2.weight(.bold)).foregroundStyle(.secondary); Text(value?.formatted(.number.precision(.fractionLength(1))) ?? "—").font(BBTheme.score(25)) }.frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var dishScores: [(name: String, score: Double)] {

@@ -31,6 +31,7 @@ enum AppRoute: Hashable {
 
 enum AppSheet: Identifiable, Hashable {
     case logMeal
+    case logMealAt(UUID)
     case rateVisit(UUID)
     case addWant
     case compare(UUID)
@@ -39,6 +40,7 @@ enum AppSheet: Identifiable, Hashable {
     var id: String {
         switch self {
         case .logMeal: "log"
+        case .logMealAt(let id): "log-at-\(id)"
         case .rateVisit(let id): "rate-\(id)"
         case .addWant: "want"
         case .compare(let id): "compare-\(id)"

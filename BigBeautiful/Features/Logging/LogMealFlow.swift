@@ -36,6 +36,8 @@ struct LogMealFlow: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppStore.self) private var store
     @Environment(LocationService.self) private var locationService
+    /// Skips straight to the reaction step for a known place, e.g. from Want to Try.
+    var initialLocationID: UUID?
     @State private var stage: Stage = .place
     @State private var choice: PlaceChoice?
     @State private var query = ""
@@ -77,6 +79,11 @@ struct LogMealFlow: View {
         .interactiveDismissDisabled(stage == .payoff)
         .sheet(item: $addMoreVisit) { visit in AddMoreVisitView(visit: visit, personID: store.currentPerson?.id) }
         .task {
+            if let initialLocationID, choice == nil,
+               let location = store.locations.first(where: { $0.id == initialLocationID }) {
+                choice = location.placeChoice
+                stage = .reaction
+            }
             guard !ProcessInfo.processInfo.arguments.contains("-resetForUITests") else { return }
             locationService.requestNearby()
         }

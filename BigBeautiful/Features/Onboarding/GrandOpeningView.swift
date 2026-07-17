@@ -156,6 +156,7 @@ struct GrandOpeningView: View {
                 ZStack {
                     Circle().stroke(BBTheme.oxblood.opacity(0.18), lineWidth: 1).frame(width: 150, height: 150)
                     Text("100").font(BBTheme.score(66)).foregroundStyle(BBTheme.oxblood)
+                        .minimumScaleFactor(0.6).frame(maxWidth: 126)
                 }
                 Eyebrow("Setup complete")
                 Text("Your restaurant log is ready.").font(BBTheme.display(36)).multilineTextAlignment(.center)

@@ -5,7 +5,6 @@ struct MainTabView: View {
     @Environment(AppStore.self) private var store
     @Environment(LocationService.self) private var locationService
     @State private var router = AppRouter()
-    @AppStorage("hapticsEnabled") private var hapticsEnabled = true
 
     var body: some View {
         @Bindable var router = router
@@ -31,7 +30,7 @@ struct MainTabView: View {
                 .presentationBackground(BBTheme.paper)
                 .tint(BBTheme.oxblood)
         }
-        .onChange(of: router.selectedTab) { _, _ in Haptics.selection(enabled: hapticsEnabled) }
+        .onChange(of: router.selectedTab) { _, _ in Haptics.selection() }
     }
 
     @ViewBuilder
@@ -49,6 +48,7 @@ struct MainTabView: View {
     private func sheetView(_ sheet: AppSheet) -> some View {
         switch sheet {
         case .logMeal: LogMealFlow()
+        case .logMealAt(let id): LogMealFlow(initialLocationID: id)
         case .rateVisit(let id):
             if let visit = store.visits.first(where: { $0.id == id }) { SharedVisitRatingView(visit: visit) }
         case .addWant: AddWantView()

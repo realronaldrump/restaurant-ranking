@@ -16,12 +16,18 @@ enum BBTheme {
     static let hairline = ink.opacity(0.16)
 
     static func display(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
-        .system(size: size, weight: weight, design: .serif)
+        .system(size: scaled(size, cap: 1.4), weight: weight, design: .serif)
     }
     static func score(_ size: CGFloat) -> Font {
-        .system(size: size, weight: .medium, design: .serif).monospacedDigit()
+        .system(size: scaled(size, cap: 1.3), weight: .medium, design: .serif).monospacedDigit()
     }
     static let eyebrow = Font.system(.caption, design: .rounded, weight: .bold).smallCaps()
+
+    /// Display and score sizes follow the user's Dynamic Type setting, capped
+    /// so the biggest headlines stay headlines instead of filling the screen.
+    private static func scaled(_ size: CGFloat, cap: CGFloat) -> CGFloat {
+        min(UIFontMetrics(forTextStyle: .title2).scaledValue(for: size), size * cap)
+    }
 
     private static func adaptive(light: UIColor, dark: UIColor) -> Color {
         Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? dark : light })

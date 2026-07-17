@@ -2,6 +2,15 @@ import CloudKit
 import CoreData
 import UIKit
 
+extension Notification.Name {
+    static let cloudShareWasAccepted = Notification.Name("BigBeautiful.cloudShareWasAccepted")
+    static let persistenceDidFail = Notification.Name("BigBeautiful.persistenceDidFail")
+}
+
+enum PersistenceNotificationKey {
+    static let message = "message"
+}
+
 final class PersistenceController {
     static let shared: PersistenceController = {
         let arguments = ProcessInfo.processInfo.arguments
@@ -76,14 +85,38 @@ final class PersistenceController {
         try context.save()
     }
 
+    func existingShare(for object: NSManagedObject) throws -> CKShare? {
+        if object.objectID.isTemporaryID {
+            try object.managedObjectContext?.obtainPermanentIDs(for: [object])
+        }
+        return try container.fetchShares(matching: [object.objectID])[object.objectID]
+    }
+
     func accept(_ metadata: CKShare.Metadata) {
         let store = container.persistentStoreCoordinator.persistentStores.first { store in
             store.url?.lastPathComponent.contains("-shared") == true
         }
-        guard let store else { return }
-        container.acceptShareInvitations(from: [metadata], into: store) { _, error in
-            if let error { print("Could not accept CloudKit share: \(error.localizedDescription)") }
+        guard let store else {
+            notifyFailure("The shared iCloud ledger could not be opened because its local shared store is unavailable.")
+            return
         }
+        container.acceptShareInvitations(from: [metadata], into: store) { _, error in
+            DispatchQueue.main.async {
+                if let error {
+                    self.notifyFailure("The iCloud invitation could not be accepted. \(error.localizedDescription)")
+                } else {
+                    NotificationCenter.default.post(name: .cloudShareWasAccepted, object: self)
+                }
+            }
+        }
+    }
+
+    private func notifyFailure(_ message: String) {
+        NotificationCenter.default.post(
+            name: .persistenceDidFail,
+            object: self,
+            userInfo: [PersistenceNotificationKey.message: message]
+        )
     }
 
     private static func description(url: URL, scope: CKDatabase.Scope, cloudEnabled: Bool) -> NSPersistentStoreDescription {

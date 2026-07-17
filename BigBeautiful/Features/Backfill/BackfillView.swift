@@ -39,7 +39,7 @@ struct BackfillView: View {
                 Eyebrow("Recommended")
                 Text("Choose specific photos").font(BBTheme.display(25))
                 Text("The standard picker grants access only to what you select. No library permission is needed.").font(.callout).foregroundStyle(.secondary)
-                PhotosPicker(selection: $selectedItems, maxSelectionCount: 100, matching: .images) { Label("Choose Meal Photos", systemImage: "photo.badge.plus").frame(maxWidth: .infinity) }.buttonStyle(PrimaryButtonStyle())
+                PhotosPicker(selection: $selectedItems, maxSelectionCount: BackfillImportPolicy.maxPhotoCount, matching: .images) { Label("Choose Meal Photos", systemImage: "photo.badge.plus").frame(maxWidth: .infinity) }.buttonStyle(PrimaryButtonStyle())
             }.ledgerCard()
             VStack(alignment: .leading, spacing: 14) {
                 Eyebrow("Optional full-library search")
@@ -106,8 +106,10 @@ struct BackfillView: View {
     private func loadSelected(_ items: [PhotosPickerItem]) async {
         isProcessing = true; errorMessage = nil
         var photos: [BackfillPhoto] = []
-        for item in items {
-            if let data = try? await item.loadTransferable(type: Data.self), let photo = ImageSanitizer.process(data) { photos.append(photo) }
+        for item in items.prefix(BackfillImportPolicy.maxPhotoCount) {
+            if let data = try? await item.loadTransferable(type: Data.self), let photo = autoreleasepool(invoking: {
+                ImageSanitizer.process(data)
+            }) { photos.append(photo) }
         }
         clusters = ImageSanitizer.clusters(photos); index = 0; isProcessing = false
         if clusters.isEmpty { errorMessage = "No readable image data was returned by the picker." }

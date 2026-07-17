@@ -13,11 +13,39 @@ struct SharePayload: Identifiable {
 final class CloudSharingService {
     static let shared = CloudSharingService()
 
+    typealias ExistingPayload = (CircleEntity, PersistenceController) throws -> SharePayload?
+    typealias NewPayload = (CircleEntity, PersistenceController) async throws -> SharePayload
+
+    private let existingPayload: ExistingPayload
+    private let newPayload: NewPayload
+
+    init(
+        existingPayload: @escaping ExistingPayload = { circle, persistence in
+            guard let share = try persistence.existingShare(for: circle) else { return nil }
+            return SharePayload(
+                share: share,
+                container: CKContainer(identifier: PersistenceController.cloudContainerIdentifier)
+            )
+        },
+        newPayload: @escaping NewPayload = { circle, persistence in
+            let (_, share, cloudContainer) = try await persistence.container.share([circle], to: nil)
+            return SharePayload(share: share, container: cloudContainer)
+        }
+    ) {
+        self.existingPayload = existingPayload
+        self.newPayload = newPayload
+    }
+
     func payload(for circle: CircleEntity, persistence: PersistenceController) async throws -> SharePayload {
-        let (_, share, cloudContainer) = try await persistence.container.share([circle], to: nil)
-        share[CKShare.SystemFieldKey.title] = "\(circle.name): Big Beautiful Restaurant Log" as CKRecordValue
-        share.publicPermission = .none
-        return SharePayload(share: share, container: cloudContainer)
+        let payload: SharePayload
+        if let existing = try existingPayload(circle, persistence) {
+            payload = existing
+        } else {
+            payload = try await newPayload(circle, persistence)
+        }
+        payload.share[CKShare.SystemFieldKey.title] = "\(circle.name): Big Beautiful Restaurant Log" as CKRecordValue
+        payload.share.publicPermission = .none
+        return payload
     }
 }
 

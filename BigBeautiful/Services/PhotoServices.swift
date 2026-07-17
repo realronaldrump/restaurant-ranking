@@ -2,6 +2,15 @@ import CoreLocation
 import ImageIO
 import Photos
 import UIKit
+import UniformTypeIdentifiers
+
+enum BackfillImportPolicy {
+    /// Bounds both compressed data retained by the confirmation UI and the
+    /// transient decode work performed during a single import.
+    static let maxPhotoCount = 48
+    static let storedImageMaxPixelSize = 2_048
+    static let thumbnailMaxPixelSize = 480
+}
 
 struct BackfillPhoto: Identifiable {
     let id: UUID
@@ -27,15 +36,21 @@ struct BackfillCluster: Identifiable {
 
 enum ImageSanitizer {
     static func process(_ data: Data, date fallbackDate: Date = .now) -> BackfillPhoto? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         let metadata = (CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]) ?? [:]
         let date = captureDate(metadata) ?? fallbackDate
         let coordinate = gpsCoordinate(metadata)
-        // Preserve the source pixel dimensions while re-encoding to remove GPS/EXIF metadata.
-        let sourceDimension = CGFloat(max(image.width, image.height))
-        guard let full = encoded(image, maxDimension: sourceDimension, quality: 0.9) else { return nil }
-        let thumbnail = encoded(image, maxDimension: 480, quality: 0.76)
+        // ImageIO downsamples while decoding, so a 48 MP original never becomes a
+        // full-resolution UIKit bitmap. Re-encoding without source properties
+        // removes EXIF and GPS metadata from both retained copies.
+        guard let storedImage = decodedThumbnail(
+            from: source,
+            maxPixelSize: BackfillImportPolicy.storedImageMaxPixelSize
+        ), let full = encoded(storedImage, quality: 0.84) else { return nil }
+        let thumbnail = decodedThumbnail(
+            from: source,
+            maxPixelSize: BackfillImportPolicy.thumbnailMaxPixelSize
+        ).flatMap { encoded($0, quality: 0.76) }
         return BackfillPhoto(id: UUID(), fullData: full, thumbnailData: thumbnail, date: date, coordinate: coordinate)
     }
 
@@ -63,18 +78,31 @@ enum ImageSanitizer {
         return clusters
     }
 
-    private static func encoded(_ image: CGImage, maxDimension: CGFloat, quality: CGFloat) -> Data? {
-        let sourceSize = CGSize(width: image.width, height: image.height)
-        let scale = min(1, maxDimension / max(sourceSize.width, sourceSize.height))
-        let size = CGSize(width: max(1, sourceSize.width * scale), height: max(1, sourceSize.height * scale))
-        let renderer = UIGraphicsImageRenderer(size: size)
-        let rendered = renderer.image { context in
-            UIColor.white.setFill()
-            context.fill(CGRect(origin: .zero, size: size))
-            UIImage(cgImage: image).draw(in: CGRect(origin: .zero, size: size))
-        }
-        // Re-encoding intentionally drops EXIF and GPS metadata.
-        return rendered.jpegData(compressionQuality: quality)
+    private static func decodedThumbnail(from source: CGImageSource, maxPixelSize: Int) -> CGImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            kCGImageSourceShouldCacheImmediately: true
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    }
+
+    private static func encoded(_ image: CGImage, quality: CGFloat) -> Data? {
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            output,
+            UTType.jpeg.identifier as CFString,
+            1,
+            nil
+        ) else { return nil }
+        CGImageDestinationAddImage(
+            destination,
+            image,
+            [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary
+        )
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return output as Data
     }
 
     private static func captureDate(_ metadata: [CFString: Any]) -> Date? {
@@ -102,18 +130,24 @@ enum PhotoLibraryScanner {
         var errorDescription: String? { "Photo access was not granted." }
     }
 
-    static func scan(from start: Date, through end: Date, limit: Int = 400) async throws -> [BackfillPhoto] {
+    static func scan(
+        from start: Date,
+        through end: Date,
+        limit: Int = BackfillImportPolicy.maxPhotoCount
+    ) async throws -> [BackfillPhoto] {
         let status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
         guard status == .authorized || status == .limited else { throw ScanError.permissionDenied }
         let options = PHFetchOptions()
         options.predicate = NSPredicate(format: "creationDate >= %@ AND creationDate <= %@", start as NSDate, end as NSDate)
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
-        options.fetchLimit = limit
+        options.fetchLimit = min(max(1, limit), BackfillImportPolicy.maxPhotoCount)
         let assets = PHAsset.fetchAssets(with: .image, options: options)
         var output: [BackfillPhoto] = []
         for index in 0..<assets.count {
             let asset = assets.object(at: index)
-            if let data = await imageData(for: asset), let photo = ImageSanitizer.process(data, date: asset.creationDate ?? .now) {
+            if let data = await imageData(for: asset), let photo = autoreleasepool(invoking: {
+                ImageSanitizer.process(data, date: asset.creationDate ?? .now)
+            }) {
                 let corrected = BackfillPhoto(
                     id: photo.id, fullData: photo.fullData, thumbnailData: photo.thumbnailData,
                     date: asset.creationDate ?? photo.date,

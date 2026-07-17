@@ -1,5 +1,8 @@
 import CoreLocation
 import CoreData
+import CloudKit
+import ImageIO
+import UIKit
 import XCTest
 @testable import BigBeautiful
 
@@ -9,6 +12,9 @@ final class RankingEngineTests: XCTestCase {
     private var store: AppStore!
 
     override func setUp() async throws {
+        UserDefaults.standard.removeObject(forKey: "activeCircleID")
+        UserDefaults.standard.removeObject(forKey: "devicePersonID")
+        UserDefaults.standard.removeObject(forKey: "devicePersonIDsByCircle")
         persistence = PersistenceController(inMemory: true, cloudEnabled: false)
         store = AppStore(persistence: persistence)
         store.bootstrap(myName: "George", partnerName: "Michelle")
@@ -74,6 +80,22 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertEqual(clusters.first?.photos.count, 2)
     }
 
+    func testSanitizedBackfillPhotoBoundsStoredPixelDimensions() throws {
+        let source = UIGraphicsImageRenderer(size: CGSize(width: 3_000, height: 2_400)).image { context in
+            UIColor.systemOrange.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 3_000, height: 2_400))
+        }
+        let data = try XCTUnwrap(source.jpegData(compressionQuality: 0.95))
+
+        let photo = try XCTUnwrap(ImageSanitizer.process(data))
+        let imageSource = try XCTUnwrap(CGImageSourceCreateWithData(photo.fullData as CFData, nil))
+        let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any])
+        let width = try XCTUnwrap(properties[kCGImagePropertyPixelWidth] as? Int)
+        let height = try XCTUnwrap(properties[kCGImagePropertyPixelHeight] as? Int)
+
+        XCTAssertLessThanOrEqual(max(width, height), 2_048)
+    }
+
     func testNamedCompanionDoesNotBecomeRankingPartner() {
         let partnerID = store.partner?.id
         let companion = store.addNamedCompanion(name: "Aunt Jo")
@@ -102,5 +124,85 @@ final class RankingEngineTests: XCTestCase {
         store.selectCurrentPerson(michelle.id)
         XCTAssertEqual(store.currentPerson?.id, michelle.id)
         XCTAssertEqual(store.partner?.name, "George")
+    }
+
+    func testUnboundCircleRequiresExplicitDeviceIdentity() throws {
+        let second = try makeCircle(name: "Shared Circle", people: [
+            ("Owner", true),
+            ("Invited Guest", false)
+        ])
+
+        store.activateCircle(second.circle.id)
+
+        XCTAssertNil(store.currentPerson, "A newly accepted shared circle must not silently act as its owner")
+    }
+
+    func testDeviceIdentityIsRememberedPerCircle() throws {
+        let originalCircleID = try XCTUnwrap(store.activeCircle?.id)
+        let second = try makeCircle(name: "Shared Circle", people: [
+            ("Owner", true),
+            ("Invited Guest", false)
+        ])
+        let invitedGuest = try XCTUnwrap(second.people.first { $0.name == "Invited Guest" })
+
+        store.activateCircle(second.circle.id)
+        store.selectCurrentPerson(invitedGuest.id)
+        store.activateCircle(originalCircleID)
+        store.activateCircle(second.circle.id)
+
+        XCTAssertEqual(store.currentPerson?.id, invitedGuest.id)
+    }
+
+    func testCloudSharingReusesAnExistingShare() async throws {
+        let zoneID = CKRecordZone.ID(zoneName: "ExistingShare", ownerName: CKCurrentUserDefaultName)
+        let existingShare = CKShare(recordZoneID: zoneID)
+        let existingPayload = SharePayload(share: existingShare, container: CKContainer.default())
+        var createCallCount = 0
+        let service = CloudSharingService(
+            existingPayload: { _, _ in existingPayload },
+            newPayload: { _, _ in
+                createCallCount += 1
+                return existingPayload
+            }
+        )
+
+        let payload = try await service.payload(for: try XCTUnwrap(store.activeCircle), persistence: persistence)
+
+        XCTAssertEqual(createCallCount, 0)
+        XCTAssertEqual(payload.share.recordID, existingShare.recordID)
+    }
+
+    func testPersistenceFailuresBecomeUserVisible() async {
+        NotificationCenter.default.post(
+            name: .persistenceDidFail,
+            object: persistence,
+            userInfo: [PersistenceNotificationKey.message: "The test save failed."]
+        )
+        await Task.yield()
+
+        XCTAssertEqual(store.lastError, "The test save failed.")
+        store.clearLastError()
+        XCTAssertNil(store.lastError)
+    }
+
+    private func makeCircle(name: String, people: [(String, Bool)]) throws -> (circle: CircleEntity, people: [PersonEntity]) {
+        let circle = CircleEntity(context: store.context)
+        circle.id = UUID()
+        circle.name = name
+        circle.createdAt = .now
+        let members = people.map { name, isMe in
+            let person = PersonEntity(context: store.context)
+            person.id = UUID()
+            person.name = name
+            person.isMe = isMe
+            person.isCircleMember = true
+            person.colorHex = "6F1D2B"
+            person.createdAt = .now
+            person.circle = circle
+            return person
+        }
+        try persistence.save()
+        store.reload()
+        return (circle, members)
     }
 }

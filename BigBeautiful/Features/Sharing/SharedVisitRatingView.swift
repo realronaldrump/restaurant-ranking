@@ -84,3 +84,70 @@ struct CircleSharingView: View {
     }
     private func prepare() { guard let circle = store.activeCircle else { return }; isPreparing = true; Task { do { payload = try await CloudSharingService.shared.payload(for: circle, persistence: store.persistence) } catch { self.error = error.localizedDescription }; isPreparing = false } }
 }
+
+@MainActor
+struct DeviceIdentitySelectionView: View {
+    @Environment(AppStore.self) private var store
+    @State private var newPerson = ""
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    Image(systemName: "person.crop.circle.badge.checkmark")
+                        .font(.system(size: 46, weight: .light))
+                        .foregroundStyle(BBTheme.oxblood)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Eyebrow("Shared circle")
+                        Text("Who are you in this circle?").font(BBTheme.display(36))
+                        Text("Choose before adding ratings or visits. This selection applies only to this device and this circle.")
+                            .foregroundStyle(.secondary)
+                    }
+                    VStack(spacing: 10) {
+                        ForEach(store.circleMembers) { person in
+                            Button {
+                                store.selectCurrentPerson(person.id)
+                            } label: {
+                                HStack {
+                                    Circle().fill(Color(hex: person.colorHex)).frame(width: 28, height: 28)
+                                    Text(person.name).font(.headline)
+                                    Spacer()
+                                    Image(systemName: "chevron.right").font(.caption)
+                                }
+                                .padding(16)
+                                .frame(minHeight: 56)
+                                .background(BBTheme.ink.opacity(0.045))
+                                .overlay(Rectangle().stroke(BBTheme.hairline))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    if store.circleMembers.count < 6 {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Eyebrow("Not listed?")
+                            TextField("Your name", text: $newPerson)
+                                .textInputAutocapitalization(.words)
+                                .padding(12)
+                                .background(BBTheme.ink.opacity(0.045))
+                            Button("Add Me to This Circle") {
+                                guard let person = store.addPerson(name: newPerson) else { return }
+                                store.selectCurrentPerson(person.id)
+                            }
+                            .buttonStyle(PrimaryButtonStyle())
+                            .disabled(newPerson.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                        .ledgerCard()
+                    }
+                    Text("You can change this later in Settings. Rankings remain separate for each person.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(22)
+                .readablePageWidth()
+            }
+            .editorialPage()
+            .navigationTitle(store.activeCircle?.name ?? "Your Circle")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+}

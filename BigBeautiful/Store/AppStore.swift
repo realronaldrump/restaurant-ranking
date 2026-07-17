@@ -26,6 +26,8 @@ final class AppStore {
     private(set) var revision = 0
     var lastError: String?
 
+    @ObservationIgnored private var devicePersonIDsByCircle: [String: String] = [:]
+    @ObservationIgnored private var isWaitingForAcceptedCircle = false
     @ObservationIgnored private var scoreCache: [UUID: [LocationScore]] = [:]
     @ObservationIgnored private var coupleScoreCache: [String: [CoupleLocationScore]] = [:]
     @ObservationIgnored private var cachedScoreRevision = -1
@@ -45,21 +47,61 @@ final class AppStore {
     var wantEntries: [WantEntryEntity] { allWantEntries.filter { $0.circle?.id == activeCircle?.id } }
     var currentPerson: PersonEntity? {
         if let devicePersonID, let selected = people.first(where: { $0.id == devicePersonID }) { return selected }
-        return circleMembers.first(where: \.isMe) ?? circleMembers.first
+        return nil
     }
-    var partner: PersonEntity? { circleMembers.first { $0.id != currentPerson?.id } }
+    var needsDeviceIdentity: Bool { activeCircle != nil && currentPerson == nil }
+    var partner: PersonEntity? {
+        guard let currentPerson else { return nil }
+        return circleMembers.first { $0.id != currentPerson.id }
+    }
 
     init(persistence: PersistenceController = .shared) {
         self.persistence = persistence
         activeCircleID = UserDefaults.standard.string(forKey: "activeCircleID").flatMap(UUID.init(uuidString:))
         devicePersonID = UserDefaults.standard.string(forKey: "devicePersonID").flatMap(UUID.init(uuidString:))
+        devicePersonIDsByCircle = UserDefaults.standard.dictionary(forKey: "devicePersonIDsByCircle") as? [String: String] ?? [:]
         reload()
+        if let loadError = persistence.loadError {
+            reportError("iCloud sync could not start, so the ledger is working locally for now. \(loadError.localizedDescription)")
+        }
         NotificationCenter.default.addObserver(
             forName: .NSPersistentStoreRemoteChange,
             object: persistence.container.persistentStoreCoordinator,
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.reload() }
+        }
+        NotificationCenter.default.addObserver(
+            forName: .cloudShareWasAccepted,
+            object: persistence,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.isWaitingForAcceptedCircle = true
+                self?.reload()
+            }
+        }
+        NotificationCenter.default.addObserver(
+            forName: .persistenceDidFail,
+            object: persistence,
+            queue: .main
+        ) { [weak self] notification in
+            let message = notification.userInfo?[PersistenceNotificationKey.message] as? String
+            Task { @MainActor in self?.reportError(message ?? "The ledger could not save or sync its latest changes.") }
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSPersistentCloudKitContainer.eventChangedNotification,
+            object: persistence.container,
+            queue: .main
+        ) { [weak self] notification in
+            guard let event = notification.userInfo?[NSPersistentCloudKitContainer.eventNotificationUserInfoKey]
+                    as? NSPersistentCloudKitContainer.Event,
+                  event.endDate != nil,
+                  !event.succeeded,
+                  let error = event.error else { return }
+            Task { @MainActor in
+                self?.reportError("iCloud could not sync the latest ledger changes. They remain on this device and will retry automatically. \(error.localizedDescription)")
+            }
         }
     }
 
@@ -80,8 +122,8 @@ final class AppStore {
     func activateCircle(_ circleID: UUID) {
         guard circles.contains(where: { $0.id == circleID }) else { return }
         activeCircleID = circleID
-        if !people.contains(where: { $0.id == devicePersonID }) {
-            devicePersonID = circleMembers.first(where: \.isMe)?.id ?? circleMembers.first?.id
+        devicePersonID = selectedPersonID(for: circleID).flatMap { selectedID in
+            circleMembers.contains(where: { $0.id == selectedID }) ? selectedID : nil
         }
         persistDeviceSelection()
         revision += 1
@@ -92,6 +134,14 @@ final class AppStore {
         devicePersonID = personID
         persistDeviceSelection()
         revision += 1
+    }
+
+    func reportError(_ message: String) {
+        lastError = message
+    }
+
+    func clearLastError() {
+        lastError = nil
     }
 
     @discardableResult
@@ -439,17 +489,39 @@ final class AppStore {
 
     func reload() {
         do {
+            let previousCircleIDs = Set(circles.map(\.id))
+            let previousDevicePersonID = devicePersonID
             circles = try fetch(CircleEntity.self, sort: [NSSortDescriptor(key: "createdAt", ascending: true)])
             allPeople = try fetch(PersonEntity.self, sort: [NSSortDescriptor(key: "createdAt", ascending: true)])
             allLocations = try fetch(RestaurantLocation.self, sort: [NSSortDescriptor(key: "name", ascending: true, selector: #selector(NSString.localizedCaseInsensitiveCompare(_:)))])
             allVisits = try fetch(VisitEntity.self, sort: [NSSortDescriptor(key: "date", ascending: false)])
             allComparisons = try fetch(ComparisonEntity.self, sort: [NSSortDescriptor(key: "date", ascending: false)])
             allWantEntries = try fetch(WantEntryEntity.self, sort: [NSSortDescriptor(key: "addedAt", ascending: false)])
-            if activeCircle == nil, let first = circles.first { activeCircleID = first.id }
-            if currentPerson == nil { devicePersonID = circleMembers.first(where: \.isMe)?.id ?? circleMembers.first?.id }
+            let acceptedCircle = circles.first(where: { !previousCircleIDs.contains($0.id) })
+                ?? circles.filter(isStoredInSharedDatabase).max(by: { $0.createdAt < $1.createdAt })
+            if isWaitingForAcceptedCircle, let acceptedCircle {
+                activeCircleID = acceptedCircle.id
+                devicePersonID = nil
+                isWaitingForAcceptedCircle = false
+            } else if activeCircle == nil, let first = circles.first {
+                activeCircleID = first.id
+            }
+            if let activeCircleID {
+                let memberIDs = Set(circleMembers.map(\.id))
+                if let selected = selectedPersonID(for: activeCircleID), memberIDs.contains(selected) {
+                    devicePersonID = selected
+                } else if let previousDevicePersonID, memberIDs.contains(previousDevicePersonID) {
+                    // One-time migration from the original global device-person key.
+                    devicePersonID = previousDevicePersonID
+                } else {
+                    devicePersonID = nil
+                }
+            } else {
+                devicePersonID = nil
+            }
             persistDeviceSelection()
             revision += 1
-        } catch { lastError = error.localizedDescription }
+        } catch { reportError("The ledger could not reload its saved data. \(error.localizedDescription)") }
     }
 
     private func commit() {
@@ -457,7 +529,7 @@ final class AppStore {
         // correct mid-batch while deferring the expensive store save to the end.
         if isBatching { reload(); return }
         do { try persistence.save(); reload() }
-        catch { lastError = error.localizedDescription }
+        catch { reportError("Your latest changes could not be saved. \(error.localizedDescription)") }
     }
 
     private func makePerson(name: String, isMe: Bool, isCircleMember: Bool, color: String, circle: CircleEntity) -> PersonEntity {
@@ -497,8 +569,24 @@ final class AppStore {
     private func persistDeviceSelection() {
         if let activeCircleID { UserDefaults.standard.set(activeCircleID.uuidString, forKey: "activeCircleID") }
         else { UserDefaults.standard.removeObject(forKey: "activeCircleID") }
-        if let devicePersonID { UserDefaults.standard.set(devicePersonID.uuidString, forKey: "devicePersonID") }
-        else { UserDefaults.standard.removeObject(forKey: "devicePersonID") }
+        if let activeCircleID {
+            if let devicePersonID {
+                devicePersonIDsByCircle[activeCircleID.uuidString] = devicePersonID.uuidString
+                UserDefaults.standard.set(devicePersonID.uuidString, forKey: "devicePersonID")
+            } else {
+                devicePersonIDsByCircle.removeValue(forKey: activeCircleID.uuidString)
+                UserDefaults.standard.removeObject(forKey: "devicePersonID")
+            }
+        }
+        UserDefaults.standard.set(devicePersonIDsByCircle, forKey: "devicePersonIDsByCircle")
+    }
+
+    private func selectedPersonID(for circleID: UUID) -> UUID? {
+        devicePersonIDsByCircle[circleID.uuidString].flatMap(UUID.init(uuidString:))
+    }
+
+    private func isStoredInSharedDatabase(_ circle: CircleEntity) -> Bool {
+        circle.objectID.persistentStore?.url?.lastPathComponent.contains("-shared") == true
     }
 }
 

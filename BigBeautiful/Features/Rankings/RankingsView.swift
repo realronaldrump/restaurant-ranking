@@ -46,10 +46,13 @@ struct RankingsView: View {
         VStack(alignment: .leading, spacing: 15) {
             Eyebrow("Your ranking")
             Text("Where would you go back?").font(BBTheme.display(34))
-            Picker("Whose ranking", selection: $scope) {
-                Text(store.currentPerson?.name ?? "Me").tag(RankingScope.me)
-                if store.partner != nil { Text(store.partner?.name ?? "Partner").tag(RankingScope.partner); Text("Us").tag(RankingScope.us) }
-            }.pickerStyle(.segmented).accessibilityIdentifier("ranking-scope")
+            if store.partner != nil {
+                Picker("Whose ranking", selection: $scope) {
+                    Text(store.currentPerson?.name ?? "Me").tag(RankingScope.me)
+                    Text(store.partner?.name ?? "Partner").tag(RankingScope.partner)
+                    Text("Us").tag(RankingScope.us)
+                }.pickerStyle(.segmented).accessibilityIdentifier("ranking-scope")
+            }
         }.padding(.top, 8)
     }
 

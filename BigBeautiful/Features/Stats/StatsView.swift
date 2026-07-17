@@ -53,14 +53,18 @@ struct StatsView: View {
         }
     }
 
-    private var categoryLeaders: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            EditorialSectionHeader("Category leaders", eyebrow: "Top rated")
-            ForEach(DiningCategory.allCases) { category in
-                let leader = store.ranked().first { $0.location.category == category }
-                HStack { Image(systemName: category.symbol).foregroundStyle(BBTheme.oxblood).frame(width: 28); VStack(alignment: .leading) { Text(category.shortTitle).font(.caption).foregroundStyle(.secondary); Text(leader?.location.name ?? "No entrant").font(.headline) }; Spacer(); if let leader { Text(leader.displayScore).font(BBTheme.score(22)) } }
-            }
-        }.ledgerCard()
+    @ViewBuilder private var categoryLeaders: some View {
+        let leaders = DiningCategory.allCases.compactMap { category in
+            store.ranked().first { $0.location.category == category }.map { (category, $0) }
+        }
+        if !leaders.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                EditorialSectionHeader("Category leaders", eyebrow: "Top rated")
+                ForEach(leaders, id: \.0) { category, leader in
+                    HStack { Image(systemName: category.symbol).foregroundStyle(BBTheme.oxblood).frame(width: 28); VStack(alignment: .leading) { Text(category.shortTitle).font(.caption).foregroundStyle(.secondary); Text(leader.location.name).font(.headline) }; Spacer(); Text(leader.displayScore).font(BBTheme.score(22)) }
+                }
+            }.ledgerCard()
+        }
     }
 
     private var memoryStats: some View {

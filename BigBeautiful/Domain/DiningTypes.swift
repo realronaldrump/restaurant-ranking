@@ -135,8 +135,8 @@ enum ComparisonOutcome: String, Codable {
 }
 
 enum RankingScope: String, CaseIterable, Identifiable {
-    case me = "George"
-    case partner = "Michelle"
+    case me = "Me"
+    case partner = "Partner"
     case us = "Us"
     var id: String { rawValue }
 }

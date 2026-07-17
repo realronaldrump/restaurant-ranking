@@ -185,51 +185,26 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertNil(store.lastError)
     }
 
-    func testDiagnosticBatchImportReloadCountAndTiming() throws {
-        let personID = try XCTUnwrap(store.currentPerson?.id)
-        let reloadCountBeforeImport = store.diagnosticReloadCount
-        let startedAt = CFAbsoluteTimeGetCurrent()
+    func testEraseAllDataRemovesEveryEntityAndDeviceIdentity() throws {
+        let location = store.createLocation(name: "Reset Test", category: .fullService)
+        let visit = store.logVisit(at: location, reaction: .loved)
+        store.addPhoto(fullData: Data([0x01]), thumbnailData: Data([0x02]), to: visit)
+        store.toggleWant(location)
+        store.recordAnchor(for: location, value: 85)
+        _ = store.addNamedCompanion(name: "Guest")
 
-        store.performBatch {
-            for index in 0..<300 {
-                let location = store.createLocation(name: "Diagnostic Place \(index)", category: .fullService)
-                let visit = store.logVisit(at: location, reaction: .loved, date: .now, hazy: false)
-                store.updateVisit(visit, type: nil, priceBand: 0, occasion: nil, memory: "Diagnostic note", companions: [])
-                _ = store.addDish(name: "Diagnostic dish", role: .entree, reaction: .loved, wouldOrderAgain: true, to: visit, personID: personID)
-            }
+        XCTAssertTrue(store.eraseAllData())
+        XCTAssertNil(store.activeCircle)
+        XCTAssertNil(store.currentPerson)
+        XCTAssertNil(UserDefaults.standard.string(forKey: "activeCircleID"))
+        XCTAssertNil(UserDefaults.standard.string(forKey: "devicePersonID"))
+        XCTAssertNil(UserDefaults.standard.dictionary(forKey: "devicePersonIDsByCircle"))
+
+        for entity in persistence.container.managedObjectModel.entities {
+            guard let entityName = entity.name else { continue }
+            let request = NSFetchRequest<NSManagedObject>(entityName: entityName)
+            XCTAssertEqual(try store.context.count(for: request), 0, "Expected \(entityName) to be empty after reset")
         }
-
-        let elapsed = CFAbsoluteTimeGetCurrent() - startedAt
-        let reloads = store.diagnosticReloadCount - reloadCountBeforeImport
-        print("[DEBUG-batch-perf] 300 rows: \(reloads) reloads in \(elapsed) seconds")
-        XCTAssertEqual(reloads, 1)
-    }
-
-    func testDiagnosticBatchStillDeduplicatesNewLocations() {
-        store.performBatch {
-            _ = store.createLocation(name: "Repeated Place", category: .fullService)
-            _ = store.createLocation(name: "Repeated Place", category: .fullService)
-        }
-
-        XCTAssertEqual(store.locations.filter { $0.name == "Repeated Place" }.count, 1)
-    }
-
-    func testDiagnosticRemoteChangesAreNotCoalesced() async {
-        let reloadCountBeforeNotifications = store.diagnosticReloadCount
-
-        for _ in 0..<50 {
-            NotificationCenter.default.post(
-                name: .NSPersistentStoreRemoteChange,
-                object: persistence.container.persistentStoreCoordinator
-            )
-        }
-        for _ in 0..<100 where store.diagnosticReloadCount < reloadCountBeforeNotifications + 50 {
-            await Task.yield()
-        }
-
-        let reloads = store.diagnosticReloadCount - reloadCountBeforeNotifications
-        print("[DEBUG-batch-perf] 50 remote-change notifications: \(reloads) reloads")
-        XCTAssertEqual(reloads, 50)
     }
 
     private func makeCircle(name: String, people: [(String, Bool)]) throws -> (circle: CircleEntity, people: [PersonEntity]) {

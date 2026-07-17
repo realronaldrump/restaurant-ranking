@@ -69,6 +69,21 @@ final class BigBeautifulUITests: XCTestCase {
         XCTAssertEqual(undersized, [], "Every visible home button must expose at least a 44×44-point hit target")
     }
 
+    func testResetAppReturnsToOnboarding() {
+        app.tabBars.buttons["More"].tap()
+        app.staticTexts["Settings & Privacy"].tap()
+
+        let resetButton = app.buttons["reset-app-button"]
+        XCTAssertTrue(resetButton.waitForExistence(timeout: 3))
+        for _ in 0..<6 where !resetButton.isHittable { app.swipeUp() }
+        XCTAssertTrue(resetButton.isHittable)
+        resetButton.tap()
+        app.alerts.buttons["Erase Everything"].tap()
+
+        XCTAssertTrue(app.buttons["Get Started"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.tabBars.firstMatch.exists)
+    }
+
     func testOnboardingSupportingTextWrapsAtAccessibilitySize() {
         app.terminate()
         app.launchArguments = [

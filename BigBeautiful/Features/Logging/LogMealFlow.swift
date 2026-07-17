@@ -10,6 +10,20 @@ private struct PlaceChoice: Identifiable {
     let category: DiningCategory
 }
 
+private extension RestaurantLocation {
+    var placeChoice: PlaceChoice {
+        let detail = address?.nilIfBlank ?? [category.shortTitle, city?.nilIfBlank].compactMap { $0 }.joined(separator: " · ")
+        return .init(source: .existing(self), id: "existing-\(id)", name: name, subtitle: detail, category: category)
+    }
+
+    func matchesPlaceQuery(_ query: String) -> Bool {
+        query.isEmpty || [name, address, city]
+            .compactMap { $0 }
+            .joined(separator: " ")
+            .localizedCaseInsensitiveContains(query)
+    }
+}
+
 @MainActor
 struct LogMealFlow: View {
     private enum Stage { case place, reaction, payoff, quickComparisons }
@@ -171,16 +185,12 @@ struct LogMealFlow: View {
                     rankingInsertion(score)
                     if !quickQuestions.isEmpty {
                         Button { quickIndex = 0; stage = .quickComparisons } label: {
-                            Label("Place It More Precisely", systemImage: "arrow.left.arrow.right").frame(maxWidth: .infinity)
+                            Label("Place It More Precisely", systemImage: "arrow.left.arrow.right")
                         }
-                        .buttonStyle(.bordered).buttonBorderShape(.roundedRectangle(radius: 2)).frame(minHeight: 48)
+                        .buttonStyle(SecondaryButtonStyle())
                     }
                     Button("Add Dishes, Photos & Details") { addMoreVisit = visit }.buttonStyle(PrimaryButtonStyle())
                     Button("Done") { dismiss() }.font(.headline).frame(minHeight: 48)
-                    if store.ranked().filter({ $0.location.category == location.category }).count > 1 {
-                        Text("You can compare close rankings later from More.")
-                            .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 420)
-                    }
                 }
                 Spacer(minLength: 20)
             }.padding(20).readablePageWidth()
@@ -209,10 +219,9 @@ struct LogMealFlow: View {
                     quickChoice(question.a, outcome: .a, question: question)
                     Text("OR").font(.caption2.weight(.bold)).tracking(2).foregroundStyle(.secondary)
                     quickChoice(question.b, outcome: .b, question: question)
-                    Button("Too Close to Call") { recordQuick(.tie, question: question) }.buttonStyle(.bordered).buttonBorderShape(.roundedRectangle(radius: 2)).frame(minHeight: 48)
+                    Button("Too Close to Call") { recordQuick(.tie, question: question) }.buttonStyle(SecondaryButtonStyle())
                     Button("Skip") { quickIndex += 1 }.frame(minHeight: 44)
                     Button("Finish Now") { refreshPayoff(); stage = .payoff }.font(.callout).foregroundStyle(.secondary).frame(minHeight: 44)
-                    Text("You can skip or choose a tie.").font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }.padding(22).padding(.bottom, 12).readablePageWidth()
             }
         }
@@ -222,7 +231,7 @@ struct LogMealFlow: View {
         Button { recordQuick(outcome, question: question) } label: {
             HStack { Image(systemName: location.category.symbol); Text(location.name).font(BBTheme.display(22)); Spacer(); if let score = store.score(for: location) { Text(score.displayScore).font(BBTheme.score(21)) } }
                 .padding(18).foregroundStyle(BBTheme.paper).background(BBTheme.oxblood)
-        }.buttonStyle(.plain)
+        }.buttonStyle(.pressable)
     }
 
     private func rankingInsertion(_ score: LocationScore) -> some View {
@@ -258,9 +267,7 @@ struct LogMealFlow: View {
     }
 
     private var existingChoices: [PlaceChoice] {
-        store.locations.filter { !$0.isClosed && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query)) }.map {
-            .init(source: .existing($0), id: "existing-\($0.id)", name: $0.name, subtitle: [$0.category.shortTitle, $0.city].compactMap { $0 }.joined(separator: " · "), category: $0.category)
-        }
+        store.locations.filter { !$0.isClosed && $0.matchesPlaceQuery(query) }.map(\.placeChoice)
     }
     private var nearbyChoices: [PlaceChoice] { locationService.nearby.map(choice(for:)) }
     private var mapChoices: [PlaceChoice] { mapResults.map(choice(for:)) }
@@ -313,6 +320,141 @@ struct LogMealFlow: View {
     }
 }
 
+@MainActor
+private struct ChangeVisitRestaurantView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(AppStore.self) private var store
+    @Environment(LocationService.self) private var locationService
+    let currentLocationID: UUID?
+    let onSelect: (PlaceChoice) -> Void
+    @State private var query = ""
+    @State private var mapResults: [PlaceCandidate] = []
+    @FocusState private var searchFocused: Bool
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 22) {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("Choose the right place").font(BBTheme.display(34))
+                        Text("Search by restaurant, address, or branch.").foregroundStyle(.secondary)
+                    }
+                    searchField
+                    if query.isEmpty {
+                        placeSection("Nearby now", choices: nearbyChoices, empty: nearbyEmptyMessage)
+                        placeSection("From your ledger", choices: Array(existingChoices.prefix(12)), empty: "No other saved places yet.")
+                    } else {
+                        Button { choose(manualChoice) } label: {
+                            Label("Add “\(query)” as a new place", systemImage: "plus.circle.fill")
+                                .font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 13)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("change-visit-manual-place")
+                        placeSection("Your places", choices: existingChoices, empty: nil)
+                        placeSection("Map results", choices: mapChoices, empty: locationService.isSearching ? "Searching…" : "No outside match yet.")
+                    }
+                }
+                .padding(20)
+                .readablePageWidth()
+            }
+            .editorialPage()
+            .navigationTitle("Change Restaurant")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+        }
+        .task {
+            guard !ProcessInfo.processInfo.arguments.contains("-resetForUITests") else { return }
+            locationService.requestNearby()
+        }
+        .task(id: query) {
+            guard !query.isEmpty else { mapResults = []; return }
+            guard !ProcessInfo.processInfo.arguments.contains("-resetForUITests") else {
+                mapResults = []
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(280))
+            guard !Task.isCancelled else { return }
+            mapResults = await locationService.search(query)
+        }
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 11) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Restaurant, address, or branch", text: $query)
+                .textInputAutocapitalization(.words)
+                .submitLabel(.search)
+                .focused($searchFocused)
+                .onSubmit { searchFocused = false }
+            if !query.isEmpty {
+                Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Clear search")
+            }
+        }
+        .padding(.horizontal, 14)
+        .frame(minHeight: 50)
+        .background(BBTheme.ink.opacity(0.055))
+        .overlay(Rectangle().stroke(BBTheme.hairline))
+        .accessibilityIdentifier("change-visit-restaurant-search")
+    }
+
+    private func placeSection(_ title: String, choices: [PlaceChoice], empty: String?) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Eyebrow(title)
+            if choices.isEmpty, let empty {
+                Text(empty).font(.callout).foregroundStyle(.secondary).padding(.vertical, 12)
+            }
+            ForEach(choices) { choice in
+                Button { choose(choice) } label: {
+                    HStack(spacing: 13) {
+                        Image(systemName: choice.category.symbol).foregroundStyle(BBTheme.oxblood).frame(width: 30)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(choice.name).font(.headline).foregroundStyle(BBTheme.ink)
+                            Text(choice.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 9)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var existingChoices: [PlaceChoice] {
+        store.locations
+            .filter { !$0.isClosed && $0.id != currentLocationID && $0.matchesPlaceQuery(query) }
+            .map(\.placeChoice)
+    }
+
+    private var nearbyChoices: [PlaceChoice] { locationService.nearby.map(choice(for:)) }
+    private var mapChoices: [PlaceChoice] { mapResults.map(choice(for:)) }
+    private var manualChoice: PlaceChoice {
+        .init(source: .manual(query), id: "manual-\(query)", name: query, subtitle: "New establishment · details editable later", category: DiningCategory.suggested(for: query))
+    }
+
+    private var nearbyEmptyMessage: String {
+        switch locationService.authorization {
+        case .denied, .restricted: "Location is off. You can still search."
+        case .notDetermined: "Turn on location for nearby results, or search instead."
+        default: locationService.isSearching || locationService.currentLocation == nil ? "Looking around…" : "No nearby matches. Search below."
+        }
+    }
+
+    private func choice(for candidate: PlaceCandidate) -> PlaceChoice {
+        .init(source: .map(candidate), id: "map-\(candidate.id)", name: candidate.name, subtitle: candidate.address ?? candidate.suggestedCategory.shortTitle, category: candidate.suggestedCategory)
+    }
+
+    private func choose(_ choice: PlaceChoice) {
+        onSelect(choice)
+        Haptics.selection()
+        dismiss()
+    }
+}
+
 private struct DishDraft: Identifiable {
     let id = UUID()
     var name = ""
@@ -343,6 +485,8 @@ struct AddMoreVisitView: View {
     @State private var dishes: [DishDraft] = []
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var isSaving = false
+    @State private var restaurantChoice: PlaceChoice?
+    @State private var isChangingRestaurant = false
 
     init(visit: VisitEntity, personID: UUID?) {
         self.visit = visit
@@ -360,11 +504,13 @@ struct AddMoreVisitView: View {
         _memory = State(initialValue: visit.memory ?? "")
         _memoryExpanded = State(initialValue: visit.memory?.isEmpty == false)
         _companions = State(initialValue: Set(visit.companionIDs))
+        _restaurantChoice = State(initialValue: visit.location?.placeChoice)
     }
 
     var body: some View {
         NavigationStack {
             Form {
+                restaurantSection
                 verdictSection
                 Section { detailPicker("Visit type", selection: $visitType, values: VisitType.allCases); pricePicker; detailPicker("Occasion", selection: $occasion, values: Occasion.allCases) } header: { Text("The visit") }
                 dishSection
@@ -373,12 +519,45 @@ struct AddMoreVisitView: View {
                 photoSection
                 memorySection
             }
-            .scrollContentBackground(.hidden).background(PaperBackground()).tint(BBTheme.oxblood)
+            .editorialForm()
             .navigationTitle("Add More").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Not Now") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) { Button(isSaving ? "Saving…" : "Save") { Task { await save() } }.disabled(isSaving) }
             }
+        }
+        .sheet(isPresented: $isChangingRestaurant) {
+            ChangeVisitRestaurantView(currentLocationID: selectedExistingLocation?.id ?? visit.location?.id) { choice in
+                restaurantChoice = choice
+            }
+        }
+    }
+
+    private var restaurantSection: some View {
+        Section {
+            Button { isChangingRestaurant = true } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: restaurantChoice?.category.symbol ?? "fork.knife")
+                        .foregroundStyle(BBTheme.oxblood)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(restaurantChoice?.name ?? "Choose a restaurant").font(.headline).foregroundStyle(BBTheme.ink)
+                        if let subtitle = restaurantChoice?.subtitle, !subtitle.isEmpty {
+                            Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                    }
+                    Spacer()
+                    Text("Change").font(.callout.weight(.semibold))
+                    Image(systemName: "chevron.right").font(.caption)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("change-visit-restaurant")
+        } header: {
+            Text("Restaurant")
+        } footer: {
+            Text("Changing the restaurant keeps this visit’s ratings, dishes, photos, and notes together.")
         }
     }
 
@@ -494,7 +673,6 @@ struct AddMoreVisitView: View {
             PhotosPicker(selection: $photoItems, maxSelectionCount: 12, matching: .images) {
                 Label(pendingCount == 0 ? "Choose photos" : "\(pendingCount) selected to add", systemImage: "photo.on.rectangle")
             }
-            Text("Saved copies have location metadata stripped. Originals are never changed.").font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -513,7 +691,7 @@ struct AddMoreVisitView: View {
     }
 
     private func dishSuggestions(for text: String) -> [DishEntity] {
-        guard let location = visit.location else { return [] }
+        guard let location = selectedExistingLocation else { return [] }
         let typed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let taken = Set(dishes.map { $0.name.lowercased() } + myDishEntries.compactMap { $0.dish?.name.lowercased() })
         return Array(location.dishArray.filter { dish in
@@ -521,6 +699,12 @@ struct AddMoreVisitView: View {
             dish.name.lowercased() != typed.lowercased() &&
             (typed.isEmpty || dish.name.localizedCaseInsensitiveContains(typed))
         }.prefix(4))
+    }
+
+    private var selectedExistingLocation: RestaurantLocation? {
+        guard let restaurantChoice else { return visit.location }
+        if case .existing(let location) = restaurantChoice.source { return location }
+        return nil
     }
 
     private var pricePicker: some View {
@@ -538,6 +722,22 @@ struct AddMoreVisitView: View {
 
     private func save() async {
         isSaving = true
+        if let restaurantChoice {
+            let selectedLocation: RestaurantLocation
+            switch restaurantChoice.source {
+            case .existing(let location):
+                selectedLocation = location
+            case .map(let candidate):
+                selectedLocation = store.createLocation(
+                    name: candidate.name, category: candidate.suggestedCategory, address: candidate.address, city: candidate.city,
+                    coordinate: (candidate.latitude, candidate.longitude), phone: candidate.phone, url: candidate.url,
+                    sourceIdentifier: candidate.id, cuisines: candidate.cuisines
+                )
+            case .manual(let name):
+                selectedLocation = store.createLocation(name: name, category: DiningCategory.suggested(for: name))
+            }
+            store.changeLocation(of: visit, to: selectedLocation)
+        }
         store.updateVisit(visit, type: visitType, priceBand: priceBand, occasion: occasion, memory: memory, companions: Array(companions))
         if let personID {
             if let reaction {

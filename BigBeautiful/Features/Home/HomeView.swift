@@ -44,7 +44,7 @@ struct HomeView: View {
 
     private var mastheadPossessive: String {
         let name = store.currentPerson?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !name.isEmpty else { return "DAVIS’S" }
+        guard !name.isEmpty else { return "YOUR" }
         return "\(name.uppercased())’S"
     }
 
@@ -69,7 +69,7 @@ struct HomeView: View {
             }
             .padding(22).foregroundStyle(BBTheme.paper).background(BBTheme.oxblood)
         }
-        .buttonStyle(.plain).accessibilityIdentifier("log-meal-button")
+        .buttonStyle(.pressable).accessibilityIdentifier("log-meal-button")
     }
 
     @ViewBuilder private var pendingRatings: some View {
@@ -87,7 +87,7 @@ struct HomeView: View {
                             }
                             Spacer(); Image(systemName: "chevron.right").font(.caption)
                         }
-                    }.buttonStyle(.plain).ledgerCard()
+                    }.buttonStyle(.pressable).ledgerCard()
                 }
             }
         }
@@ -114,11 +114,8 @@ struct HomeView: View {
                             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                             .padding(.vertical, 8)
                             .contentShape(Rectangle())
-                            .background(Color.clear)
                         }
                         .buttonStyle(.plain)
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                        .contentShape(Rectangle())
                         if index < scores.count - 1 { Divider() }
                     }
                 }.ledgerCard()
@@ -145,14 +142,16 @@ struct HomeView: View {
                 }
                 Spacer(); Image(systemName: "arrow.right")
             }.padding(.vertical, 4)
-        }.buttonStyle(.plain).ledgerCard()
+        }.buttonStyle(.pressable).ledgerCard()
     }
 
-    private var recentHistory: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            EditorialSectionHeader("Recently entered", eyebrow: "The record", actionTitle: "History") { router.selectedTab = .history }
-            ForEach(store.visits.prefix(4)) { visit in
-                NavigationLink(value: AppRoute.visit(visit.id)) { VisitRow(visit: visit) }.buttonStyle(.plain)
+    @ViewBuilder private var recentHistory: some View {
+        if !store.visits.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                EditorialSectionHeader("Recently entered", eyebrow: "The record", actionTitle: "History") { router.selectedTab = .history }
+                ForEach(store.visits.prefix(4)) { visit in
+                    NavigationLink(value: AppRoute.visit(visit.id)) { VisitRow(visit: visit) }.buttonStyle(.plain)
+                }
             }
         }
     }

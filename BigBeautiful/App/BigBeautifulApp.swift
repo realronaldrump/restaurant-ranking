@@ -8,6 +8,13 @@ struct BigBeautifulApp: App {
     @State private var locationService = LocationService()
     @AppStorage("didCompleteGrandOpening") private var didCompleteGrandOpening = false
 
+    init() {
+        // Navigation titles in the editorial serif, matching the page headings.
+        if let descriptor = UIFont.preferredFont(forTextStyle: .headline).fontDescriptor.withDesign(.serif) {
+            UINavigationBar.appearance().titleTextAttributes = [.font: UIFont(descriptor: descriptor, size: 0)]
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
             Group {

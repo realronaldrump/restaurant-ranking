@@ -50,11 +50,8 @@ struct SettleScoreView: View {
                 comparisonButton(question.a, side: .a, question: question)
                 Text("OR").font(.caption2.weight(.bold)).tracking(2).foregroundStyle(.secondary)
                 comparisonButton(question.b, side: .b, question: question)
-                Button("Too Close to Call") { answer(.tie, question: question) }.buttonStyle(.bordered).buttonBorderShape(.roundedRectangle(radius: 2)).frame(minHeight: 48)
+                Button("Too Close to Call") { answer(.tie, question: question) }.buttonStyle(SecondaryButtonStyle())
                 Button("Skip") { advance() }.foregroundStyle(.secondary).frame(minHeight: 44)
-                Text("You can skip any question or choose a tie.")
-                    .font(.footnote).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }.padding(22).padding(.bottom, 12).readablePageWidth()
         }
     }
@@ -101,7 +98,7 @@ struct SettleScoreView: View {
         Button { answer(side == .a ? .a : .b, question: question) } label: {
             HStack(spacing: 14) { Image(systemName: location.category.symbol).font(.title2); VStack(alignment: .leading) { Text(location.name).font(BBTheme.display(23)); Text(location.category.shortTitle).font(.caption).foregroundStyle(BBTheme.paper.opacity(0.72)) }; Spacer(); if let score = store.score(for: location) { Text(score.displayScore).font(BBTheme.score(24)) } }
                 .padding(19).foregroundStyle(BBTheme.paper).background(BBTheme.oxblood)
-        }.buttonStyle(.plain)
+        }.buttonStyle(.pressable)
     }
 
     private var complete: some View {
@@ -147,9 +144,9 @@ struct DirectComparisonView: View {
     private var candidates: [RestaurantLocation] { store.locations.filter { $0 != source && !$0.isClosed && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query)) } }
     private func comparison(_ other: RestaurantLocation) -> some View {
         ScrollView {
-            VStack(spacing: 17) { Spacer(minLength: 12); Text("Which would you rather revisit?").font(BBTheme.display(31)).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true); choice(source, outcome: .a, against: other); Text("OR").font(.caption2.weight(.bold)); choice(other, outcome: .b, against: other); Button("Too Close to Call") { record(.tie, other) }.buttonStyle(.bordered); Button("Choose another") { opponent = nil }.foregroundStyle(.secondary); Spacer(minLength: 12) }.padding(22)
+            VStack(spacing: 17) { Spacer(minLength: 12); Text("Which would you rather revisit?").font(BBTheme.display(31)).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true); choice(source, outcome: .a, against: other); Text("OR").font(.caption2.weight(.bold)); choice(other, outcome: .b, against: other); Button("Too Close to Call") { record(.tie, other) }.buttonStyle(SecondaryButtonStyle()); Button("Choose another") { opponent = nil }.foregroundStyle(.secondary).frame(minHeight: 44); Spacer(minLength: 12) }.padding(22).readablePageWidth()
         }
     }
-    private func choice(_ location: RestaurantLocation, outcome: ComparisonOutcome, against other: RestaurantLocation) -> some View { Button { record(outcome, other) } label: { HStack { Image(systemName: location.category.symbol); Text(location.name).font(BBTheme.display(23)); Spacer(); if let score = store.score(for: location) { Text(score.displayScore).font(BBTheme.score(22)) } }.padding(19).foregroundStyle(BBTheme.paper).background(BBTheme.oxblood) }.buttonStyle(.plain) }
+    private func choice(_ location: RestaurantLocation, outcome: ComparisonOutcome, against other: RestaurantLocation) -> some View { Button { record(outcome, other) } label: { HStack { Image(systemName: location.category.symbol); Text(location.name).font(BBTheme.display(23)); Spacer(); if let score = store.score(for: location) { Text(score.displayScore).font(BBTheme.score(22)) } }.padding(19).foregroundStyle(BBTheme.paper).background(BBTheme.oxblood) }.buttonStyle(.pressable) }
     private func record(_ outcome: ComparisonOutcome, _ other: RestaurantLocation) { store.recordComparison(a: source, b: other, outcome: outcome); Haptics.success(); dismiss() }
 }

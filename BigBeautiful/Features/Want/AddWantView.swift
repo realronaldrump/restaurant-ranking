@@ -13,7 +13,7 @@ struct AddWantView: View {
             List {
                 Section("Your ledger") { ForEach(local) { location in row(location.name, subtitle: location.category.shortTitle) { store.toggleWant(location); dismiss() } } }
                 if !mapResults.isEmpty { Section("Map results") { ForEach(mapResults) { candidate in row(candidate.name, subtitle: candidate.address ?? candidate.suggestedCategory.shortTitle) { let location = store.createLocation(name: candidate.name, category: candidate.suggestedCategory, address: candidate.address, city: candidate.city, coordinate: (candidate.latitude, candidate.longitude), phone: candidate.phone, url: candidate.url, sourceIdentifier: candidate.id, cuisines: candidate.cuisines); store.toggleWant(location); dismiss() } } } }
-            }.scrollContentBackground(.hidden).background(PaperBackground()).searchable(text: $query, prompt: "Find a place to save")
+            }.editorialForm().searchable(text: $query, prompt: "Find a place to save")
             .navigationTitle("Add to Want to Try").navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
             .task(id: query) { guard !query.isEmpty else { mapResults = []; return }; try? await Task.sleep(for: .milliseconds(280)); mapResults = await locationService.search(query) }
         }

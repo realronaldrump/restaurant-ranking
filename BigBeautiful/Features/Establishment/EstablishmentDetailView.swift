@@ -155,7 +155,7 @@ struct EstablishmentDetailView: View {
             if let phone = location.phone, let url = URL(string: "tel:\(phone.filter { $0.isNumber })") { Link(destination: url) { Label(phone, systemImage: "phone") } }
             if let urlString = location.urlString, let url = URL(string: urlString) { Link(destination: url) { Label("Website or menu", systemImage: "safari") } }
             if location.hasCoordinates {
-                Button { openDirections() } label: { Label("Directions in Maps", systemImage: "arrow.triangle.turn.up.right.diamond") }.buttonStyle(.borderedProminent).buttonBorderShape(.roundedRectangle(radius: 2))
+                Button { openDirections() } label: { Label("Directions in Maps", systemImage: "arrow.triangle.turn.up.right.diamond") }.buttonStyle(SecondaryButtonStyle())
             }
         }.padding(.horizontal, 16)
     }
@@ -323,7 +323,7 @@ struct EditLocationView: View {
                     TextField("Longitude", text: $longitude).keyboardType(.numbersAndPunctuation)
                 } header: { Text("Map coordinate") } footer: { Text("Coordinates are optional. Clearing either field removes the map pin.") }
                 Section { Toggle("Closed", isOn: $isClosed) } footer: { Text("Closed places retain their entire history and leave active rankings and suggestions.") }
-            }.scrollContentBackground(.hidden).background(PaperBackground())
+            }.editorialForm()
             .navigationTitle("Edit Establishment").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("Save") { save() } } }
         }

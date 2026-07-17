@@ -29,7 +29,7 @@ struct WantToTryView: View {
                                     }
                                     Spacer(); Image(systemName: "chevron.right").font(.caption)
                                 }.contentShape(Rectangle())
-                            }.buttonStyle(.plain).ledgerCard()
+                            }.buttonStyle(.pressable).ledgerCard()
                         }
                     }
                 }

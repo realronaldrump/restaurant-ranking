@@ -32,7 +32,6 @@ final class AppStore {
     @ObservationIgnored private var coupleScoreCache: [String: [CoupleLocationScore]] = [:]
     @ObservationIgnored private var cachedScoreRevision = -1
     @ObservationIgnored private var isBatching = false
-    @ObservationIgnored private(set) var diagnosticReloadCount = 0
 
     var context: NSManagedObjectContext { persistence.container.viewContext }
     var activeCircle: CircleEntity? {
@@ -106,11 +105,11 @@ final class AppStore {
         }
     }
 
-    func bootstrap(myName: String, partnerName: String?, circleName: String = "Big Beautiful Testers") {
+    func bootstrap(myName: String, partnerName: String?, circleName: String = "Our Table") {
         guard circles.isEmpty else { return }
         let circle = CircleEntity(context: context)
-        circle.id = UUID(); circle.name = circleName; circle.createdAt = .now
-        let me = makePerson(name: myName.trimmedOr("George"), isMe: true, isCircleMember: true, color: "6F1D2B", circle: circle)
+        circle.id = UUID(); circle.name = circleName.trimmedOr("Our Table"); circle.createdAt = .now
+        let me = makePerson(name: myName.trimmedOr("Me"), isMe: true, isCircleMember: true, color: "6F1D2B", circle: circle)
         if let partnerName, !partnerName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             _ = makePerson(name: partnerName, isMe: false, isCircleMember: true, color: "2F5964", circle: circle)
         }
@@ -143,6 +142,37 @@ final class AppStore {
 
     func clearLastError() {
         lastError = nil
+    }
+
+    /// Permanently removes every ledger from every configured persistent store.
+    /// Object-by-object deletes are intentional so CloudKit can mirror them.
+    @discardableResult
+    func eraseAllData() -> Bool {
+        do {
+            // Circles own every piece of ledger data through cascade relationships.
+            // Brands are the model's only other root entity.
+            for entityName in ["CircleEntity", "BrandEntity"] {
+                let request = NSFetchRequest<NSManagedObject>(entityName: entityName)
+                for object in try context.fetch(request) {
+                    context.delete(object)
+                }
+            }
+            try persistence.save()
+
+            activeCircleID = nil
+            devicePersonID = nil
+            devicePersonIDsByCircle.removeAll()
+            isWaitingForAcceptedCircle = false
+            context.undoManager?.removeAllActions()
+            persistDeviceSelection()
+            reload()
+            return true
+        } catch {
+            context.rollback()
+            reload()
+            reportError("The app could not erase all of its saved data, so it was not restarted. \(error.localizedDescription)")
+            return false
+        }
     }
 
     @discardableResult
@@ -263,6 +293,57 @@ final class AppStore {
         let cleanMemory = memory?.trimmingCharacters(in: .whitespacesAndNewlines)
         visit.memory = cleanMemory?.isEmpty == true ? nil : cleanMemory
         visit.companionIDs = companions; visit.isShared = !companions.isEmpty
+        commit()
+    }
+
+    /// Reassigns a visit without leaving its dish evidence attached to the old
+    /// establishment. Existing dishes at the destination are reused by name.
+    func changeLocation(of visit: VisitEntity, to location: RestaurantLocation) {
+        guard visit.location != location else { return }
+
+        let previousLocation = visit.location
+        let previousDishes = Set(visit.dishEntryArray.compactMap(\.dish))
+        var destinationDishes: [String: DishEntity] = [:]
+        for dish in location.dishArray {
+            destinationDishes[dishLookupKey(dish.name)] = dish
+        }
+
+        for entry in visit.dishEntryArray {
+            guard let previousDish = entry.dish else { continue }
+            let key = dishLookupKey(previousDish.name)
+            let destinationDish: DishEntity
+            if let existing = destinationDishes[key] {
+                destinationDish = existing
+            } else {
+                let newDish = DishEntity(context: context)
+                assign(newDish, alongside: location)
+                newDish.id = UUID(); newDish.name = previousDish.name; newDish.role = previousDish.role
+                newDish.createdAt = previousDish.createdAt; newDish.isArchived = previousDish.isArchived
+                newDish.location = location
+                destinationDishes[key] = newDish
+                destinationDish = newDish
+            }
+            entry.dish = destinationDish
+        }
+
+        let inheritedPreviousCoordinate = previousLocation.map {
+            visit.hasCoordinates && $0.hasCoordinates &&
+            abs(visit.latitude - $0.latitude) < 0.000_001 &&
+            abs(visit.longitude - $0.longitude) < 0.000_001
+        } ?? false
+        visit.location = location
+        if inheritedPreviousCoordinate {
+            if let coordinate = location.coordinate {
+                visit.latitude = coordinate.latitude; visit.longitude = coordinate.longitude; visit.hasCoordinates = true
+            } else {
+                visit.latitude = 0; visit.longitude = 0; visit.hasCoordinates = false
+            }
+        }
+
+        context.processPendingChanges()
+        for dish in previousDishes where dish.entryArray.isEmpty { context.delete(dish) }
+        previousLocation?.updatedAt = .now
+        location.updatedAt = .now
         commit()
     }
 
@@ -489,7 +570,6 @@ final class AppStore {
     }
 
     func reload() {
-        diagnosticReloadCount += 1
         do {
             let previousCircleIDs = Set(circles.map(\.id))
             let previousDevicePersonID = devicePersonID
@@ -527,7 +607,9 @@ final class AppStore {
     }
 
     private func commit() {
-        if isBatching { return }
+        // Fetches include pending changes, so a reload keeps dedupe and lookups
+        // correct mid-batch while deferring the expensive store save to the end.
+        if isBatching { reload(); return }
         do { try persistence.save(); reload() }
         catch { reportError("Your latest changes could not be saved. \(error.localizedDescription)") }
     }
@@ -538,6 +620,11 @@ final class AppStore {
         person.id = UUID(); person.name = name.trimmedOr("Guest"); person.isMe = isMe; person.isCircleMember = isCircleMember; person.colorHex = color
         person.createdAt = .now; person.circle = circle
         return person
+    }
+
+    private func dishLookupKey(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
     }
 
     private func fetch<T: NSManagedObject>(_ type: T.Type, sort: [NSSortDescriptor]) throws -> [T] {
@@ -577,8 +664,14 @@ final class AppStore {
                 devicePersonIDsByCircle.removeValue(forKey: activeCircleID.uuidString)
                 UserDefaults.standard.removeObject(forKey: "devicePersonID")
             }
+        } else {
+            UserDefaults.standard.removeObject(forKey: "devicePersonID")
         }
-        UserDefaults.standard.set(devicePersonIDsByCircle, forKey: "devicePersonIDsByCircle")
+        if devicePersonIDsByCircle.isEmpty {
+            UserDefaults.standard.removeObject(forKey: "devicePersonIDsByCircle")
+        } else {
+            UserDefaults.standard.set(devicePersonIDsByCircle, forKey: "devicePersonIDsByCircle")
+        }
     }
 
     private func selectedPersonID(for circleID: UUID) -> UUID? {

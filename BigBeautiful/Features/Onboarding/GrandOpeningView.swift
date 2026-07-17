@@ -6,9 +6,9 @@ struct GrandOpeningView: View {
     @Environment(AppStore.self) private var store
     @Binding var isComplete: Bool
     @State private var page = 0
-    @State private var myName = "George"
-    @State private var partnerName = "Michelle"
-    @State private var circleName = "Big Beautiful Testers"
+    @State private var myName = ""
+    @State private var partnerName = ""
+    @State private var circleName = ""
     @State private var isImporting = false
     @State private var importedCount = 0
     @State private var importMessage: String?
@@ -54,7 +54,7 @@ struct GrandOpeningView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
                 Spacer(minLength: 60)
-                Image(systemName: "star.fill").font(.title2).foregroundStyle(BBTheme.oxblood)
+                Image(systemName: "book.closed.fill").font(.title2).foregroundStyle(BBTheme.oxblood)
                 VStack(alignment: .leading, spacing: 10) {
                     Eyebrow("Welcome")
                     Text("Big Beautiful Restaurant Log")
@@ -75,10 +75,8 @@ struct GrandOpeningView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                Button { page = 1 } label: {
-                    Text("Get Started").font(.headline).frame(maxWidth: .infinity).frame(height: 56)
-                }
-                .buttonStyle(.borderedProminent).buttonBorderShape(.roundedRectangle(radius: 2))
+                Button("Get Started") { page = 1 }
+                    .buttonStyle(PrimaryButtonStyle())
                 Text("Best restaurant logger in the world!")
                     .font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity)
                 Spacer(minLength: 30)
@@ -96,7 +94,7 @@ struct GrandOpeningView: View {
                     Divider()
                     editorialField("Partner (optional)", text: $partnerName)
                     Divider()
-                    editorialField("Circle name", text: $circleName)
+                    editorialField("Circle name", text: $circleName, prompt: "Our Table")
                 }
                 .ledgerCard(padding: 0)
                 Spacer(minLength: 12)
@@ -105,6 +103,7 @@ struct GrandOpeningView: View {
                     page = 2
                 }
                 .buttonStyle(PrimaryButtonStyle())
+                .disabled(myName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             .padding(24).padding(.bottom, 12).readablePageWidth()
         }
@@ -206,7 +205,7 @@ struct GrandOpeningView: View {
                         calibrationChoice(question.a, outcome: .a, question: question)
                         Text("OR").font(.caption2.weight(.bold)).tracking(2).foregroundStyle(.secondary)
                         calibrationChoice(question.b, outcome: .b, question: question)
-                        Button("Too Close to Call") { answerCalibration(.tie, question: question) }.buttonStyle(.bordered)
+                        Button("Too Close to Call") { answerCalibration(.tie, question: question) }.buttonStyle(SecondaryButtonStyle())
                         Button("Skip") { calibrationIndex += 1 }.frame(minHeight: 44)
                     }.ledgerCard()
                 } else {
@@ -249,10 +248,10 @@ struct GrandOpeningView: View {
         .frame(maxWidth: 130, alignment: .leading)
     }
 
-    private func editorialField(_ title: String, text: Binding<String>) -> some View {
+    private func editorialField(_ title: String, text: Binding<String>, prompt: String? = nil) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(title.uppercased()).font(BBTheme.eyebrow).foregroundStyle(.secondary)
-            TextField(title, text: text).font(BBTheme.display(25, weight: .regular)).textInputAutocapitalization(.words)
+            TextField(prompt ?? title, text: text).font(BBTheme.display(25, weight: .regular)).textInputAutocapitalization(.words)
         }
         .padding(18).frame(minHeight: 84)
     }
@@ -275,7 +274,9 @@ struct GrandOpeningView: View {
                 }
             }
             importedCount = summary.meals.count
-            importMessage = "Imported \(summary.meals.count) visits. \(summary.skippedRows) incomplete rows were skipped."
+            importMessage = summary.skippedRows > 0
+                ? "Imported \(summary.meals.count) visits. \(summary.skippedRows) incomplete rows were skipped."
+                : "Imported \(summary.meals.count) visits."
         } catch { importMessage = error.localizedDescription }
     }
 
@@ -315,22 +316,12 @@ struct GrandOpeningView: View {
         Button { answerCalibration(outcome, question: question) } label: {
             HStack { Image(systemName: location.category.symbol); Text(location.name).font(BBTheme.display(21)); Spacer(); if let score = store.score(for: location) { Text(score.displayScore).font(BBTheme.score(20)) } }
                 .padding(16).foregroundStyle(BBTheme.paper).background(BBTheme.oxblood)
-        }.buttonStyle(.plain)
+        }.buttonStyle(.pressable)
     }
 
     private func answerCalibration(_ outcome: ComparisonOutcome, question: ComparisonQuestion) {
         store.recordComparison(a: question.a, b: question.b, outcome: outcome)
         calibrationIndex += 1
         Haptics.selection()
-    }
-}
-
-struct PrimaryButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.headline).foregroundStyle(BBTheme.paper)
-            .frame(maxWidth: .infinity).frame(minHeight: 56)
-            .background(configuration.isPressed ? BBTheme.oxblood.opacity(0.78) : BBTheme.oxblood)
-            .overlay { Rectangle().stroke(BBTheme.oxblood, lineWidth: 1) }
     }
 }

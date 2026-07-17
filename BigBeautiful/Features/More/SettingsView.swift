@@ -7,10 +7,12 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(AppStore.self) private var store
     @Environment(LocationService.self) private var locationService
+    @AppStorage("didCompleteGrandOpening") private var didCompleteGrandOpening = false
     @AppStorage("hapticsEnabled") private var hapticsEnabled = true
     @State private var accountStatus = "Checking…"
     @State private var newPerson = ""
     @State private var newCompanion = ""
+    @State private var isShowingResetConfirmation = false
 
     var body: some View {
         Form {
@@ -61,11 +63,30 @@ struct SettingsView: View {
                 Link("Privacy policy on the web", destination: URL(string: "https://realronaldrump.github.io/restaurant-ranking/privacy.html")!)
                 Link("Support & privacy choices", destination: URL(string: "https://realronaldrump.github.io/restaurant-ranking/support.html")!)
             }
+            Section("Start over") {
+                Button("Reset App", role: .destructive) {
+                    isShowingResetConfirmation = true
+                }
+                .accessibilityIdentifier("reset-app-button")
+                Text("Erase every ledger and return to the beginning of onboarding.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section { LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0") }
         }
-        .scrollContentBackground(.hidden).background(PaperBackground()).tint(BBTheme.oxblood)
+        .editorialForm()
         .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
         .task { do { accountStatus = try await CKContainer(identifier: PersistenceController.cloudContainerIdentifier).accountStatus().description } catch { accountStatus = "Unavailable" } }
+        .alert("Reset Big Beautiful?", isPresented: $isShowingResetConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Erase Everything", role: .destructive) {
+                guard store.eraseAllData() else { return }
+                hapticsEnabled = true
+                didCompleteGrandOpening = false
+            }
+        } message: {
+            Text("This permanently deletes all circles, restaurants, visits, photos, rankings, and app setup from this device and iCloud. Shared-circle data may also be removed for other members. iOS permissions will not change. This cannot be undone.")
+        }
     }
 
     private var locationDescription: String {

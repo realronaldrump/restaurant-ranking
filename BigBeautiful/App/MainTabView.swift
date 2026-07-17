@@ -21,6 +21,7 @@ struct MainTabView: View {
         }
         .tint(BBTheme.oxblood)
         .toolbarBackground(BBTheme.paper.opacity(0.96), for: .tabBar)
+        .toolbarBackground(.visible, for: .tabBar)
         .environment(router)
         .sheet(item: $router.sheet) { sheet in
             sheetView(sheet)
@@ -28,6 +29,7 @@ struct MainTabView: View {
                 .environment(store)
                 .environment(locationService)
                 .presentationBackground(BBTheme.paper)
+                .tint(BBTheme.oxblood)
         }
         .onChange(of: router.selectedTab) { _, _ in Haptics.selection(enabled: hapticsEnabled) }
     }

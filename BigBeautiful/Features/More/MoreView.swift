@@ -22,7 +22,7 @@ struct MoreView: View {
 
     private var circleCard: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack { VStack(alignment: .leading, spacing: 4) { Eyebrow("Your circle"); Text(store.activeCircle?.name ?? "Big Beautiful Testers").font(BBTheme.display(29)) }; Spacer(); Button("Invite") { router.sheet = .shareCircle }.font(.callout.weight(.bold)) }
+            HStack { VStack(alignment: .leading, spacing: 4) { Eyebrow("Your circle"); Text(store.activeCircle?.name ?? "Your Circle").font(BBTheme.display(29)) }; Spacer(); Button("Invite") { router.sheet = .shareCircle }.font(.callout.weight(.bold)) }
             HStack(spacing: -8) {
                 ForEach(store.circleMembers) { person in
                     Text(person.name.prefix(1).uppercased()).font(.headline).foregroundStyle(BBTheme.paper)
@@ -43,7 +43,7 @@ struct MoreView: View {
                 VStack(alignment: .leading, spacing: 4) { Text(title).font(.headline); Text(detail).font(.caption).foregroundStyle(.secondary) }
                 Spacer(); Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
             }.padding(.vertical, 3).contentShape(Rectangle())
-        }.buttonStyle(.plain).ledgerCard()
+        }.buttonStyle(.pressable).ledgerCard()
     }
 }
 

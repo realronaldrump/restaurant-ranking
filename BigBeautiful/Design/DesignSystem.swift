@@ -4,8 +4,14 @@ enum BBTheme {
     static let paper = Color("Paper")
     static let ink = Color("Ink")
     static let oxblood = Color("Oxblood")
+    /// The light-paper tone as a fixed color, for text and motifs that sit on
+    /// fixed dark fills (artwork gradients) and must stay legible in dark mode.
+    static let cream = Color(red: 0.957, green: 0.922, blue: 0.867)
     static let parchment = Color(red: 0.90, green: 0.85, blue: 0.76)
-    static let sage = Color(red: 0.36, green: 0.43, blue: 0.34)
+    static let sage = adaptive(
+        light: UIColor(red: 0.36, green: 0.43, blue: 0.34, alpha: 1),
+        dark: UIColor(red: 0.63, green: 0.71, blue: 0.58, alpha: 1)
+    )
     static let blueInk = Color(red: 0.18, green: 0.34, blue: 0.38)
     static let hairline = ink.opacity(0.16)
 
@@ -16,6 +22,10 @@ enum BBTheme {
         .system(size: size, weight: .medium, design: .serif).monospacedDigit()
     }
     static let eyebrow = Font.system(.caption, design: .rounded, weight: .bold).smallCaps()
+
+    private static func adaptive(light: UIColor, dark: UIColor) -> Color {
+        Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? dark : light })
+    }
 }
 
 struct PaperBackground: View {
@@ -45,7 +55,7 @@ struct LedgerCardModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .padding(padding)
-            .background(BBTheme.paper.opacity(0.9))
+            .background(BBTheme.paper.opacity(0.9), in: RoundedRectangle(cornerRadius: 3))
             .overlay { RoundedRectangle(cornerRadius: 3).stroke(BBTheme.hairline, lineWidth: 1) }
             .shadow(color: BBTheme.ink.opacity(0.055), radius: 10, y: 5)
     }
@@ -54,9 +64,58 @@ struct LedgerCardModifier: ViewModifier {
 extension View {
     func ledgerCard(padding: CGFloat = 18) -> some View { modifier(LedgerCardModifier(padding: padding)) }
     func editorialPage() -> some View {
-        background(PaperBackground()).foregroundStyle(BBTheme.ink).tint(BBTheme.oxblood)
+        background(PaperBackground())
+            .foregroundStyle(BBTheme.ink)
+            .tint(BBTheme.oxblood)
+            .toolbarBackground(BBTheme.paper.opacity(0.96), for: .navigationBar)
+    }
+    /// The `Form`-based counterpart to `editorialPage()`.
+    func editorialForm() -> some View {
+        scrollContentBackground(.hidden)
+            .background(PaperBackground())
+            .tint(BBTheme.oxblood)
+            .toolbarBackground(BBTheme.paper.opacity(0.96), for: .navigationBar)
     }
     func readablePageWidth() -> some View { frame(maxWidth: 760, alignment: .center).frame(maxWidth: .infinity) }
+}
+
+/// Dims and gently compresses card-shaped buttons while pressed, so every
+/// tappable surface answers the touch.
+struct PressableStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+            .opacity(configuration.isPressed ? 0.85 : 1)
+            .animation(.spring(duration: 0.24), value: configuration.isPressed)
+    }
+}
+
+extension ButtonStyle where Self == PressableStyle {
+    static var pressable: PressableStyle { PressableStyle() }
+}
+
+struct PrimaryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.headline).foregroundStyle(BBTheme.paper)
+            .frame(maxWidth: .infinity).frame(minHeight: 56)
+            .background(configuration.isPressed ? BBTheme.oxblood.opacity(0.78) : BBTheme.oxblood)
+            .overlay { Rectangle().stroke(BBTheme.oxblood, lineWidth: 1) }
+            .opacity(isEnabled ? 1 : 0.4)
+    }
+}
+
+struct SecondaryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.headline).foregroundStyle(BBTheme.oxblood)
+            .frame(maxWidth: .infinity).frame(minHeight: 52)
+            .background(configuration.isPressed ? BBTheme.oxblood.opacity(0.1) : BBTheme.ink.opacity(0.035))
+            .overlay { Rectangle().stroke(configuration.isPressed ? BBTheme.oxblood : BBTheme.hairline, lineWidth: 1) }
+            .opacity(isEnabled ? 1 : 0.4)
+    }
 }
 
 struct Eyebrow: View {
@@ -127,28 +186,31 @@ struct RankChip: View {
 struct CategoryArtwork: View {
     let category: DiningCategory
     var height: CGFloat = 160
+
     var body: some View {
         ZStack {
             LinearGradient(colors: palette, startPoint: .topLeading, endPoint: .bottomTrailing)
-            Circle().fill(BBTheme.paper.opacity(0.13)).frame(width: height * 1.1).offset(x: -height * 0.42, y: height * 0.32)
-            Circle().stroke(BBTheme.paper.opacity(0.25), lineWidth: 1).frame(width: height * 0.72).offset(x: height * 0.43, y: -height * 0.26)
+            Circle().fill(BBTheme.cream.opacity(0.13)).frame(width: height * 1.1).offset(x: -height * 0.42, y: height * 0.32)
+            Circle().stroke(BBTheme.cream.opacity(0.25), lineWidth: 1).frame(width: height * 0.72).offset(x: height * 0.43, y: -height * 0.26)
             Image(systemName: category.symbol)
                 .font(.system(size: height * 0.26, weight: .thin))
-                .foregroundStyle(BBTheme.paper.opacity(0.92))
+                .foregroundStyle(BBTheme.cream.opacity(0.92))
         }
         .frame(height: height)
         .clipped()
         .accessibilityHidden(true)
     }
+
+    // Fixed colors: the artwork reads as printed plates, identical in light and dark.
     private var palette: [Color] {
         switch category {
-        case .fullService: [BBTheme.oxblood, Color(red: 0.34, green: 0.12, blue: 0.12)]
-        case .counterService: [Color(red: 0.65, green: 0.32, blue: 0.16), BBTheme.oxblood]
+        case .fullService: [Color(red: 0.435, green: 0.114, blue: 0.169), Color(red: 0.34, green: 0.12, blue: 0.12)]
+        case .counterService: [Color(red: 0.65, green: 0.32, blue: 0.16), Color(red: 0.435, green: 0.114, blue: 0.169)]
         case .coffeeTea: [Color(red: 0.25, green: 0.18, blue: 0.13), Color(red: 0.52, green: 0.38, blue: 0.25)]
         case .bakeries: [Color(red: 0.68, green: 0.45, blue: 0.42), Color(red: 0.46, green: 0.23, blue: 0.27)]
         case .barsBreweries: [BBTheme.blueInk, Color(red: 0.12, green: 0.20, blue: 0.21)]
         case .dessert: [Color(red: 0.49, green: 0.32, blue: 0.44), Color(red: 0.74, green: 0.50, blue: 0.49)]
-        case .trucksStands: [BBTheme.sage, Color(red: 0.23, green: 0.30, blue: 0.19)]
+        case .trucksStands: [Color(red: 0.36, green: 0.43, blue: 0.34), Color(red: 0.23, green: 0.30, blue: 0.19)]
         }
     }
 }
@@ -173,7 +235,7 @@ struct ReactionPicker: View {
                     .background(selected == reaction ? BBTheme.oxblood : BBTheme.ink.opacity(0.055))
                     .overlay { Rectangle().stroke(selected == reaction ? BBTheme.oxblood : BBTheme.hairline) }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.pressable)
                 .accessibilityIdentifier("reaction-\(reaction.rawValue)")
             }
         }

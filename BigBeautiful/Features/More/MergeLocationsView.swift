@@ -14,7 +14,7 @@ struct MergeLocationsView: View {
             Section("Merge this duplicate") { Picker("Duplicate", selection: $duplicateID) { Text("Choose…").tag(UUID?.none); ForEach(store.locations.filter { $0.id != keeperID }) { Text($0.name).tag(UUID?.some($0.id)) } } }
             Section { Button("Merge Records", role: .destructive) { confirming = true }.disabled(keeperID == nil || duplicateID == nil || keeperID == duplicateID) }
         }
-        .scrollContentBackground(.hidden).background(PaperBackground()).navigationTitle("Merge Duplicates").navigationBarTitleDisplayMode(.inline)
+        .editorialForm().navigationTitle("Merge Duplicates").navigationBarTitleDisplayMode(.inline)
         .confirmationDialog("Merge these establishments?", isPresented: $confirming, titleVisibility: .visible) {
             Button("Merge", role: .destructive) { merge() }
         } message: { Text("The duplicate record will be removed after all of its history is moved. This can be undone only during the current editing session.") }

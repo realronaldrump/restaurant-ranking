@@ -47,7 +47,7 @@ struct BackfillView: View {
                 Text("This scans photos on your device and requires Photo Library access.").font(.callout).foregroundStyle(.secondary)
                 DatePicker("From", selection: $startDate, displayedComponents: .date)
                 DatePicker("Through", selection: $endDate, in: startDate..., displayedComponents: .date)
-                Button { Task { await scanLibrary() } } label: { Label("Scan This Range", systemImage: "calendar.badge.magnifyingglass").frame(maxWidth: .infinity) }.buttonStyle(.bordered).buttonBorderShape(.roundedRectangle(radius: 2)).frame(minHeight: 48)
+                Button { Task { await scanLibrary() } } label: { Label("Scan This Range", systemImage: "calendar.badge.magnifyingglass") }.buttonStyle(SecondaryButtonStyle())
             }.ledgerCard()
             if isProcessing { HStack { ProgressView(); Text("Reading photo dates and locations…") }.font(.callout) }
             if let errorMessage { Label(errorMessage, systemImage: "exclamationmark.triangle.fill").font(.callout).foregroundStyle(BBTheme.oxblood) }

@@ -64,9 +64,9 @@ struct VisitDetailView: View {
                 }
                 if store.currentPerson.flatMap({ visit.rating(for: $0.id) }) == nil {
                     Button { editingVisit = visit } label: {
-                        Label("Add Your Rating", systemImage: "plus.circle.fill").frame(maxWidth: .infinity)
+                        Label("Add Your Rating", systemImage: "plus.circle.fill")
                     }
-                    .buttonStyle(.bordered).buttonBorderShape(.roundedRectangle(radius: 2)).frame(minHeight: 48)
+                    .buttonStyle(SecondaryButtonStyle())
                 }
             }
         }
@@ -86,7 +86,7 @@ struct VisitDetailView: View {
     @ViewBuilder private var photos: some View {
         if !visit.photoArray.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
-                EditorialSectionHeader("Photos", eyebrow: "Metadata stripped")
+                EditorialSectionHeader("Photos", eyebrow: "\(visit.photoArray.count) \(visit.photoArray.count == 1 ? "frame" : "frames")")
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(spacing: 6) {
                         ForEach(visit.photoArray) { photo in

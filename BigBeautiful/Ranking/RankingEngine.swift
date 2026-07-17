@@ -39,24 +39,26 @@ struct RankingEngine {
         asOf date: Date = .now
     ) -> [LocationScore] {
         let active = locations.filter { !$0.isClosed }
+        let personComparisons = comparisons.filter { $0.personID == personID }
+        let anchorsByLocation = Dictionary(grouping: personComparisons.filter(\.isAnchor), by: \.locationAID)
+        let pairComparisons = personComparisons.filter { !$0.isAnchor && $0.outcome != .skipped }
         var states: [UUID: State] = [:]
 
         for location in active {
-            let ratings = location.visitArray.compactMap { visit -> VisitEvidence? in
+            let ratings = location.visitArray.reversed().compactMap { visit -> VisitEvidence? in
                 guard let rating = visit.rating(for: personID) else { return nil }
                 return VisitEvidence(visit: visit, rating: rating, value: visitValue(visit: visit, rating: rating))
-            }.sorted { $0.visit.date < $1.visit.date }
-            let anchors = comparisons.filter { $0.personID == personID && $0.isAnchor && $0.locationAID == location.id }
+            }
+            let anchors = anchorsByLocation[location.id] ?? []
             guard !ratings.isEmpty || !anchors.isEmpty else { continue }
 
             var base = weightedMean(ratings: ratings, asOf: date)
-            if ratings.count >= 5, let latest = ratings.last {
+            if ratings.count >= 5 {
                 let historical = weightedMean(ratings: Array(ratings.dropLast()), asOf: date)
                 let withLatest = weightedMean(ratings: ratings, asOf: date)
                 let movement = (withLatest.mean - historical.mean).clamped(to: -Self.establishedVisitMovementLimit...Self.establishedVisitMovementLimit)
                 base.mean = historical.mean + movement
                 base.weight = withLatest.weight
-                _ = latest
             }
 
             if !anchors.isEmpty {
@@ -76,7 +78,6 @@ struct RankingEngine {
             )
         }
 
-        let pairComparisons = comparisons.filter { $0.personID == personID && !$0.isAnchor && $0.outcome != .skipped }
         for _ in 0..<6 {
             for comparison in pairComparisons {
                 guard var a = states[comparison.locationAID], var b = states[comparison.locationBID] else { continue }
@@ -118,12 +119,12 @@ struct RankingEngine {
             return lhs.score > rhs.score
         }
 
-        for index in result.indices { result[index].overallRank = index + 1 }
-        for category in DiningCategory.allCases {
-            let ids = result.filter { $0.location.category == category }.map(\.id)
-            for (index, id) in ids.enumerated() {
-                if let resultIndex = result.firstIndex(where: { $0.id == id }) { result[resultIndex].categoryRank = index + 1 }
-            }
+        var categoryRanks: [DiningCategory: Int] = [:]
+        for index in result.indices {
+            result[index].overallRank = index + 1
+            let category = result[index].location.category
+            categoryRanks[category, default: 0] += 1
+            result[index].categoryRank = categoryRanks[category, default: 0]
         }
         return result
     }
@@ -141,12 +142,12 @@ struct RankingEngine {
             guard let myScore = mine[location.id], let partnerScore = theirs[location.id] else { return nil }
             return CoupleLocationScore(location: location, myScore: myScore, partnerScore: partnerScore)
         }.sorted { $0.score > $1.score }
-        for index in result.indices { result[index].overallRank = index + 1 }
-        for category in DiningCategory.allCases {
-            let ids = result.filter { $0.location.category == category }.map(\.id)
-            for (index, id) in ids.enumerated() {
-                if let resultIndex = result.firstIndex(where: { $0.id == id }) { result[resultIndex].categoryRank = index + 1 }
-            }
+        var categoryRanks: [DiningCategory: Int] = [:]
+        for index in result.indices {
+            result[index].overallRank = index + 1
+            let category = result[index].location.category
+            categoryRanks[category, default: 0] += 1
+            result[index].categoryRank = categoryRanks[category, default: 0]
         }
         return result
     }

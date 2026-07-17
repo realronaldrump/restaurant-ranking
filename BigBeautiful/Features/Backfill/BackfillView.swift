@@ -1,6 +1,7 @@
 import CoreLocation
 import PhotosUI
 import SwiftUI
+import UIKit
 
 @MainActor
 struct BackfillView: View {
@@ -57,27 +58,13 @@ struct BackfillView: View {
 
     private func confirmationCard(_ cluster: BackfillCluster) -> some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack { Eyebrow("Candidate \(index + 1) of \(clusters.count)"); Spacer(); Text("\(Int(Double(index) / Double(max(1, clusters.count)) * 100))%").font(.caption.monospacedDigit()) }
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 5) {
-                    ForEach(cluster.photos) { photo in
-                        if let image = PhotoImageCache.thumbnail(key: "backfill-\(photo.id.uuidString)", data: photo.thumbnailData ?? photo.fullData) {
-                            Image(uiImage: image).resizable().scaledToFill().frame(width: 145, height: 145).clipped()
-                        }
-                    }
-                }
-            }
+            confirmationProgress
+            photoStrip(cluster.photos)
             Text("\(cluster.photos.count) \(cluster.photos.count == 1 ? "photo" : "photos") from \(cluster.date.formatted(date: .long, time: .shortened))").font(BBTheme.display(24))
             if cluster.coordinate == nil { Text("These selected copies did not include coordinates. Search for the place below.").font(.callout).foregroundStyle(.secondary) }
-            HStack { Image(systemName: "magnifyingglass"); TextField("Search nearby establishments", text: $query); if !query.isEmpty { Button { query = "" } label: { Image(systemName: "xmark.circle.fill") } } }.padding(.horizontal, 13).frame(minHeight: 48).background(BBTheme.ink.opacity(0.055)).overlay(Rectangle().stroke(BBTheme.hairline))
-            VStack(alignment: .leading, spacing: 7) {
-                Eyebrow("Which was it?")
-                if candidates.isEmpty { Text(locationService.isSearching ? "Looking for nearby food establishments…" : "Search above to find the place.").font(.callout).foregroundStyle(.secondary).padding(.vertical, 12) }
-                ForEach(candidates.prefix(8)) { candidate in
-                    Button { confirm(cluster, candidate: candidate) } label: { HStack { Image(systemName: candidate.suggestedCategory.symbol).foregroundStyle(BBTheme.oxblood).frame(width: 28); VStack(alignment: .leading) { Text(candidate.name).font(.headline); Text(candidate.address ?? candidate.suggestedCategory.shortTitle).font(.caption).foregroundStyle(.secondary).lineLimit(1) }; Spacer(); Image(systemName: "chevron.right").font(.caption) }.padding(.vertical, 8) }.buttonStyle(.plain)
-                }
-            }
-            HStack { Button("Not a Meal", role: .destructive) { rejected += 1; advance() }.frame(minHeight: 44); Spacer(); Button("Skip") { advance() }.frame(minHeight: 44) }
+            searchField
+            candidateList(for: cluster)
+            confirmationActions
             Text("Confirming adds an unrated visit at the photo’s date and time. You can rate it now or later.").font(.footnote).foregroundStyle(.secondary)
         }
         .task(id: "\(index)-\(query)") {
@@ -85,6 +72,87 @@ struct BackfillView: View {
             guard !Task.isCancelled else { return }
             let radius: CLLocationDistance = cluster.coordinate != nil && query.isEmpty ? 150 : 9_000
             candidates = await locationService.search(query.isEmpty ? "restaurant cafe bakery bar" : query, around: cluster.coordinate, radius: radius)
+        }
+    }
+
+    private var confirmationProgress: some View {
+        HStack {
+            Eyebrow("Candidate \(index + 1) of \(clusters.count)")
+            Spacer()
+            Text("\(Int(Double(index) / Double(max(1, clusters.count)) * 100))%")
+                .font(.caption.monospacedDigit())
+        }
+    }
+
+    private func photoStrip(_ photos: [BackfillPhoto]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(spacing: 5) {
+                ForEach(photos) { photo in
+                    BackfillPhotoThumbnail(photo: photo)
+                        .frame(width: 145, height: 145)
+                        .clipped()
+                }
+            }
+        }
+    }
+
+    private var searchField: some View {
+        HStack {
+            Image(systemName: "magnifyingglass")
+            TextField("Search nearby establishments", text: $query)
+            if !query.isEmpty {
+                Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
+            }
+        }
+        .padding(.horizontal, 13)
+        .frame(minHeight: 48)
+        .background(BBTheme.ink.opacity(0.055))
+        .overlay(Rectangle().stroke(BBTheme.hairline))
+    }
+
+    private func candidateList(for cluster: BackfillCluster) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Eyebrow("Which was it?")
+            if candidates.isEmpty {
+                Text(locationService.isSearching ? "Looking for nearby food establishments…" : "Search above to find the place.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 12)
+            }
+            ForEach(candidates.prefix(8)) { candidate in
+                candidateButton(candidate, cluster: cluster)
+            }
+        }
+    }
+
+    private func candidateButton(_ candidate: PlaceCandidate, cluster: BackfillCluster) -> some View {
+        Button { confirm(cluster, candidate: candidate) } label: {
+            HStack {
+                Image(systemName: candidate.suggestedCategory.symbol)
+                    .foregroundStyle(BBTheme.oxblood)
+                    .frame(width: 28)
+                VStack(alignment: .leading) {
+                    Text(candidate.name).font(.headline)
+                    Text(candidate.address ?? candidate.suggestedCategory.shortTitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption)
+            }
+            .padding(.vertical, 8)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var confirmationActions: some View {
+        HStack {
+            Button("Not a Meal", role: .destructive) { rejected += 1; advance() }
+                .frame(minHeight: 44)
+            Spacer()
+            Button("Skip") { advance() }
+                .frame(minHeight: 44)
         }
     }
 
@@ -136,6 +204,30 @@ struct BackfillView: View {
         importedVisits += 1; Haptics.success(); pendingRatingVisit = visit
     }
     private func advance() { query = ""; candidates = []; withAnimation { index += 1 } }
+}
+
+@MainActor
+private struct BackfillPhotoThumbnail: View {
+    let photo: BackfillPhoto
+    @State private var image: UIImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else {
+                Rectangle().fill(BBTheme.ink.opacity(0.06))
+                    .overlay { ProgressView() }
+            }
+        }
+        .task(id: photo.id) {
+            image = await PhotoImageCache.display(
+                key: "backfill-\(photo.id.uuidString)",
+                data: photo.thumbnailData ?? photo.fullData,
+                maxDimension: CGFloat(BackfillImportPolicy.thumbnailMaxPixelSize)
+            )
+        }
+    }
 }
 
 @MainActor

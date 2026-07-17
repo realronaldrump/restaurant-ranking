@@ -164,13 +164,26 @@ final class AppStore {
             }
             try persistence.save()
 
+            circles.removeAll()
+            allPeople.removeAll()
+            allLocations.removeAll()
+            allVisits.removeAll()
+            allComparisons.removeAll()
+            allWantEntries.removeAll()
             activeCircleID = nil
             devicePersonID = nil
             devicePersonIDsByCircle.removeAll()
             isWaitingForAcceptedCircle = false
+            remoteReloadTask?.cancel()
+            remoteReloadTask = nil
+            scoreCache.removeAll()
+            coupleScoreCache.removeAll()
+            cachedScoreRevision = -1
+            pendingSorts.removeAll()
+            lastError = nil
             context.undoManager?.removeAllActions()
             persistDeviceSelection()
-            reload()
+            revision += 1
             return true
         } catch {
             context.rollback()

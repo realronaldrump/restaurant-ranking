@@ -136,7 +136,7 @@ struct RankingsView: View {
         return source.filter { row in
             let cuisines = row.location.cuisines
             let tags = row.location.tags
-            (category == nil || row.location.category == category) &&
+            return (category == nil || row.location.category == category) &&
             (includesClosed || !row.location.isClosed) &&
             (cuisine == nil || cuisines.contains(cuisine!)) &&
             (tag == nil || tags.contains(tag!)) &&

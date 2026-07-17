@@ -1,0 +1,53 @@
+name: Bug report
+description: Report a reproducible problem in Big Beautiful
+title: "Bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Big Beautiful. This report will be public, so remove personal records, locations, iCloud details, invitation links, and photos.
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      placeholder: "1.0"
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: iOS version and iPhone model
+      placeholder: "iOS 17.6, iPhone 15"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open…
+        2. Tap…
+        3. See…
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I have removed private or identifying information from this report.
+          required: true

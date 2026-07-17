@@ -1,0 +1,49 @@
+name: Support request
+description: Ask for help with Big Beautiful on iPhone
+title: "Support: "
+labels:
+  - support
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reaching out. This request will be public. Do not include personal dining records, precise locations, iCloud details, invitation links, photos, or other sensitive information.
+  - type: dropdown
+    id: topic
+    attributes:
+      label: What do you need help with?
+      options:
+        - Logging a meal
+        - Rankings or comparisons
+        - History or photos
+        - iCloud sharing or sync
+        - Privacy or permissions
+        - Accessibility
+        - Something else
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: Find this in More → Settings.
+      placeholder: "1.0"
+  - type: input
+    id: ios
+    attributes:
+      label: iOS version and iPhone model
+      placeholder: "iOS 17.6, iPhone 15"
+  - type: textarea
+    id: details
+    attributes:
+      label: What happened?
+      description: Explain what you expected and what occurred, without including private information.
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I have not included passwords, invitation links, private dining records, precise locations, or personal photos.
+          required: true

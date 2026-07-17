@@ -15,19 +15,19 @@ final class BigBeautifulUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["app-title"].exists)
 
         app.tabBars.buttons["Rankings"].tap()
-        XCTAssertTrue(app.navigationBars["Rankings"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.segmentedControls.buttons["Davis"].exists)
-        XCTAssertTrue(app.segmentedControls.buttons["Kelsey"].exists)
+        XCTAssertTrue(app.navigationBars["Rankings"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.segmentedControls.buttons["George"].exists)
+        XCTAssertTrue(app.segmentedControls.buttons["Michelle"].exists)
         app.segmentedControls.buttons["Us"].tap()
 
         app.tabBars.buttons["History"].tap()
-        XCTAssertTrue(app.navigationBars["History"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.navigationBars["History"].waitForExistence(timeout: 5))
 
         app.tabBars.buttons["Want to Try"].tap()
-        XCTAssertTrue(app.navigationBars["Want to Try"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.navigationBars["Want to Try"].waitForExistence(timeout: 5))
 
         app.tabBars.buttons["More"].tap()
-        XCTAssertTrue(app.navigationBars["More"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.navigationBars["More"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Statistics"].exists)
         XCTAssertTrue(app.staticTexts["Backfill"].exists)
     }

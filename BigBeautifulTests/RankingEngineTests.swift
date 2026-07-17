@@ -80,6 +80,21 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertEqual(clusters.first?.photos.count, 2)
     }
 
+    func testPhotoClusteringDoesNotTreatFiveHundredMetersAsFiveHundredFeet() {
+        let data = Data([0])
+        let baseDate = Date.now
+        let base = BackfillPhoto(
+            id: UUID(), fullData: data, thumbnailData: nil, date: baseDate,
+            coordinate: .init(latitude: 40.7600, longitude: -111.8900)
+        )
+        let twoHundredMetersAway = BackfillPhoto(
+            id: UUID(), fullData: data, thumbnailData: nil, date: baseDate.addingTimeInterval(60),
+            coordinate: .init(latitude: 40.7618, longitude: -111.8900)
+        )
+
+        XCTAssertEqual(ImageSanitizer.clusters([base, twoHundredMetersAway]).count, 2)
+    }
+
     func testSanitizedBackfillPhotoBoundsStoredPixelDimensions() throws {
         let source = UIGraphicsImageRenderer(size: CGSize(width: 3_000, height: 2_400)).image { context in
             UIColor.systemOrange.setFill()
@@ -94,6 +109,36 @@ final class RankingEngineTests: XCTestCase {
         let height = try XCTUnwrap(properties[kCGImagePropertyPixelHeight] as? Int)
 
         XCTAssertLessThanOrEqual(max(width, height), 2_048)
+    }
+
+    func testChangingVisitLocationMovesAndMergesDishEvidence() throws {
+        let source = store.createLocation(name: "Wrong Branch", category: .fullService, coordinate: (40.70, -111.90))
+        let destination = store.createLocation(name: "Right Branch", category: .fullService, coordinate: (40.80, -111.80))
+        let personID = try XCTUnwrap(store.currentPerson?.id)
+
+        let destinationVisit = store.logVisit(at: destination, reaction: .liked)
+        let destinationEntry = try XCTUnwrap(store.addDish(
+            name: "House Pasta", role: .entree, reaction: .liked, wouldOrderAgain: true,
+            to: destinationVisit, personID: personID
+        ))
+        let destinationDish = try XCTUnwrap(destinationEntry.dish)
+
+        let correctedVisit = store.logVisit(at: source, reaction: .loved)
+        let correctedEntry = try XCTUnwrap(store.addDish(
+            name: "house pasta", role: .entree, reaction: .loved, wouldOrderAgain: true,
+            to: correctedVisit, personID: personID
+        ))
+
+        store.changeLocation(of: correctedVisit, to: destination)
+
+        XCTAssertEqual(correctedVisit.location?.id, destination.id)
+        XCTAssertEqual(correctedEntry.dish?.id, destinationDish.id, "Matching destination dishes should be reused")
+        XCTAssertEqual(destinationDish.entryArray.count, 2)
+        XCTAssertTrue(source.dishArray.isEmpty, "The orphaned dish should not remain on the incorrect restaurant")
+        XCTAssertEqual(correctedVisit.latitude, destination.latitude, accuracy: 0.000_001)
+        XCTAssertEqual(correctedVisit.longitude, destination.longitude, accuracy: 0.000_001)
+        XCTAssertNil(store.score(for: source))
+        XCTAssertNotNil(store.score(for: destination))
     }
 
     func testNamedCompanionDoesNotBecomeRankingPartner() {

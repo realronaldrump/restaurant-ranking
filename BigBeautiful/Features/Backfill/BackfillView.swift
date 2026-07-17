@@ -107,9 +107,10 @@ struct BackfillView: View {
         isProcessing = true; errorMessage = nil
         var photos: [BackfillPhoto] = []
         for item in items.prefix(BackfillImportPolicy.maxPhotoCount) {
-            if let data = try? await item.loadTransferable(type: Data.self), let photo = autoreleasepool(invoking: {
-                ImageSanitizer.process(data)
-            }) { photos.append(photo) }
+            if let data = try? await item.loadTransferable(type: Data.self),
+               let photo = await ImageSanitizer.processOffMain(data) {
+                photos.append(photo)
+            }
         }
         clusters = ImageSanitizer.clusters(photos); index = 0; isProcessing = false
         if clusters.isEmpty { errorMessage = "No readable image data was returned by the picker." }
@@ -123,10 +124,15 @@ struct BackfillView: View {
     }
 
     private func confirm(_ cluster: BackfillCluster, candidate: PlaceCandidate) {
-        let location = store.createLocation(name: candidate.name, category: candidate.suggestedCategory, address: candidate.address, city: candidate.city, coordinate: (candidate.latitude, candidate.longitude), phone: candidate.phone, url: candidate.url, sourceIdentifier: candidate.id, cuisines: candidate.cuisines)
-        let visitCoordinate = cluster.coordinate.map { ($0.latitude, $0.longitude) }
-        let visit = store.logVisit(at: location, reaction: nil, date: cluster.date, coordinate: visitCoordinate)
-        for photo in cluster.photos { store.addPhoto(fullData: photo.fullData, thumbnailData: photo.thumbnailData, to: visit, createdAt: photo.date) }
+        let visit = store.performBatch {
+            let location = store.createLocation(name: candidate.name, category: candidate.suggestedCategory, address: candidate.address, city: candidate.city, coordinate: (candidate.latitude, candidate.longitude), phone: candidate.phone, url: candidate.url, sourceIdentifier: candidate.id, cuisines: candidate.cuisines)
+            let visitCoordinate = cluster.coordinate.map { ($0.latitude, $0.longitude) }
+            let visit = store.logVisit(at: location, reaction: nil, date: cluster.date, coordinate: visitCoordinate)
+            for photo in cluster.photos {
+                store.addPhoto(fullData: photo.fullData, thumbnailData: photo.thumbnailData, to: visit, createdAt: photo.date)
+            }
+            return visit
+        }
         importedVisits += 1; Haptics.success(); pendingRatingVisit = visit
     }
     private func advance() { query = ""; candidates = []; withAnimation { index += 1 } }

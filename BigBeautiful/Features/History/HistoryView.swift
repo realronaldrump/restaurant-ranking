@@ -5,43 +5,76 @@ private enum HistoryFilter: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+private enum HistoryListItem: Identifiable {
+    case year(Int)
+    case visit(VisitEntity)
+
+    var id: String {
+        switch self {
+        case .year(let year): "year-\(year)"
+        case .visit(let visit): "visit-\(visit.id.uuidString)"
+        }
+    }
+}
+
+private struct HistorySnapshot {
+    let count: Int
+    let items: [HistoryListItem]
+}
+
 @MainActor
 struct HistoryView: View {
     @Environment(AppStore.self) private var store
     @Environment(AppRouter.self) private var router
     @State private var query = ""
+    @State private var effectiveQuery = ""
     @State private var filter: HistoryFilter = .all
 
     var body: some View {
+        let snapshot = historySnapshot
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
                 HStack(alignment: .lastTextBaseline) {
                     VStack(alignment: .leading) { Eyebrow("By date"); Text("Every visit").font(BBTheme.display(34)) }
-                    Spacer(); Text("\(filtered.count)").font(BBTheme.score(35)).foregroundStyle(BBTheme.oxblood)
+                    Spacer(); Text("\(snapshot.count)").font(BBTheme.score(35)).foregroundStyle(BBTheme.oxblood)
                 }.padding(.top, 7)
                 Picker("History filter", selection: $filter) { ForEach(HistoryFilter.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented)
-                if filtered.isEmpty { EmptyLedgerView(title: query.isEmpty ? "No visits yet" : "No matching visits", message: query.isEmpty ? "Meals will appear here after you log them." : "Try a different search.", symbol: "book.pages") }
-                ForEach(groupedYears, id: \.year) { group in
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text(String(group.year)).font(BBTheme.score(24)).foregroundStyle(BBTheme.oxblood)
-                        ForEach(group.visits) { visit in
-                            Button { router.historyPath.append(.visit(visit.id)) } label: { VisitRow(visit: visit) }.buttonStyle(.plain)
-                            if visit.id != group.visits.last?.id { Divider() }
-                        }
-                    }.ledgerCard()
+                if snapshot.count == 0 {
+                    EmptyLedgerView(
+                        title: query.isEmpty ? "No visits yet" : "No matching visits",
+                        message: query.isEmpty ? "Meals will appear here after you log them." : "Try a different search.",
+                        symbol: "book.pages"
+                    )
+                }
+                ForEach(snapshot.items) { item in
+                    switch item {
+                    case .year(let year):
+                        Text(String(year)).font(BBTheme.score(24)).foregroundStyle(BBTheme.oxblood)
+                    case .visit(let visit):
+                        Button { router.historyPath.append(.visit(visit.id)) } label: { VisitRow(visit: visit) }
+                            .buttonStyle(.plain)
+                            .ledgerCard(padding: 14)
+                    }
                 }
             }.padding(.horizontal, 16).padding(.bottom, 30).readablePageWidth()
         }
         .editorialPage().navigationTitle("History").navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, prompt: "Place, dish, companion, or memory")
+        .task(id: query) {
+            do { try await Task.sleep(nanoseconds: 150_000_000) }
+            catch { return }
+            guard !Task.isCancelled else { return }
+            effectiveQuery = query
+        }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) { Button { router.historyPath.append(.backfill) } label: { Label("Backfill", systemImage: "photo.on.rectangle.angled") } }
             ToolbarItem(placement: .topBarTrailing) { Button { router.sheet = .logMeal } label: { Image(systemName: "plus") } }
         }
     }
 
-    private var filtered: [VisitEntity] {
-        store.visits.filter { visit in
+    private var historySnapshot: HistorySnapshot {
+        let peopleByID = Dictionary(uniqueKeysWithValues: store.people.map { ($0.id, $0.name) })
+        let visits = store.visits.filter { visit in
             let filterMatches: Bool = switch filter {
             case .all: true
             case .unrated: visit.ratingArray.isEmpty
@@ -50,15 +83,17 @@ struct HistoryView: View {
             case .closed: visit.location?.isClosed == true
             }
             guard filterMatches else { return false }
-            guard !query.isEmpty else { return true }
-            let people = visit.companionIDs.compactMap { id in store.people.first(where: { $0.id == id })?.name }
-            let searchable = [visit.location?.name, visit.location?.city, visit.memory] + visit.dishEntryArray.map { $0.dish?.name } + people.map(Optional.some)
-            return searchable.compactMap { $0 }.joined(separator: " ").localizedCaseInsensitiveContains(query)
+            guard !effectiveQuery.isEmpty else { return true }
+            let people = visit.companionIDs.compactMap { peopleByID[$0] }
+            let searchable = [visit.location?.name, visit.location?.city, visit.memory]
+                + visit.dishEntryArray.map { $0.dish?.name }
+                + people.map(Optional.some)
+            return searchable.compactMap { $0 }.joined(separator: " ").localizedCaseInsensitiveContains(effectiveQuery)
         }
-    }
-
-    private var groupedYears: [(year: Int, visits: [VisitEntity])] {
-        let grouped = Dictionary(grouping: filtered) { Calendar.current.component(.year, from: $0.date) }
-        return grouped.map { ($0.key, $0.value.sorted { $0.date > $1.date }) }.sorted { $0.year > $1.year }
+        let grouped = Dictionary(grouping: visits) { Calendar.current.component(.year, from: $0.date) }
+        let items = grouped.keys.sorted(by: >).flatMap { year -> [HistoryListItem] in
+            [.year(year)] + (grouped[year] ?? []).map(HistoryListItem.visit)
+        }
+        return .init(count: visits.count, items: items)
     }
 }

@@ -17,15 +17,7 @@ enum PhotoImageCache {
         cache.setObject(image, forKey: key as NSString, cost: cost)
     }
 
-    /// Synchronously decodes small thumbnail data, memoized across renders.
-    static func thumbnail(key: String, data: Data?) -> UIImage? {
-        if let hit = cached(key) { return hit }
-        guard let data, let image = UIImage(data: data) else { return nil }
-        store(image, key: key)
-        return image
-    }
-
-    /// Downsamples potentially large image data off the main thread.
+    /// Downsamples compressed image data off the main thread.
     static func display(key: String, data: Data?, maxDimension: CGFloat) async -> UIImage? {
         if let hit = cached(key) { return hit }
         guard let data else { return nil }
@@ -52,30 +44,54 @@ enum PhotoImageCache {
 
 /// Renders a stored photo scaled to fill: the cached thumbnail appears instantly,
 /// and when `displayPixels` is set a sharper rendition is decoded off the main thread.
+@MainActor
 struct PhotoImage: View {
     let photo: PhotoEntity
     var displayPixels: CGFloat = 0
-    @State private var displayImage: UIImage?
+    @State private var image: UIImage?
 
     var body: some View {
         Group {
-            if let image = displayImage ?? thumbnail {
+            if let image {
                 Image(uiImage: image).resizable().scaledToFill()
             } else {
                 Rectangle().fill(BBTheme.ink.opacity(0.06))
                     .overlay { Image(systemName: "photo").font(.title3).foregroundStyle(.secondary) }
             }
         }
-        .task(id: photo.id) {
-            guard displayPixels > 0 else { return }
-            let key = "display-\(photo.id.uuidString)-\(Int(displayPixels))"
-            if let hit = PhotoImageCache.cached(key) { displayImage = hit; return }
-            let data = photo.fullData ?? photo.thumbnailData
-            displayImage = await PhotoImageCache.display(key: key, data: data, maxDimension: displayPixels)
-        }
+        .task(id: loadID) { await loadImage() }
     }
 
-    private var thumbnail: UIImage? {
-        PhotoImageCache.thumbnail(key: "thumb-\(photo.id.uuidString)", data: photo.thumbnailData ?? photo.fullData)
+    private var loadID: String {
+        "\(photo.id.uuidString)-\(Int(displayPixels))"
+    }
+
+    private func loadImage() async {
+        image = nil
+        let thumbnailKey = "thumb-\(photo.id.uuidString)"
+        if let hit = PhotoImageCache.cached(thumbnailKey) {
+            image = hit
+        } else {
+            let data = photo.thumbnailData ?? photo.fullData
+            if let thumbnail = await PhotoImageCache.display(
+                key: thumbnailKey,
+                data: data,
+                maxDimension: CGFloat(BackfillImportPolicy.thumbnailMaxPixelSize)
+            ), !Task.isCancelled {
+                image = thumbnail
+            }
+        }
+
+        guard displayPixels > CGFloat(BackfillImportPolicy.thumbnailMaxPixelSize), !Task.isCancelled else { return }
+        let displayKey = "display-\(photo.id.uuidString)-\(Int(displayPixels))"
+        if let hit = PhotoImageCache.cached(displayKey) {
+            image = hit
+            return
+        }
+        let data = photo.fullData ?? photo.thumbnailData
+        if let display = await PhotoImageCache.display(key: displayKey, data: data, maxDimension: displayPixels),
+           !Task.isCancelled {
+            image = display
+        }
     }
 }

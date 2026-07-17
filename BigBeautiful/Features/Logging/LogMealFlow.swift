@@ -12,7 +12,13 @@ private struct PlaceChoice: Identifiable {
 
 private extension RestaurantLocation {
     var placeChoice: PlaceChoice {
-        let detail = address?.nilIfBlank ?? [category.shortTitle, city?.nilIfBlank].compactMap { $0 }.joined(separator: " · ")
+        let cleanAddress = address?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanCity = city?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let detail = if let cleanAddress, !cleanAddress.isEmpty {
+            cleanAddress
+        } else {
+            [category.shortTitle, cleanCity].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
+        }
         return .init(source: .existing(self), id: "existing-\(id)", name: name, subtitle: detail, category: category)
     }
 
@@ -281,21 +287,23 @@ struct LogMealFlow: View {
         guard let choice else { return }
         let existing: RestaurantLocation? = if case .existing(let value) = choice.source { value } else { nil }
         oldRank = existing.flatMap { location in store.score(for: location)?.categoryRank }
-        let location: RestaurantLocation
-        switch choice.source {
-        case .existing(let value): location = value
-        case .map(let candidate):
-            location = store.createLocation(
-                name: candidate.name, category: candidate.suggestedCategory, address: candidate.address, city: candidate.city,
-                coordinate: (candidate.latitude, candidate.longitude), phone: candidate.phone, url: candidate.url,
-                sourceIdentifier: candidate.id, cuisines: candidate.cuisines
-            )
-        case .manual(let name):
-            let coordinate = locationService.currentLocation.map { ($0.coordinate.latitude, $0.coordinate.longitude) }
-            location = store.createLocation(name: name, category: DiningCategory.suggested(for: name), coordinate: coordinate)
-        }
         let currentCoordinate = locationService.currentLocation.map { ($0.coordinate.latitude, $0.coordinate.longitude) }
-        let visit = store.logVisit(at: location, reaction: reaction, coordinate: currentCoordinate)
+        let (location, visit) = store.performBatch { () -> (RestaurantLocation, VisitEntity) in
+            let location: RestaurantLocation
+            switch choice.source {
+            case .existing(let value): location = value
+            case .map(let candidate):
+                location = store.createLocation(
+                    name: candidate.name, category: candidate.suggestedCategory, address: candidate.address, city: candidate.city,
+                    coordinate: (candidate.latitude, candidate.longitude), phone: candidate.phone, url: candidate.url,
+                    sourceIdentifier: candidate.id, cuisines: candidate.cuisines
+                )
+            case .manual(let name):
+                location = store.createLocation(name: name, category: DiningCategory.suggested(for: name), coordinate: currentCoordinate)
+            }
+            let visit = store.logVisit(at: location, reaction: reaction, coordinate: currentCoordinate)
+            return (location, visit)
+        }
         savedVisit = visit
         savedScore = store.score(for: location)
         if existing == nil, let score = savedScore {
@@ -722,32 +730,42 @@ struct AddMoreVisitView: View {
 
     private func save() async {
         isSaving = true
-        if let restaurantChoice {
-            let selectedLocation: RestaurantLocation
-            switch restaurantChoice.source {
-            case .existing(let location):
-                selectedLocation = location
-            case .map(let candidate):
-                selectedLocation = store.createLocation(
-                    name: candidate.name, category: candidate.suggestedCategory, address: candidate.address, city: candidate.city,
-                    coordinate: (candidate.latitude, candidate.longitude), phone: candidate.phone, url: candidate.url,
-                    sourceIdentifier: candidate.id, cuisines: candidate.cuisines
-                )
-            case .manual(let name):
-                selectedLocation = store.createLocation(name: name, category: DiningCategory.suggested(for: name))
-            }
-            store.changeLocation(of: visit, to: selectedLocation)
-        }
-        store.updateVisit(visit, type: visitType, priceBand: priceBand, occasion: occasion, memory: memory, companions: Array(companions))
-        if let personID {
-            if let reaction {
-                let rating = store.addRating(to: visit, personID: personID, reaction: reaction, hazy: hazy)
-                store.updateRating(rating, service: service, atmosphere: atmosphere, value: value, wouldOrderAgain: wouldOrderAgain, hazy: hazy)
-            }
-            for dish in dishes { _ = store.addDish(name: dish.name, role: dish.role, reaction: dish.reaction, wouldOrderAgain: dish.wouldOrderAgain, to: visit, personID: personID) }
-        }
+        var sanitizedPhotos: [BackfillPhoto] = []
         for item in photoItems {
-            if let data = try? await item.loadTransferable(type: Data.self), let photo = ImageSanitizer.process(data) {
+            if let data = try? await item.loadTransferable(type: Data.self),
+               let photo = await ImageSanitizer.processOffMain(data) {
+                sanitizedPhotos.append(photo)
+            }
+        }
+
+        store.performBatch {
+            if let restaurantChoice {
+                let selectedLocation: RestaurantLocation
+                switch restaurantChoice.source {
+                case .existing(let location):
+                    selectedLocation = location
+                case .map(let candidate):
+                    selectedLocation = store.createLocation(
+                        name: candidate.name, category: candidate.suggestedCategory, address: candidate.address, city: candidate.city,
+                        coordinate: (candidate.latitude, candidate.longitude), phone: candidate.phone, url: candidate.url,
+                        sourceIdentifier: candidate.id, cuisines: candidate.cuisines
+                    )
+                case .manual(let name):
+                    selectedLocation = store.createLocation(name: name, category: DiningCategory.suggested(for: name))
+                }
+                store.changeLocation(of: visit, to: selectedLocation)
+            }
+            store.updateVisit(visit, type: visitType, priceBand: priceBand, occasion: occasion, memory: memory, companions: Array(companions))
+            if let personID {
+                if let reaction {
+                    let rating = store.addRating(to: visit, personID: personID, reaction: reaction, hazy: hazy)
+                    store.updateRating(rating, service: service, atmosphere: atmosphere, value: value, wouldOrderAgain: wouldOrderAgain, hazy: hazy)
+                }
+                for dish in dishes {
+                    _ = store.addDish(name: dish.name, role: dish.role, reaction: dish.reaction, wouldOrderAgain: dish.wouldOrderAgain, to: visit, personID: personID)
+                }
+            }
+            for photo in sanitizedPhotos {
                 store.addPhoto(fullData: photo.fullData, thumbnailData: photo.thumbnailData, to: visit, createdAt: photo.date)
             }
         }

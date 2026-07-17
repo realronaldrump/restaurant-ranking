@@ -19,23 +19,31 @@ struct RankingsView: View {
     @State private var scope: RankingScope = .me
     @State private var category: DiningCategory?
     @State private var query = ""
+    @State private var effectiveQuery = ""
     @State private var cuisine: String?
     @State private var tag: String?
     @State private var priceBand = 0
     @State private var includesClosed = false
 
     var body: some View {
+        let visibleRows = rows
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 17) {
                 header
                 filters
-                if rows.isEmpty { EmptyLedgerView(title: "No ranked places", message: "Try a different filter, or log a meal to begin.", symbol: "list.number") }
-                else { ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in rankingRow(row, index: index) } }
+                if visibleRows.isEmpty { EmptyLedgerView(title: "No ranked places", message: "Try a different filter, or log a meal to begin.", symbol: "list.number") }
+                else { ForEach(Array(visibleRows.enumerated()), id: \.element.id) { index, row in rankingRow(row, index: index) } }
             }
             .padding(.horizontal, 16).padding(.bottom, 30).readablePageWidth()
         }
         .editorialPage().navigationTitle("Rankings").navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, prompt: "Place, cuisine, or tag")
+        .task(id: query) {
+            do { try await Task.sleep(nanoseconds: 150_000_000) }
+            catch { return }
+            guard !Task.isCancelled else { return }
+            effectiveQuery = query
+        }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) { filterMenu }
             ToolbarItem(placement: .topBarTrailing) { Button { router.sheet = .logMeal } label: { Image(systemName: "plus") } }
@@ -126,12 +134,14 @@ struct RankingsView: View {
             source = store.coupleRanked().map { .init(location: $0.location, score: $0.score, provisional: $0.isProvisional, overallRank: $0.overallRank, categoryRank: $0.categoryRank, split: $0.isSplitDecision, myScore: $0.myScore.score, partnerScore: $0.partnerScore.score) }
         }
         return source.filter { row in
+            let cuisines = row.location.cuisines
+            let tags = row.location.tags
             (category == nil || row.location.category == category) &&
             (includesClosed || !row.location.isClosed) &&
-            (cuisine == nil || row.location.cuisines.contains(cuisine!)) &&
-            (tag == nil || row.location.tags.contains(tag!)) &&
+            (cuisine == nil || cuisines.contains(cuisine!)) &&
+            (tag == nil || tags.contains(tag!)) &&
             (priceBand == 0 || row.location.visitArray.contains { Int($0.priceBand) == priceBand }) &&
-            (query.isEmpty || ([row.location.name] + row.location.cuisines + row.location.tags).joined(separator: " ").localizedCaseInsensitiveContains(query))
+            (effectiveQuery.isEmpty || ([row.location.name] + cuisines + tags).joined(separator: " ").localizedCaseInsensitiveContains(effectiveQuery))
         }
     }
     private var allCuisines: [String] { store.locations.flatMap(\.cuisines).uniqued().sorted() }

@@ -32,9 +32,13 @@ final class AppStore {
     @ObservationIgnored private var coupleScoreCache: [String: [CoupleLocationScore]] = [:]
     @ObservationIgnored private var cachedScoreRevision = -1
     @ObservationIgnored private var isBatching = false
+    @ObservationIgnored private var pendingSorts: Set<CachedCollection> = []
+    @ObservationIgnored private var remoteReloadTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var diagnosticReloadCount = 0
 
     var context: NSManagedObjectContext { persistence.container.viewContext }
     var activeCircle: CircleEntity? {
+        _ = revision
         if let activeCircleID, let selected = circles.first(where: { $0.id == activeCircleID }) { return selected }
         return circles.first
     }
@@ -69,7 +73,7 @@ final class AppStore {
             object: persistence.container.persistentStoreCoordinator,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.reload() }
+            Task { @MainActor in self?.scheduleRemoteReload() }
         }
         NotificationCenter.default.addObserver(
             forName: .cloudShareWasAccepted,
@@ -109,6 +113,7 @@ final class AppStore {
         guard circles.isEmpty else { return }
         let circle = CircleEntity(context: context)
         circle.id = UUID(); circle.name = circleName.trimmedOr("Our Table"); circle.createdAt = .now
+        circles.append(circle)
         let me = makePerson(name: myName.trimmedOr("Me"), isMe: true, isCircleMember: true, color: "6F1D2B", circle: circle)
         if let partnerName, !partnerName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             _ = makePerson(name: partnerName, isMe: false, isCircleMember: true, color: "2F5964", circle: circle)
@@ -224,6 +229,8 @@ final class AppStore {
         if let coordinate {
             location.latitude = coordinate.0; location.longitude = coordinate.1; location.hasCoordinates = true
         }
+        allLocations.append(location)
+        pendingSorts.insert(.locations)
         commit()
         return location
     }
@@ -239,21 +246,24 @@ final class AppStore {
         isShared: Bool = false,
         coordinate: (Double, Double)? = nil
     ) -> VisitEntity {
-        let authorID = personID ?? currentPerson?.id ?? UUID()
-        let visit = VisitEntity(context: context)
-        assign(visit, alongside: location)
-        visit.id = UUID(); visit.date = date; visit.createdAt = .now; visit.createdByID = authorID
-        visit.location = location; visit.circle = activeCircle; visit.isShared = isShared || !companionIDs.isEmpty
-        visit.companionIDs = companionIDs
-        if let coordinate {
-            visit.latitude = coordinate.0; visit.longitude = coordinate.1; visit.hasCoordinates = true
-        } else if let coordinate = location.coordinate {
-            visit.latitude = coordinate.latitude; visit.longitude = coordinate.longitude; visit.hasCoordinates = true
+        performBatch {
+            let authorID = personID ?? currentPerson?.id ?? UUID()
+            let visit = VisitEntity(context: context)
+            assign(visit, alongside: location)
+            visit.id = UUID(); visit.date = date; visit.createdAt = .now; visit.createdByID = authorID
+            visit.location = location; visit.circle = activeCircle; visit.isShared = isShared || !companionIDs.isEmpty
+            visit.companionIDs = companionIDs
+            if let coordinate {
+                visit.latitude = coordinate.0; visit.longitude = coordinate.1; visit.hasCoordinates = true
+            } else if let coordinate = location.coordinate {
+                visit.latitude = coordinate.latitude; visit.longitude = coordinate.longitude; visit.hasCoordinates = true
+            }
+            allVisits.append(visit)
+            pendingSorts.insert(.visits)
+            if let reaction { _ = addRating(to: visit, personID: authorID, reaction: reaction, hazy: hazy) }
+            location.updatedAt = .now
+            return visit
         }
-        if let reaction { _ = addRating(to: visit, personID: authorID, reaction: reaction, hazy: hazy) }
-        location.updatedAt = .now
-        commit()
-        return visit
     }
 
     @discardableResult
@@ -381,6 +391,8 @@ final class AppStore {
         comparison.id = UUID(); comparison.personID = personID ?? currentPerson?.id ?? UUID()
         comparison.locationAID = a.id; comparison.locationBID = b.id; comparison.outcome = outcome
         comparison.date = .now; comparison.isAnchor = false; comparison.anchorValue = 0; comparison.circle = activeCircle
+        allComparisons.append(comparison)
+        pendingSorts.insert(.comparisons)
         commit()
     }
 
@@ -390,6 +402,8 @@ final class AppStore {
         comparison.id = UUID(); comparison.personID = personID ?? currentPerson?.id ?? UUID()
         comparison.locationAID = location.id; comparison.locationBID = location.id; comparison.outcome = .tie
         comparison.date = .now; comparison.isAnchor = true; comparison.anchorValue = value; comparison.circle = activeCircle
+        allComparisons.append(comparison)
+        pendingSorts.insert(.comparisons)
         commit()
     }
 
@@ -433,12 +447,15 @@ final class AppStore {
 
     func toggleWant(_ location: RestaurantLocation, by personID: UUID? = nil) {
         if let existing = wantEntries.first(where: { $0.location?.id == location.id }) {
+            allWantEntries.removeAll { $0.id == existing.id }
             context.delete(existing)
         } else {
             let entry = WantEntryEntity(context: context)
             assign(entry, alongside: activeCircle)
             entry.id = UUID(); entry.addedByID = personID ?? currentPerson?.id ?? UUID(); entry.addedAt = .now
             entry.location = location; entry.circle = activeCircle
+            allWantEntries.append(entry)
+            pendingSorts.insert(.wantEntries)
         }
         commit()
     }
@@ -448,6 +465,7 @@ final class AppStore {
     func updateLocation(_ location: RestaurantLocation, name: String, category: DiningCategory, cuisines: [String], tags: [String], isClosed: Bool) {
         location.name = name.trimmedOr(location.name); location.category = category; location.cuisines = cuisines
         location.tags = tags; location.isClosed = isClosed; location.updatedAt = .now
+        pendingSorts.insert(.locations)
         commit()
     }
 
@@ -476,6 +494,7 @@ final class AppStore {
             location.hasCoordinates = false; location.latitude = 0; location.longitude = 0
         }
         location.isClosed = isClosed; location.updatedAt = .now
+        pendingSorts.insert(.locations)
         commit()
     }
 
@@ -489,16 +508,26 @@ final class AppStore {
             } else { dish.location = keeper }
         }
         for entry in wantEntries where entry.location == duplicate { entry.location = keeper }
+        var deletedComparisonIDs: Set<UUID> = []
         for comparison in comparisons {
             if comparison.locationAID == duplicate.id { comparison.locationAID = keeper.id }
             if comparison.locationBID == duplicate.id { comparison.locationBID = keeper.id }
-            if comparison.locationAID == comparison.locationBID && !comparison.isAnchor { context.delete(comparison) }
+            if comparison.locationAID == comparison.locationBID && !comparison.isAnchor {
+                deletedComparisonIDs.insert(comparison.id)
+                context.delete(comparison)
+            }
         }
+        allComparisons.removeAll { deletedComparisonIDs.contains($0.id) }
+        allLocations.removeAll { $0.id == duplicate.id }
         context.delete(duplicate)
         commit()
     }
 
-    func deleteVisit(_ visit: VisitEntity) { context.delete(visit); commit() }
+    func deleteVisit(_ visit: VisitEntity) {
+        allVisits.removeAll { $0.id == visit.id }
+        context.delete(visit)
+        commit()
+    }
 
     func deletePhoto(_ photo: PhotoEntity) { context.delete(photo); commit() }
 
@@ -526,14 +555,16 @@ final class AppStore {
         return Array(result.sorted { questionCertainty($0, scores: scores) < questionCertainty($1, scores: scores) }.prefix(limit))
     }
 
-    /// Runs a block of mutations as one unit: intermediate commits refresh the
-    /// in-memory arrays without writing to disk, and a single save happens at the end.
-    func performBatch(_ work: () -> Void) {
-        guard !isBatching else { work(); return }
+    /// Runs related mutations as one transaction. Mutation methods keep the
+    /// in-memory caches current; only the outermost batch saves and publishes.
+    @discardableResult
+    func performBatch<T>(_ work: () -> T) -> T {
+        guard !isBatching else { return work() }
         isBatching = true
-        work()
+        let result = work()
         isBatching = false
         commit()
+        return result
     }
 
     func seedSampleLedger() {
@@ -570,6 +601,9 @@ final class AppStore {
     }
 
     func reload() {
+        remoteReloadTask?.cancel()
+        remoteReloadTask = nil
+        diagnosticReloadCount += 1
         do {
             let previousCircleIDs = Set(circles.map(\.id))
             let previousDevicePersonID = devicePersonID
@@ -601,17 +635,49 @@ final class AppStore {
             } else {
                 devicePersonID = nil
             }
+            pendingSorts.removeAll()
             persistDeviceSelection()
             revision += 1
         } catch { reportError("The ledger could not reload its saved data. \(error.localizedDescription)") }
     }
 
     private func commit() {
-        // Fetches include pending changes, so a reload keeps dedupe and lookups
-        // correct mid-batch while deferring the expensive store save to the end.
-        if isBatching { reload(); return }
-        do { try persistence.save(); reload() }
-        catch { reportError("Your latest changes could not be saved. \(error.localizedDescription)") }
+        guard !isBatching else { return }
+        do {
+            try persistence.save()
+            sortPendingCollections()
+            revision += 1
+        } catch {
+            context.rollback()
+            reload()
+            reportError("Your latest changes could not be saved. \(error.localizedDescription)")
+        }
+    }
+
+    private func scheduleRemoteReload() {
+        remoteReloadTask?.cancel()
+        remoteReloadTask = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: 250_000_000) }
+            catch { return }
+            guard !Task.isCancelled else { return }
+            self?.reload()
+        }
+    }
+
+    private func sortPendingCollections() {
+        if pendingSorts.contains(.locations) {
+            allLocations.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        }
+        if pendingSorts.contains(.visits) {
+            allVisits.sort { $0.date > $1.date }
+        }
+        if pendingSorts.contains(.comparisons) {
+            allComparisons.sort { $0.date > $1.date }
+        }
+        if pendingSorts.contains(.wantEntries) {
+            allWantEntries.sort { $0.addedAt > $1.addedAt }
+        }
+        pendingSorts.removeAll()
     }
 
     private func makePerson(name: String, isMe: Bool, isCircleMember: Bool, color: String, circle: CircleEntity) -> PersonEntity {
@@ -619,6 +685,7 @@ final class AppStore {
         assign(person, alongside: circle)
         person.id = UUID(); person.name = name.trimmedOr("Guest"); person.isMe = isMe; person.isCircleMember = isCircleMember; person.colorHex = color
         person.createdAt = .now; person.circle = circle
+        allPeople.append(person)
         return person
     }
 
@@ -651,6 +718,13 @@ final class AppStore {
         init(_ a: UUID, _ b: UUID) {
             if a.uuidString <= b.uuidString { low = a; high = b } else { low = b; high = a }
         }
+    }
+
+    private enum CachedCollection: Hashable {
+        case locations
+        case visits
+        case comparisons
+        case wantEntries
     }
 
     private func persistDeviceSelection() {

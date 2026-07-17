@@ -12,7 +12,7 @@ enum BackfillImportPolicy {
     static let thumbnailMaxPixelSize = 480
 }
 
-struct BackfillPhoto: Identifiable {
+struct BackfillPhoto: Identifiable, Sendable {
     let id: UUID
     let fullData: Data
     let thumbnailData: Data?
@@ -35,6 +35,14 @@ struct BackfillCluster: Identifiable {
 }
 
 enum ImageSanitizer {
+    /// ImageIO decode and JPEG encoding are CPU-heavy. Keep them off the UI actor
+    /// even when a SwiftUI task initiated the import.
+    static func processOffMain(_ data: Data, date fallbackDate: Date = .now) async -> BackfillPhoto? {
+        await Task.detached(priority: .userInitiated) {
+            autoreleasepool { process(data, date: fallbackDate) }
+        }.value
+    }
+
     static func process(_ data: Data, date fallbackDate: Date = .now) -> BackfillPhoto? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         let metadata = (CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]) ?? [:]
@@ -145,9 +153,8 @@ enum PhotoLibraryScanner {
         var output: [BackfillPhoto] = []
         for index in 0..<assets.count {
             let asset = assets.object(at: index)
-            if let data = await imageData(for: asset), let photo = autoreleasepool(invoking: {
-                ImageSanitizer.process(data, date: asset.creationDate ?? .now)
-            }) {
+            if let data = await imageData(for: asset),
+               let photo = await ImageSanitizer.processOffMain(data, date: asset.creationDate ?? .now) {
                 let corrected = BackfillPhoto(
                     id: photo.id, fullData: photo.fullData, thumbnailData: photo.thumbnailData,
                     date: asset.creationDate ?? photo.date,

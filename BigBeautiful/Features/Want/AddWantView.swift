@@ -18,6 +18,11 @@ struct AddWantView: View {
             .task(id: query) { guard !query.isEmpty else { mapResults = []; return }; try? await Task.sleep(for: .milliseconds(280)); mapResults = await locationService.search(query) }
         }
     }
-    private var local: [RestaurantLocation] { store.locations.filter { !store.isWanted($0) && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query)) } }
+    private var local: [RestaurantLocation] {
+        let wantedLocationIDs = Set(store.wantEntries.compactMap { $0.location?.id })
+        return store.locations.filter {
+            !wantedLocationIDs.contains($0.id) && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query))
+        }
+    }
     private func row(_ title: String, subtitle: String, action: @escaping () -> Void) -> some View { Button(action: action) { HStack { VStack(alignment: .leading) { Text(title).foregroundStyle(BBTheme.ink); Text(subtitle).font(.caption).foregroundStyle(.secondary) }; Spacer(); Image(systemName: "bookmark") } }.frame(minHeight: 44) }
 }

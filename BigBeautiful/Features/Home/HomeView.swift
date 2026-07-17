@@ -6,21 +6,22 @@ struct HomeView: View {
     @Environment(AppRouter.self) private var router
 
     var body: some View {
+        let visits = store.visits
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 30) {
-                masthead
+                masthead(visits)
                 logButton
                 pendingRatings
                 topTable
                 settleCard
-                recentHistory
+                recentHistory(visits)
             }
             .padding(.horizontal, 18).padding(.bottom, 32).readablePageWidth()
         }
         .editorialPage()
     }
 
-    private var masthead: some View {
+    private func masthead(_ visits: [VisitEntity]) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -37,7 +38,7 @@ struct HomeView: View {
                     .font(BBTheme.display(17)).padding(.top, 7)
             }
             Divider().overlay(BBTheme.ink)
-            HStack { Text("THE PERSONAL DINING LEDGER").font(.caption2.weight(.bold)).tracking(1.5); Spacer(); Text("EST. \(establishedYear)").font(.caption2.weight(.bold)).tracking(1.5) }
+            HStack { Text("THE PERSONAL DINING LEDGER").font(.caption2.weight(.bold)).tracking(1.5); Spacer(); Text("EST. \(establishedYear(visits))").font(.caption2.weight(.bold)).tracking(1.5) }
         }
         .padding(.top, 12)
     }
@@ -48,8 +49,8 @@ struct HomeView: View {
         return "\(name.uppercased())’S"
     }
 
-    private var establishedYear: String {
-        let earliest = store.visits.map(\.date).min() ?? .now
+    private func establishedYear(_ visits: [VisitEntity]) -> String {
+        let earliest = visits.min(by: { $0.date < $1.date })?.date ?? .now
         return String(Calendar.current.component(.year, from: earliest))
     }
 
@@ -145,11 +146,11 @@ struct HomeView: View {
         }.buttonStyle(.pressable).ledgerCard()
     }
 
-    @ViewBuilder private var recentHistory: some View {
-        if !store.visits.isEmpty {
+    @ViewBuilder private func recentHistory(_ visits: [VisitEntity]) -> some View {
+        if !visits.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 EditorialSectionHeader("Recently entered", eyebrow: "The record", actionTitle: "History") { router.selectedTab = .history }
-                ForEach(store.visits.prefix(4)) { visit in
+                ForEach(visits.prefix(4)) { visit in
                     NavigationLink(value: AppRoute.visit(visit.id)) { VisitRow(visit: visit) }.buttonStyle(.plain)
                 }
             }

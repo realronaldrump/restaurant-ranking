@@ -461,7 +461,8 @@ final class AppStore {
 
     func pendingVisits(for personID: UUID? = nil) -> [VisitEntity] {
         guard let personID = personID ?? currentPerson?.id else { return [] }
-        return visits.filter { $0.companionIDs.contains(personID) && $0.rating(for: personID) == nil }.sorted { $0.date > $1.date }
+        // `visits` is already maintained newest-first by the store cache.
+        return visits.filter { $0.companionIDs.contains(personID) && $0.rating(for: personID) == nil }
     }
 
     func toggleWant(_ location: RestaurantLocation, by personID: UUID? = nil) {

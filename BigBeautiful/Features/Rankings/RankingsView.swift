@@ -140,7 +140,7 @@ struct RankingsView: View {
             (includesClosed || !row.location.isClosed) &&
             (cuisine == nil || cuisines.contains(cuisine!)) &&
             (tag == nil || tags.contains(tag!)) &&
-            (priceBand == 0 || row.location.visitArray.contains { Int($0.priceBand) == priceBand }) &&
+            (priceBand == 0 || row.location.hasVisit(inPriceBand: priceBand)) &&
             (effectiveQuery.isEmpty || ([row.location.name] + cuisines + tags).joined(separator: " ").localizedCaseInsensitiveContains(effectiveQuery))
         }
     }

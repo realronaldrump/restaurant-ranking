@@ -111,7 +111,7 @@ struct SettleScoreView: View {
 
     private func buildPrompts() {
         let comparisons = store.settleQuestions(limit: 4).map(Prompt.comparison)
-        let anchor = store.ranked().sorted { $0.certainty < $1.certainty }.first.map { Prompt.anchor($0.location) }
+        let anchor = store.ranked().min { $0.certainty < $1.certainty }.map { Prompt.anchor($0.location) }
         if let anchor, comparisons.count >= 2 {
             prompts = Array(comparisons.prefix(2)) + [anchor] + Array(comparisons.dropFirst(2))
         } else if let anchor {

@@ -668,11 +668,12 @@ struct AddMoreVisitView: View {
     }
 
     private var photoSection: some View {
-        Section("Photos") {
-            if !visit.photoArray.isEmpty {
+        let photos = visit.photoArray
+        return Section("Photos") {
+            if !photos.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
-                        ForEach(visit.photoArray) { photo in
+                        ForEach(photos) { photo in
                             PhotoImage(photo: photo).frame(width: 64, height: 64).clipped()
                                 .contextMenu { Button("Remove Photo", systemImage: "trash", role: .destructive) { store.deletePhoto(photo) } }
                         }

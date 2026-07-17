@@ -75,6 +75,9 @@ final class RestaurantLocation: NSManagedObject, Identifiable {
     var dishArray: [DishEntity] {
         ((dishes?.allObjects as? [DishEntity]) ?? []).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
+    func hasVisit(inPriceBand priceBand: Int) -> Bool {
+        (visits?.allObjects as? [VisitEntity])?.contains { Int($0.priceBand) == priceBand } ?? false
+    }
     var coordinate: (latitude: Double, longitude: Double)? {
         hasCoordinates ? (latitude, longitude) : nil
     }

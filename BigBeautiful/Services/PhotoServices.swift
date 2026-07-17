@@ -10,6 +10,8 @@ enum BackfillImportPolicy {
     static let maxPhotoCount = 48
     static let storedImageMaxPixelSize = 2_048
     static let thumbnailMaxPixelSize = 480
+    static let clusterTimeInterval: TimeInterval = 2 * 60 * 60
+    static let clusterDistanceMeters: CLLocationDistance = 500 * 0.3048
 }
 
 struct BackfillPhoto: Identifiable, Sendable {
@@ -37,16 +39,18 @@ struct BackfillCluster: Identifiable {
 enum ImageSanitizer {
     /// ImageIO decode and JPEG encoding are CPU-heavy. Keep them off the UI actor
     /// even when a SwiftUI task initiated the import.
-    static func processOffMain(_ data: Data, date fallbackDate: Date = .now) async -> BackfillPhoto? {
+    static func processOffMain(_ data: Data, date fallbackDate: Date? = .now) async -> BackfillPhoto? {
         await Task.detached(priority: .userInitiated) {
             autoreleasepool { process(data, date: fallbackDate) }
         }.value
     }
 
-    static func process(_ data: Data, date fallbackDate: Date = .now) -> BackfillPhoto? {
+    /// Pass a nil fallback for historical backfill imports. That prevents a
+    /// metadata-free old photo from silently becoming a visit dated "now".
+    static func process(_ data: Data, date fallbackDate: Date? = .now) -> BackfillPhoto? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         let metadata = (CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]) ?? [:]
-        let date = captureDate(metadata) ?? fallbackDate
+        guard let date = captureDate(metadata) ?? fallbackDate else { return nil }
         let coordinate = gpsCoordinate(metadata)
         // ImageIO downsamples while decoding, so a 48 MP original never becomes a
         // full-resolution UIKit bitmap. Re-encoding without source properties
@@ -69,11 +73,15 @@ enum ImageSanitizer {
             guard var last = clusters.popLast() else {
                 clusters.append(.init(id: UUID(), photos: [photo])); continue
             }
-            let lastPhoto = last.photos.last!
-            let closeInTime = photo.date.timeIntervalSince(lastPhoto.date) <= 2 * 60 * 60
+            let clusterStart = last.photos.first!.date
+            let closeInTime = photo.date.timeIntervalSince(clusterStart) <= BackfillImportPolicy.clusterTimeInterval
             let closeInSpace: Bool = {
-                guard let a = photo.coordinate, let b = lastPhoto.coordinate else { return true }
-                return CLLocation(latitude: a.latitude, longitude: a.longitude).distance(from: CLLocation(latitude: b.latitude, longitude: b.longitude)) <= 500
+                guard let coordinate = photo.coordinate else { return true }
+                let candidate = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+                return last.photos.compactMap(\.coordinate).allSatisfy { existing in
+                    candidate.distance(from: CLLocation(latitude: existing.latitude, longitude: existing.longitude))
+                        <= BackfillImportPolicy.clusterDistanceMeters
+                }
             }()
             if closeInTime && closeInSpace {
                 last.photos.append(photo)
@@ -118,6 +126,10 @@ enum ImageSanitizer {
         guard let string = exif?[kCGImagePropertyExifDateTimeOriginal] as? String else { return nil }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
+        if let offset = exif?[kCGImagePropertyExifOffsetTimeOriginal] as? String {
+            formatter.dateFormat = "yyyy:MM:dd HH:mm:ssXXXXX"
+            if let date = formatter.date(from: string + offset) { return date }
+        }
         formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
         return formatter.date(from: string)
     }
@@ -128,7 +140,11 @@ enum ImageSanitizer {
               let longitude = gps[kCGImagePropertyGPSLongitude] as? Double else { return nil }
         let latRef = gps[kCGImagePropertyGPSLatitudeRef] as? String
         let lonRef = gps[kCGImagePropertyGPSLongitudeRef] as? String
-        return .init(latitude: latRef == "S" ? -latitude : latitude, longitude: lonRef == "W" ? -longitude : longitude)
+        let coordinate = CLLocationCoordinate2D(
+            latitude: latRef?.uppercased() == "S" ? -latitude : latitude,
+            longitude: lonRef?.uppercased() == "W" ? -longitude : longitude
+        )
+        return CLLocationCoordinate2DIsValid(coordinate) ? coordinate : nil
     }
 }
 
@@ -145,8 +161,19 @@ enum PhotoLibraryScanner {
     ) async throws -> [BackfillPhoto] {
         let status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
         guard status == .authorized || status == .limited else { throw ScanError.permissionDenied }
+        let calendar = Calendar.autoupdatingCurrent
+        let startBoundary = calendar.startOfDay(for: start)
+        let endBoundary = calendar.date(
+            byAdding: .day,
+            value: 1,
+            to: calendar.startOfDay(for: end)
+        ) ?? end.addingTimeInterval(24 * 60 * 60)
         let options = PHFetchOptions()
-        options.predicate = NSPredicate(format: "creationDate >= %@ AND creationDate <= %@", start as NSDate, end as NSDate)
+        options.predicate = NSPredicate(
+            format: "creationDate >= %@ AND creationDate < %@",
+            startBoundary as NSDate,
+            endBoundary as NSDate
+        )
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
         options.fetchLimit = min(max(1, limit), BackfillImportPolicy.maxPhotoCount)
         let assets = PHAsset.fetchAssets(with: .image, options: options)
@@ -155,10 +182,12 @@ enum PhotoLibraryScanner {
             let asset = assets.object(at: index)
             if let data = await imageData(for: asset),
                let photo = await ImageSanitizer.processOffMain(data, date: asset.creationDate ?? .now) {
+                let assetCoordinate = asset.location?.coordinate
                 let corrected = BackfillPhoto(
                     id: photo.id, fullData: photo.fullData, thumbnailData: photo.thumbnailData,
                     date: asset.creationDate ?? photo.date,
-                    coordinate: asset.location?.coordinate ?? photo.coordinate
+                    coordinate: assetCoordinate.flatMap { CLLocationCoordinate2DIsValid($0) ? $0 : nil }
+                        ?? photo.coordinate
                 )
                 output.append(corrected)
             }

@@ -3,6 +3,7 @@ import CoreData
 import CloudKit
 import ImageIO
 import UIKit
+import UniformTypeIdentifiers
 import XCTest
 @testable import BigBeautiful
 
@@ -93,6 +94,94 @@ final class RankingEngineTests: XCTestCase {
         )
 
         XCTAssertEqual(ImageSanitizer.clusters([base, twoHundredMetersAway]).count, 2)
+    }
+
+    func testPhotoWithoutGPSDoesNotBridgeDistantLocationsIntoOneCluster() {
+        let data = Data([0])
+        let baseDate = Date.now
+        let losAngeles = BackfillPhoto(
+            id: UUID(), fullData: data, thumbnailData: nil, date: baseDate,
+            coordinate: .init(latitude: 34.0522, longitude: -118.2437)
+        )
+        let missingGPS = BackfillPhoto(
+            id: UUID(), fullData: data, thumbnailData: nil, date: baseDate.addingTimeInterval(30 * 60),
+            coordinate: nil
+        )
+        let newYork = BackfillPhoto(
+            id: UUID(), fullData: data, thumbnailData: nil, date: baseDate.addingTimeInterval(60 * 60),
+            coordinate: .init(latitude: 40.7128, longitude: -74.0060)
+        )
+
+        let clusters = ImageSanitizer.clusters([losAngeles, missingGPS, newYork])
+
+        XCTAssertEqual(clusters.count, 2)
+        XCTAssertEqual(clusters.first?.photos.count, 2)
+    }
+
+    func testPhotoClusterCannotGrowPastTwoHoursThroughChaining() {
+        let data = Data([0])
+        let baseDate = Date.now
+        let coordinate = CLLocationCoordinate2D(latitude: 40.7600, longitude: -111.8900)
+        let photos = [0, 90, 180].map { minutes in
+            BackfillPhoto(
+                id: UUID(), fullData: data, thumbnailData: nil,
+                date: baseDate.addingTimeInterval(TimeInterval(minutes * 60)), coordinate: coordinate
+            )
+        }
+
+        XCTAssertEqual(ImageSanitizer.clusters(photos).count, 2)
+    }
+
+    func testHistoricalPhotoWithoutCaptureDateDoesNotSilentlyUseNow() throws {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 40, height: 40)).image { context in
+            UIColor.systemOrange.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 40, height: 40))
+        }
+        let data = try XCTUnwrap(image.jpegData(compressionQuality: 0.9))
+
+        XCTAssertNil(ImageSanitizer.process(data, date: nil))
+    }
+
+    func testImageSanitizerReadsSignedGPSAndTimezoneThenStripsMetadata() throws {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 40, height: 40)).image { context in
+            UIColor.systemBlue.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 40, height: 40))
+        }
+        let cgImage = try XCTUnwrap(image.cgImage)
+        let encoded = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(
+            encoded, UTType.jpeg.identifier as CFString, 1, nil
+        ))
+        let properties: [CFString: Any] = [
+            kCGImagePropertyExifDictionary: [
+                kCGImagePropertyExifDateTimeOriginal: "2024:07:17 18:30:00",
+                kCGImagePropertyExifOffsetTimeOriginal: "+10:00"
+            ],
+            kCGImagePropertyGPSDictionary: [
+                kCGImagePropertyGPSLatitude: 33.8688,
+                kCGImagePropertyGPSLatitudeRef: "S",
+                kCGImagePropertyGPSLongitude: 151.2093,
+                kCGImagePropertyGPSLongitudeRef: "W"
+            ]
+        ]
+        CGImageDestinationAddImage(destination, cgImage, properties as CFDictionary)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+
+        let photo = try XCTUnwrap(ImageSanitizer.process(encoded as Data, date: nil))
+        XCTAssertEqual(photo.coordinate?.latitude, -33.8688, accuracy: 0.000_001)
+        XCTAssertEqual(photo.coordinate?.longitude, -151.2093, accuracy: 0.000_001)
+        XCTAssertEqual(
+            photo.date,
+            try XCTUnwrap(ISO8601DateFormatter().date(from: "2024-07-17T18:30:00+10:00")),
+            accuracy: 0.001
+        )
+
+        let sanitizedSource = try XCTUnwrap(CGImageSourceCreateWithData(photo.fullData as CFData, nil))
+        let sanitizedProperties = try XCTUnwrap(
+            CGImageSourceCopyPropertiesAtIndex(sanitizedSource, 0, nil) as? [CFString: Any]
+        )
+        XCTAssertNil(sanitizedProperties[kCGImagePropertyGPSDictionary])
+        XCTAssertNil(sanitizedProperties[kCGImagePropertyExifDictionary])
     }
 
     func testSanitizedBackfillPhotoBoundsStoredPixelDimensions() throws {
@@ -228,6 +317,41 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertEqual(store.lastError, "The test save failed.")
         store.clearLastError()
         XCTAssertNil(store.lastError)
+    }
+
+    func testBatchKeepsCachesCurrentWithoutFullReloads() throws {
+        let personID = try XCTUnwrap(store.currentPerson?.id)
+        let reloadsBefore = store.diagnosticReloadCount
+
+        store.performBatch {
+            for index in 0..<50 {
+                let location = store.createLocation(name: "Batch Place \(index)", category: .fullService)
+                let visit = store.logVisit(at: location, reaction: .loved)
+                store.updateVisit(visit, type: .meal, priceBand: 2, occasion: nil, memory: "Batch note", companions: [])
+                _ = store.addDish(name: "Batch dish", role: .entree, reaction: .loved, wouldOrderAgain: true, to: visit, personID: personID)
+            }
+            let first = store.createLocation(name: "Repeated Place", category: .fullService)
+            let second = store.createLocation(name: "repeated place", category: .fullService)
+            XCTAssertEqual(first.id, second.id, "In-memory batch caches must preserve location deduplication")
+        }
+
+        XCTAssertEqual(store.diagnosticReloadCount, reloadsBefore, "Local batches should publish without refetching the store")
+        XCTAssertEqual(store.locations.count, 51)
+        XCTAssertEqual(store.visits.count, 50)
+    }
+
+    func testRemoteChangeBurstsAreCoalesced() async throws {
+        let reloadsBefore = store.diagnosticReloadCount
+
+        for _ in 0..<50 {
+            NotificationCenter.default.post(
+                name: .NSPersistentStoreRemoteChange,
+                object: persistence.container.persistentStoreCoordinator
+            )
+        }
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        XCTAssertEqual(store.diagnosticReloadCount - reloadsBefore, 1)
     }
 
     func testEraseAllDataRemovesEveryEntityAndDeviceIdentity() throws {

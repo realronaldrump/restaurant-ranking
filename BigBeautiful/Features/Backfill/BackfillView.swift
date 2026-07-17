@@ -40,7 +40,15 @@ struct BackfillView: View {
                 Eyebrow("Recommended")
                 Text("Choose specific photos").font(BBTheme.display(25))
                 Text("The standard picker grants access only to what you select. No library permission is needed.").font(.callout).foregroundStyle(.secondary)
-                PhotosPicker(selection: $selectedItems, maxSelectionCount: BackfillImportPolicy.maxPhotoCount, matching: .images) { Label("Choose Meal Photos", systemImage: "photo.badge.plus").frame(maxWidth: .infinity) }.buttonStyle(PrimaryButtonStyle())
+                PhotosPicker(
+                    selection: $selectedItems,
+                    maxSelectionCount: BackfillImportPolicy.maxPhotoCount,
+                    matching: .images,
+                    preferredItemEncoding: .current
+                ) {
+                    Label("Choose Meal Photos", systemImage: "photo.badge.plus").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(PrimaryButtonStyle())
             }.ledgerCard()
             VStack(alignment: .leading, spacing: 14) {
                 Eyebrow("Optional full-library search")
@@ -70,8 +78,17 @@ struct BackfillView: View {
         .task(id: "\(index)-\(query)") {
             try? await Task.sleep(for: .milliseconds(query.isEmpty ? 10 : 260))
             guard !Task.isCancelled else { return }
+            guard cluster.coordinate != nil || !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                candidates = []
+                return
+            }
             let radius: CLLocationDistance = cluster.coordinate != nil && query.isEmpty ? 150 : 9_000
-            candidates = await locationService.search(query.isEmpty ? "restaurant cafe bakery bar" : query, around: cluster.coordinate, radius: radius)
+            candidates = await locationService.search(
+                query.isEmpty ? "restaurant cafe bakery bar" : query,
+                around: cluster.coordinate,
+                radius: radius,
+                fallbackToCurrentLocation: false
+            )
         }
     }
 
@@ -173,15 +190,21 @@ struct BackfillView: View {
 
     private func loadSelected(_ items: [PhotosPickerItem]) async {
         isProcessing = true; errorMessage = nil
+        let selected = Array(items.prefix(BackfillImportPolicy.maxPhotoCount))
         var photos: [BackfillPhoto] = []
-        for item in items.prefix(BackfillImportPolicy.maxPhotoCount) {
+        for item in selected {
             if let data = try? await item.loadTransferable(type: Data.self),
-               let photo = await ImageSanitizer.processOffMain(data) {
+               let photo = await ImageSanitizer.processOffMain(data, date: nil) {
                 photos.append(photo)
             }
         }
         clusters = ImageSanitizer.clusters(photos); index = 0; isProcessing = false
-        if clusters.isEmpty { errorMessage = "No readable image data was returned by the picker." }
+        let skippedCount = selected.count - photos.count
+        if clusters.isEmpty {
+            errorMessage = "The selected photos did not include readable original capture dates. Try Scan a Date Range so Photos can provide the dates directly."
+        } else if skippedCount > 0 {
+            errorMessage = "Skipped \(skippedCount) \(skippedCount == 1 ? "photo" : "photos") without a readable original capture date."
+        }
     }
 
     private func scanLibrary() async {

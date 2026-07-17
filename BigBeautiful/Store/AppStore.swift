@@ -555,9 +555,11 @@ final class AppStore {
     func settleQuestions(limit: Int = 5, personID: UUID? = nil) -> [ComparisonQuestion] {
         let scores = ranked(for: personID)
         let comparedPairs = Set(comparisons.filter { !$0.isAnchor }.map { PairKey($0.locationAID, $0.locationBID) })
+        let scoresByCategory = Dictionary(grouping: scores, by: { $0.location.category })
+        let certaintyByLocation = Dictionary(uniqueKeysWithValues: scores.map { ($0.id, $0.certainty) })
         var result: [ComparisonQuestion] = []
         for category in DiningCategory.allCases {
-            let categoryScores = scores.filter { $0.location.category == category }
+            let categoryScores = scoresByCategory[category] ?? []
             for pair in zip(categoryScores, categoryScores.dropFirst()) {
                 let already = comparedPairs.contains(PairKey(pair.0.id, pair.1.id))
                 if !already || pair.0.isProvisional || pair.1.isProvisional {
@@ -565,7 +567,11 @@ final class AppStore {
                 }
             }
         }
-        return Array(result.sorted { questionCertainty($0, scores: scores) < questionCertainty($1, scores: scores) }.prefix(limit))
+        return Array(result.sorted { lhs, rhs in
+            let lhsCertainty = (certaintyByLocation[lhs.a.id] ?? 0) + (certaintyByLocation[lhs.b.id] ?? 0)
+            let rhsCertainty = (certaintyByLocation[rhs.a.id] ?? 0) + (certaintyByLocation[rhs.b.id] ?? 0)
+            return lhsCertainty < rhsCertainty
+        }.prefix(limit))
     }
 
     /// Runs related mutations as one transaction. Mutation methods keep the
@@ -717,12 +723,6 @@ final class AppStore {
         guard let anchor, !anchor.objectID.isTemporaryID,
               let store = anchor.objectID.persistentStore else { return }
         context.assign(object, to: store)
-    }
-
-    private func questionCertainty(_ question: ComparisonQuestion, scores: [LocationScore]) -> Double {
-        let a = scores.first { $0.id == question.a.id }?.certainty ?? 0
-        let b = scores.first { $0.id == question.b.id }?.certainty ?? 0
-        return a + b
     }
 
     private struct PairKey: Hashable {

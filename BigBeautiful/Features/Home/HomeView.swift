@@ -161,9 +161,11 @@ struct VisitRow: View {
     @Environment(AppStore.self) private var store
     let visit: VisitEntity
     var body: some View {
+        let photos = visit.photoArray
+        let ratings = visit.ratingArray
         HStack(spacing: 13) {
             ZStack {
-                if let photo = visit.photoArray.first {
+                if let photo = photos.first {
                     PhotoImage(photo: photo).frame(width: 54, height: 54).clipped()
                 } else {
                     Rectangle().fill(BBTheme.ink.opacity(0.06)).frame(width: 54, height: 54)
@@ -175,22 +177,22 @@ struct VisitRow: View {
                 HStack(spacing: 5) {
                     Text(visit.date.formatted(date: .abbreviated, time: .omitted))
                     if let type = visit.visitType { Text("· \(type.rawValue)") }
-                    if !visit.photoArray.isEmpty { Image(systemName: "photo.fill") }
+                    if !photos.isEmpty { Image(systemName: "photo.fill") }
                 }.font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            reactionMark
+            reactionMark(ratings)
         }
         .contentShape(Rectangle()).padding(.vertical, 4)
     }
 
     /// The current person's verdict in oxblood; another diner's verdict, dimmed,
     /// when only they have rated; UNRATED when nobody has.
-    @ViewBuilder private var reactionMark: some View {
-        let mine = store.currentPerson.flatMap { visit.rating(for: $0.id) }
+    @ViewBuilder private func reactionMark(_ ratings: [RatingEntity]) -> some View {
+        let mine = store.currentPerson.flatMap { person in ratings.first { $0.personID == person.id } }
         if let mine {
             Image(systemName: mine.reaction.symbol).foregroundStyle(BBTheme.oxblood).accessibilityLabel(mine.reaction.rawValue)
-        } else if let other = visit.ratingArray.first {
+        } else if let other = ratings.first {
             let name = store.people.first { $0.id == other.personID }?.name ?? "Someone"
             Image(systemName: other.reaction.symbol).foregroundStyle(.secondary)
                 .accessibilityLabel("\(other.reaction.rawValue), rated by \(name)")

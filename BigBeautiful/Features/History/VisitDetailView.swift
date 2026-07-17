@@ -10,12 +10,15 @@ struct VisitDetailView: View {
     @State private var selectedPhoto: PhotoEntity?
 
     var body: some View {
+        let ratingValues = visit.ratingArray
+        let dishEntries = visit.dishEntryArray
+        let photoValues = visit.photoArray
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 header
-                ratings
-                dishes
-                photos
+                ratingsSection(ratingValues)
+                dishesSection(dishEntries)
+                photosSection(photoValues)
                 memory
                 companions
                 Button(role: .destructive) { confirmDelete = true } label: { Label("Delete this visit", systemImage: "trash") }.frame(maxWidth: .infinity).padding(.top, 20)
@@ -43,8 +46,8 @@ struct VisitDetailView: View {
         }
     }
 
-    @ViewBuilder private var ratings: some View {
-        if visit.ratingArray.isEmpty {
+    @ViewBuilder private func ratingsSection(_ ratings: [RatingEntity]) -> some View {
+        if ratings.isEmpty {
             VStack(spacing: 4) {
                 EmptyLedgerView(title: "An unrated visit", message: "It counts in history and contributes nothing to rankings.", symbol: "questionmark.circle")
                 Button("Rate This Visit") { editingVisit = visit }.buttonStyle(PrimaryButtonStyle())
@@ -52,7 +55,7 @@ struct VisitDetailView: View {
         } else {
             VStack(alignment: .leading, spacing: 12) {
                 EditorialSectionHeader("Reactions", eyebrow: "Independent opinions")
-                ForEach(visit.ratingArray) { rating in
+                ForEach(ratings) { rating in
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
                             Text(store.people.first(where: { $0.id == rating.personID })?.name ?? "Diner").font(.headline)
@@ -62,7 +65,7 @@ struct VisitDetailView: View {
                         HStack { subrating("Value", rating.value); subrating("Service", rating.service); subrating("Atmosphere", rating.atmosphere) }
                     }.ledgerCard()
                 }
-                if store.currentPerson.flatMap({ visit.rating(for: $0.id) }) == nil {
+                if store.currentPerson.flatMap({ person in ratings.first { $0.personID == person.id } }) == nil {
                     Button { editingVisit = visit } label: {
                         Label("Add Your Rating", systemImage: "plus.circle.fill")
                     }
@@ -72,24 +75,24 @@ struct VisitDetailView: View {
         }
     }
 
-    @ViewBuilder private var dishes: some View {
-        if !visit.dishEntryArray.isEmpty {
+    @ViewBuilder private func dishesSection(_ entries: [DishEntryEntity]) -> some View {
+        if !entries.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 EditorialSectionHeader("What was ordered", eyebrow: "Dish memory")
-                ForEach(visit.dishEntryArray) { entry in
+                ForEach(entries) { entry in
                     HStack { VStack(alignment: .leading) { Text(entry.dish?.name ?? "Dish").font(.headline); Text(entry.dish?.role.rawValue ?? "").font(.caption).foregroundStyle(.secondary) }; Spacer(); Image(systemName: entry.reaction.symbol).foregroundStyle(BBTheme.oxblood); if entry.wouldOrderAgain { Image(systemName: "arrow.clockwise.circle.fill").foregroundStyle(BBTheme.sage).accessibilityLabel("Would order again") } }.padding(.vertical, 5)
                 }
             }
         }
     }
 
-    @ViewBuilder private var photos: some View {
-        if !visit.photoArray.isEmpty {
+    @ViewBuilder private func photosSection(_ photos: [PhotoEntity]) -> some View {
+        if !photos.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
-                EditorialSectionHeader("Photos", eyebrow: "\(visit.photoArray.count) \(visit.photoArray.count == 1 ? "frame" : "frames")")
+                EditorialSectionHeader("Photos", eyebrow: "\(photos.count) \(photos.count == 1 ? "frame" : "frames")")
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(spacing: 6) {
-                        ForEach(visit.photoArray) { photo in
+                        ForEach(photos) { photo in
                             Button { selectedPhoto = photo } label: {
                                 PhotoImage(photo: photo).frame(width: 170, height: 150).clipped()
                             }

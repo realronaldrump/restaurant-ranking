@@ -10,14 +10,15 @@ struct EstablishmentDetailView: View {
     @State private var selectedPhoto: PhotoEntity?
 
     var body: some View {
+        let visits = location.visitArray
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 26) {
-                hero
+                hero(visits: visits)
                 dishHonors
-                visitTimeline
-                photoGrid
-                scoreBreakdown
-                scoreHistory
+                visitTimeline(visits)
+                photoGrid(visits)
+                scoreBreakdown(visits)
+                scoreHistory(visits)
                 practicalInformation
             }
             .padding(.bottom, 34).readablePageWidth()
@@ -39,9 +40,16 @@ struct EstablishmentDetailView: View {
         .fullScreenCover(item: $selectedPhoto) { PhotoViewer(photo: $0) }
     }
 
-    private var hero: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if let heroPhoto = location.visitArray.flatMap(\.photoArray).first {
+    private func hero(visits: [VisitEntity]) -> some View {
+        let cuisines = location.cuisines
+        let tags = location.tags
+        let myScore = store.score(for: location)
+        let partnerScore = store.partner.flatMap { store.score(for: location, personID: $0.id) }
+        let couple = store.coupleRanked().first { $0.id == location.id }
+        let heroPhoto = visits.lazy.flatMap(\.photoArray).first
+
+        return VStack(alignment: .leading, spacing: 0) {
+            if let heroPhoto {
                 PhotoImage(photo: heroPhoto, displayPixels: 1_400).frame(height: 245).frame(maxWidth: .infinity).clipped()
             } else { CategoryArtwork(category: location.category, height: 220) }
             VStack(alignment: .leading, spacing: 14) {
@@ -50,7 +58,7 @@ struct EstablishmentDetailView: View {
                         if location.isClosed { RankChip(text: "Closed", emphasized: true) }
                         Text(location.name).font(BBTheme.display(37)).fixedSize(horizontal: false, vertical: true)
                         Text(location.category.rawValue).font(.callout).foregroundStyle(.secondary)
-                        if !location.cuisines.isEmpty { FlowLayout(items: location.cuisines + location.tags) { RankChip(text: $0) } }
+                        if !cuisines.isEmpty { FlowLayout(items: cuisines + tags) { RankChip(text: $0) } }
                     }
                     Spacer(minLength: 8)
                     if let score = myScore { ScoreMark(score: score.score, caption: store.currentPerson?.name, size: 57, provisional: score.isProvisional) }
@@ -88,19 +96,19 @@ struct EstablishmentDetailView: View {
         }
     }
 
-    private var visitTimeline: some View {
+    private func visitTimeline(_ visits: [VisitEntity]) -> some View {
         VStack(alignment: .leading, spacing: 13) {
-            EditorialSectionHeader("Visit timeline", eyebrow: "\(location.visitArray.count) \(location.visitArray.count == 1 ? "visit" : "visits")")
-            if location.visitArray.isEmpty { EmptyLedgerView(title: "No visits yet", message: "This place may be waiting on the Want to Try list.", symbol: "calendar") }
-            ForEach(location.visitArray) { visit in
+            EditorialSectionHeader("Visit timeline", eyebrow: "\(visits.count) \(visits.count == 1 ? "visit" : "visits")")
+            if visits.isEmpty { EmptyLedgerView(title: "No visits yet", message: "This place may be waiting on the Want to Try list.", symbol: "calendar") }
+            ForEach(visits) { visit in
                 NavigationLink(value: AppRoute.visit(visit.id)) { VisitRow(visit: visit) }.buttonStyle(.plain)
-                if visit.id != location.visitArray.last?.id { Divider() }
+                if visit.id != visits.last?.id { Divider() }
             }
         }.padding(.horizontal, 16)
     }
 
-    @ViewBuilder private var photoGrid: some View {
-        let photos = location.visitArray.flatMap(\.photoArray)
+    @ViewBuilder private func photoGrid(_ visits: [VisitEntity]) -> some View {
+        let photos = visits.flatMap(\.photoArray)
         if !photos.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 EditorialSectionHeader("The photo record", eyebrow: "\(photos.count) frames")
@@ -115,10 +123,10 @@ struct EstablishmentDetailView: View {
         }
     }
 
-    private var scoreBreakdown: some View {
+    private func scoreBreakdown(_ visits: [VisitEntity]) -> some View {
         VStack(alignment: .leading, spacing: 15) {
             EditorialSectionHeader("Score details", eyebrow: "Your ratings")
-            if let summary = breakdown {
+            if let summary = breakdown(for: visits) {
                 Text(summary.explanation).font(BBTheme.display(20, weight: .regular))
                 metricBar("Food & overall", value: summary.food)
                 metricBar("Value", value: summary.value)
@@ -132,8 +140,8 @@ struct EstablishmentDetailView: View {
         }.padding(.horizontal, 16).padding(.vertical, 4)
     }
 
-    @ViewBuilder private var scoreHistory: some View {
-        let points = scorePoints
+    @ViewBuilder private func scoreHistory(_ visits: [VisitEntity]) -> some View {
+        let points = scorePoints(for: visits)
         if points.count > 1 {
             VStack(alignment: .leading, spacing: 12) {
                 EditorialSectionHeader("Score history", eyebrow: "By visit")
@@ -160,10 +168,6 @@ struct EstablishmentDetailView: View {
         }.padding(.horizontal, 16)
     }
 
-    private var myScore: LocationScore? { store.score(for: location) }
-    private var partnerScore: LocationScore? { store.partner.flatMap { store.score(for: location, personID: $0.id) } }
-    private var couple: CoupleLocationScore? { store.coupleRanked().first { $0.id == location.id } }
-
     private func compactScore(name: String, value: Double?) -> some View {
         VStack(alignment: .leading, spacing: 2) { Text(name.uppercased()).font(.caption2.weight(.bold)).foregroundStyle(.secondary); Text(value?.formatted(.number.precision(.fractionLength(1))) ?? "N/A").font(BBTheme.score(25)) }.frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -186,9 +190,9 @@ struct EstablishmentDetailView: View {
     }
 
     private struct Breakdown { let food: Double; let value: Double?; let service: Double?; let atmosphere: Double?; let explanation: String }
-    private var breakdown: Breakdown? {
+    private func breakdown(for visits: [VisitEntity]) -> Breakdown? {
         guard let personID = store.currentPerson?.id else { return nil }
-        let ratings = location.visitArray.compactMap { $0.rating(for: personID) }
+        let ratings = visits.compactMap { $0.rating(for: personID) }
         guard !ratings.isEmpty else { return nil }
         func avg(_ values: [Reaction]) -> Double? { values.isEmpty ? nil : values.map(\.anchor).reduce(0, +) / Double(values.count) }
         let food = avg(ratings.map(\.reaction)) ?? 55
@@ -225,10 +229,10 @@ struct EstablishmentDetailView: View {
         .accessibilityLabel("\(title): \(value.map { $0.formatted(.number.precision(.fractionLength(0))) } ?? "not yet rated")")
     }
 
-    private var scorePoints: [Double] {
+    private func scorePoints(for visits: [VisitEntity]) -> [Double] {
         guard let personID = store.currentPerson?.id else { return [] }
         var total = 0.0, weight = 0.0
-        return location.visitArray.reversed().compactMap { visit in
+        return visits.reversed().compactMap { visit in
             guard let rating = visit.rating(for: personID) else { return nil }
             total += store.rankingEngine.visitValue(visit: visit, rating: rating); weight += 1
             return total / weight

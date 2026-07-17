@@ -132,6 +132,25 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertEqual(ImageSanitizer.clusters(photos).count, 2)
     }
 
+    func testPhotoClusterCoordinateAveragesAcrossTheAntimeridian() throws {
+        let data = Data([0])
+        let date = Date.now
+        let cluster = BackfillCluster(id: UUID(), photos: [
+            BackfillPhoto(
+                id: UUID(), fullData: data, thumbnailData: nil, date: date,
+                coordinate: .init(latitude: 0, longitude: 179.9997)
+            ),
+            BackfillPhoto(
+                id: UUID(), fullData: data, thumbnailData: nil, date: date,
+                coordinate: .init(latitude: 0, longitude: -179.9997)
+            )
+        ])
+
+        let coordinate = try XCTUnwrap(cluster.coordinate)
+        XCTAssertEqual(coordinate.latitude, 0, accuracy: 0.000_001)
+        XCTAssertGreaterThan(abs(coordinate.longitude), 179.999)
+    }
+
     func testHistoricalPhotoWithoutCaptureDateDoesNotSilentlyUseNow() throws {
         let image = UIGraphicsImageRenderer(size: CGSize(width: 40, height: 40)).image { context in
             UIColor.systemOrange.setFill()
@@ -168,8 +187,9 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertTrue(CGImageDestinationFinalize(destination))
 
         let photo = try XCTUnwrap(ImageSanitizer.process(encoded as Data, date: nil))
-        XCTAssertEqual(photo.coordinate?.latitude, -33.8688, accuracy: 0.000_001)
-        XCTAssertEqual(photo.coordinate?.longitude, -151.2093, accuracy: 0.000_001)
+        let coordinate = try XCTUnwrap(photo.coordinate)
+        XCTAssertEqual(coordinate.latitude, -33.8688, accuracy: 0.000_001)
+        XCTAssertEqual(coordinate.longitude, -151.2093, accuracy: 0.000_001)
         XCTAssertEqual(
             photo.date,
             try XCTUnwrap(ISO8601DateFormatter().date(from: "2024-07-17T18:30:00+10:00")),
@@ -231,6 +251,23 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertNil(LocationQualityPolicy.visitCoordinate(
             from: location(latitude: 40.7605), near: nil, asOf: now
         ))
+    }
+
+    func testManualPlaceDoesNotInventCoordinatesWhileMappedVisitUsesRestaurantPin() {
+        let manual = store.createLocation(name: "Unmapped Supper Club", category: .fullService)
+        let manualVisit = store.logVisit(at: manual, reaction: .liked)
+        XCTAssertFalse(manual.hasCoordinates)
+        XCTAssertFalse(manualVisit.hasCoordinates)
+
+        let mapped = store.createLocation(
+            name: "Mapped Cafe",
+            category: .coffeeTea,
+            coordinate: (40.7600, -111.8900)
+        )
+        let mappedVisit = store.logVisit(at: mapped, reaction: .liked)
+        XCTAssertTrue(mappedVisit.hasCoordinates)
+        XCTAssertEqual(mappedVisit.latitude, mapped.latitude, accuracy: 0.000_001)
+        XCTAssertEqual(mappedVisit.longitude, mapped.longitude, accuracy: 0.000_001)
     }
 
     func testSanitizedBackfillPhotoBoundsStoredPixelDimensions() throws {

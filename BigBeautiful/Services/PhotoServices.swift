@@ -29,10 +29,19 @@ struct BackfillCluster: Identifiable {
     var coordinate: CLLocationCoordinate2D? {
         let values = photos.compactMap(\.coordinate)
         guard !values.isEmpty else { return nil }
-        let latitudeTotal = values.reduce(0.0) { $0 + $1.latitude }
-        let longitudeTotal = values.reduce(0.0) { $0 + $1.longitude }
-        let count = Double(values.count)
-        return CLLocationCoordinate2D(latitude: latitudeTotal / count, longitude: longitudeTotal / count)
+        let vector = values.reduce(into: (x: 0.0, y: 0.0, z: 0.0)) { result, coordinate in
+            let latitude = coordinate.latitude * .pi / 180
+            let longitude = coordinate.longitude * .pi / 180
+            result.x += cos(latitude) * cos(longitude)
+            result.y += cos(latitude) * sin(longitude)
+            result.z += sin(latitude)
+        }
+        let horizontal = hypot(vector.x, vector.y)
+        guard horizontal > .ulpOfOne || abs(vector.z) > .ulpOfOne else { return values.first }
+        return CLLocationCoordinate2D(
+            latitude: atan2(vector.z, horizontal) * 180 / .pi,
+            longitude: atan2(vector.y, vector.x) * 180 / .pi
+        )
     }
 }
 

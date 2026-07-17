@@ -153,13 +153,14 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         let status = manager.authorizationStatus
         let accuracy = manager.accuracyAuthorization
-        if status == .authorizedWhenInUse || status == .authorizedAlways { manager.requestLocation() }
         Task { @MainActor in
             authorization = status
             accuracyAuthorization = accuracy
-            if status != .authorizedWhenInUse && status != .authorizedAlways {
-                currentLocation = nil
-                nearby = []
+            currentLocation = nil
+            nearby = []
+            if status == .authorizedWhenInUse || status == .authorizedAlways {
+                errorMessage = nil
+                self.manager.requestLocation()
             }
         }
     }

@@ -30,6 +30,8 @@ final class AppStore {
     @ObservationIgnored private var isWaitingForAcceptedCircle = false
     @ObservationIgnored private var scoreCache: [UUID: [LocationScore]] = [:]
     @ObservationIgnored private var coupleScoreCache: [String: [CoupleLocationScore]] = [:]
+    @ObservationIgnored private var locationsByIdentity: [LocationIdentityKey: RestaurantLocation] = [:]
+    @ObservationIgnored private var locationsBySource: [LocationSourceKey: RestaurantLocation] = [:]
     @ObservationIgnored private var cachedScoreRevision = -1
     @ObservationIgnored private var isBatching = false
     @ObservationIgnored private var pendingSorts: Set<CachedCollection> = []
@@ -178,6 +180,8 @@ final class AppStore {
             remoteReloadTask = nil
             scoreCache.removeAll()
             coupleScoreCache.removeAll()
+            locationsByIdentity.removeAll()
+            locationsBySource.removeAll()
             cachedScoreRevision = -1
             pendingSorts.removeAll()
             lastError = nil
@@ -226,12 +230,13 @@ final class AppStore {
         tags: [String] = []
     ) -> RestaurantLocation {
         let normalizedName = name.trimmedOr("Unnamed Establishment")
+        let circleID = activeCircle?.id
         if let sourceIdentifier, !sourceIdentifier.isEmpty,
-           let existing = locations.first(where: { $0.sourceIdentifier == sourceIdentifier }) { return existing }
-        if let existing = locations.first(where: {
-            $0.name.localizedCaseInsensitiveCompare(normalizedName) == .orderedSame &&
-            ($0.address ?? "") == (address ?? "")
-        }) { return existing }
+           let existing = locationsBySource[.init(circleID: circleID, sourceIdentifier: sourceIdentifier)] {
+            return existing
+        }
+        let identityKey = LocationIdentityKey(circleID: circleID, name: normalizedName, address: address)
+        if let existing = locationsByIdentity[identityKey] { return existing }
         let location = RestaurantLocation(context: context)
         assign(location, alongside: activeCircle)
         location.id = UUID(); location.name = normalizedName
@@ -243,6 +248,7 @@ final class AppStore {
             location.latitude = coordinate.0; location.longitude = coordinate.1; location.hasCoordinates = true
         }
         allLocations.append(location)
+        indexLocation(location)
         pendingSorts.insert(.locations)
         commit()
         return location
@@ -478,6 +484,7 @@ final class AppStore {
     func updateLocation(_ location: RestaurantLocation, name: String, category: DiningCategory, cuisines: [String], tags: [String], isClosed: Bool) {
         location.name = name.trimmedOr(location.name); location.category = category; location.cuisines = cuisines
         location.tags = tags; location.isClosed = isClosed; location.updatedAt = .now
+        rebuildLocationIndexes()
         pendingSorts.insert(.locations)
         commit()
     }
@@ -507,6 +514,7 @@ final class AppStore {
             location.hasCoordinates = false; location.latitude = 0; location.longitude = 0
         }
         location.isClosed = isClosed; location.updatedAt = .now
+        rebuildLocationIndexes()
         pendingSorts.insert(.locations)
         commit()
     }
@@ -533,6 +541,7 @@ final class AppStore {
         allComparisons.removeAll { deletedComparisonIDs.contains($0.id) }
         allLocations.removeAll { $0.id == duplicate.id }
         context.delete(duplicate)
+        rebuildLocationIndexes()
         commit()
     }
 
@@ -629,6 +638,7 @@ final class AppStore {
             circles = try fetch(CircleEntity.self, sort: [NSSortDescriptor(key: "createdAt", ascending: true)])
             allPeople = try fetch(PersonEntity.self, sort: [NSSortDescriptor(key: "createdAt", ascending: true)])
             allLocations = try fetch(RestaurantLocation.self, sort: [NSSortDescriptor(key: "name", ascending: true, selector: #selector(NSString.localizedCaseInsensitiveCompare(_:)))])
+            rebuildLocationIndexes()
             allVisits = try fetch(VisitEntity.self, sort: [NSSortDescriptor(key: "date", ascending: false)])
             allComparisons = try fetch(ComparisonEntity.self, sort: [NSSortDescriptor(key: "date", ascending: false)])
             allWantEntries = try fetch(WantEntryEntity.self, sort: [NSSortDescriptor(key: "addedAt", ascending: false)])
@@ -713,6 +723,25 @@ final class AppStore {
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
     }
 
+    private func indexLocation(_ location: RestaurantLocation) {
+        let identity = LocationIdentityKey(
+            circleID: location.circle?.id,
+            name: location.name,
+            address: location.address
+        )
+        if locationsByIdentity[identity] == nil { locationsByIdentity[identity] = location }
+        if let sourceIdentifier = location.sourceIdentifier, !sourceIdentifier.isEmpty {
+            let source = LocationSourceKey(circleID: location.circle?.id, sourceIdentifier: sourceIdentifier)
+            if locationsBySource[source] == nil { locationsBySource[source] = location }
+        }
+    }
+
+    private func rebuildLocationIndexes() {
+        locationsByIdentity.removeAll(keepingCapacity: true)
+        locationsBySource.removeAll(keepingCapacity: true)
+        for location in allLocations { indexLocation(location) }
+    }
+
     private func fetch<T: NSManagedObject>(_ type: T.Type, sort: [NSSortDescriptor]) throws -> [T] {
         let request = NSFetchRequest<T>(entityName: String(describing: type))
         request.sortDescriptors = sort
@@ -731,6 +760,23 @@ final class AppStore {
         init(_ a: UUID, _ b: UUID) {
             if a.uuidString <= b.uuidString { low = a; high = b } else { low = b; high = a }
         }
+    }
+
+    private struct LocationIdentityKey: Hashable {
+        let circleID: UUID?
+        let name: String
+        let address: String
+
+        init(circleID: UUID?, name: String, address: String?) {
+            self.circleID = circleID
+            self.name = name.precomposedStringWithCanonicalMapping.lowercased(with: .current)
+            self.address = address ?? ""
+        }
+    }
+
+    private struct LocationSourceKey: Hashable {
+        let circleID: UUID?
+        let sourceIdentifier: String
     }
 
     private enum CachedCollection: Hashable {

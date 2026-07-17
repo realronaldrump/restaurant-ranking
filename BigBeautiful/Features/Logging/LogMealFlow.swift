@@ -26,6 +26,7 @@ struct LogMealFlow: View {
     @State private var addMoreVisit: VisitEntity?
     @State private var quickQuestions: [ComparisonQuestion] = []
     @State private var quickIndex = 0
+    @State private var payoffAppeared = false
     @FocusState private var searchFocused: Bool
 
     var body: some View {
@@ -42,18 +43,19 @@ struct LogMealFlow: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button(stage == .place ? "Cancel" : "Back") {
-                        if stage == .place { dismiss() }
-                        else if stage == .reaction { stage = .place }
-                        else if stage == .quickComparisons { stage = .payoff }
-                        else { dismiss() }
+                    if stage != .payoff {
+                        Button(leadingButtonTitle) {
+                            if stage == .place { dismiss() }
+                            else if stage == .reaction { stage = .place }
+                            else if stage == .quickComparisons { refreshPayoff(); stage = .payoff }
+                        }
                     }
                 }
                 ToolbarItem(placement: .principal) { Eyebrow(stageTitle) }
             }
         }
         .interactiveDismissDisabled(stage == .payoff)
-        .sheet(item: $addMoreVisit) { visit in AddMoreVisitView(visit: visit) }
+        .sheet(item: $addMoreVisit) { visit in AddMoreVisitView(visit: visit, personID: store.currentPerson?.id) }
         .task {
             guard !ProcessInfo.processInfo.arguments.contains("-resetForUITests") else { return }
             locationService.requestNearby()
@@ -62,6 +64,10 @@ struct LogMealFlow: View {
 
     private var stageTitle: String {
         switch stage { case .place: "Log a Meal · 1 of 2"; case .reaction: "Log a Meal · 2 of 2"; case .payoff: "Entered into the record"; case .quickComparisons: "Optional placement" }
+    }
+
+    private var leadingButtonTitle: String {
+        switch stage { case .place: "Cancel"; case .reaction: "Back"; case .payoff: "Done"; case .quickComparisons: "Back" }
     }
 
     private var placePicker: some View {
@@ -73,7 +79,7 @@ struct LogMealFlow: View {
                 }
                 searchField
                 if query.isEmpty {
-                    placeSection("Nearby now", choices: nearbyChoices, empty: locationService.isSearching ? "Looking around…" : "Search for a place or enable location in Settings.")
+                    placeSection("Nearby now", choices: nearbyChoices, empty: nearbyEmptyMessage)
                     placeSection("From your ledger", choices: Array(existingChoices.prefix(8)), empty: "Your visited places will appear here.")
                 } else {
                     Button { select(manualChoice) } label: {
@@ -160,6 +166,8 @@ struct LogMealFlow: View {
                         ScoreMark(score: score.score, caption: "your expected next visit", size: 74, provisional: score.isProvisional)
                     }
                     .padding(.bottom, 4)
+                    .scaleEffect(payoffAppeared ? 1 : 0.85)
+                    .opacity(payoffAppeared ? 1 : 0)
                     rankingInsertion(score)
                     if !quickQuestions.isEmpty {
                         Button { quickIndex = 0; stage = .quickComparisons } label: {
@@ -177,6 +185,7 @@ struct LogMealFlow: View {
                 Spacer(minLength: 20)
             }.padding(20).readablePageWidth()
         }
+        .onAppear { withAnimation(.spring(duration: 0.55, bounce: 0.3)) { payoffAppeared = true } }
         .accessibilityIdentifier("log-payoff")
     }
 
@@ -239,6 +248,14 @@ struct LogMealFlow: View {
             Text(label.uppercased()).font(.caption2.weight(.bold)).foregroundStyle(.secondary)
             Text(score?.location.name ?? "—").font(.callout.weight(.semibold)).multilineTextAlignment(.center).lineLimit(2)
         }.frame(maxWidth: .infinity)
+    }
+
+    private var nearbyEmptyMessage: String {
+        switch locationService.authorization {
+        case .denied, .restricted: "Location is off — search still works beautifully."
+        case .notDetermined: "The nearby guess needs location, or just search."
+        default: locationService.isSearching || locationService.currentLocation == nil ? "Looking around…" : "No nearby matches. Search below."
+        }
     }
 
     private var existingChoices: [PlaceChoice] {
@@ -310,6 +327,8 @@ struct AddMoreVisitView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppStore.self) private var store
     let visit: VisitEntity
+    private let personID: UUID?
+    @State private var reaction: Reaction?
     @State private var visitType: VisitType?
     @State private var priceBand: Int
     @State private var occasion: Occasion?
@@ -319,14 +338,18 @@ struct AddMoreVisitView: View {
     @State private var wouldOrderAgain: Bool?
     @State private var hazy: Bool
     @State private var memory: String
+    @State private var memoryExpanded: Bool
     @State private var companions: Set<UUID>
+    @State private var newCompanion = ""
     @State private var dishes: [DishDraft] = []
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var isSaving = false
 
-    init(visit: VisitEntity) {
+    init(visit: VisitEntity, personID: UUID?) {
         self.visit = visit
-        let rating = visit.ratingArray.first
+        self.personID = personID
+        let rating = personID.flatMap(visit.rating(for:))
+        _reaction = State(initialValue: rating?.reaction)
         _visitType = State(initialValue: visit.visitType)
         _priceBand = State(initialValue: Int(visit.priceBand))
         _occasion = State(initialValue: visit.occasion)
@@ -336,51 +359,20 @@ struct AddMoreVisitView: View {
         _wouldOrderAgain = State(initialValue: rating?.hasWouldOrderAgain == true ? rating?.wouldOrderAgain : nil)
         _hazy = State(initialValue: rating?.hazyMemory ?? false)
         _memory = State(initialValue: visit.memory ?? "")
+        _memoryExpanded = State(initialValue: visit.memory?.isEmpty == false)
         _companions = State(initialValue: Set(visit.companionIDs))
     }
 
     var body: some View {
         NavigationStack {
             Form {
+                verdictSection
                 Section { detailPicker("Visit type", selection: $visitType, values: VisitType.allCases); pricePicker; detailPicker("Occasion", selection: $occasion, values: Occasion.allCases) } header: { Text("The visit") }
-                Section("Dishes") {
-                    ForEach($dishes) { $dish in
-                        VStack(alignment: .leading, spacing: 10) {
-                            TextField("Dish name", text: $dish.name).font(.headline)
-                            Picker("Role", selection: $dish.role) { ForEach(DishRole.allCases) { Text($0.rawValue).tag($0) } }
-                            Picker("Reaction", selection: $dish.reaction) { ForEach(Reaction.allCases) { Text($0.compactTitle).tag($0) } }
-                            Toggle("Would order again", isOn: $dish.wouldOrderAgain)
-                        }.padding(.vertical, 6)
-                    }
-                    Button { dishes.append(.init()) } label: { Label("Add a dish", systemImage: "plus") }
-                }
-                Section("The optional particulars") {
-                    optionalReactionPicker("Service", selection: $service)
-                    optionalReactionPicker("Atmosphere", selection: $atmosphere)
-                    optionalReactionPicker("Value", selection: $value)
-                    Picker("Would order again", selection: $wouldOrderAgain) {
-                        Text("Not set").tag(Bool?.none); Text("Yes").tag(Bool?.some(true)); Text("No").tag(Bool?.some(false))
-                    }
-                    Toggle("Hazy memory", isOn: $hazy)
-                }
-                Section("Company") {
-                    if store.people.filter({ $0.id != store.currentPerson?.id }).isEmpty { Text("Add people to your circle in Settings.").foregroundStyle(.secondary) }
-                    ForEach(store.people.filter { $0.id != store.currentPerson?.id }) { person in
-                        Button {
-                            if companions.contains(person.id) { companions.remove(person.id) } else { companions.insert(person.id) }
-                        } label: {
-                            HStack { Text(person.name).foregroundStyle(BBTheme.ink); Spacer(); if companions.contains(person.id) { Image(systemName: "checkmark").foregroundStyle(BBTheme.oxblood) } }
-                        }
-                    }
-                }
-                Section("Photos") {
-                    let photoCount = photoItems.count
-                    PhotosPicker(selection: $photoItems, maxSelectionCount: 12, matching: .images) { Label(photoCount == 0 ? "Choose photos" : "\(photoCount) selected", systemImage: "photo.on.rectangle") }
-                    Text("Saved copies have location metadata stripped. Originals are never changed.").font(.caption).foregroundStyle(.secondary)
-                }
-                Section {
-                    TextField("A birthday, a freezing patio, the burrito move…", text: $memory, axis: .vertical).lineLimit(3...8)
-                } header: { Text("Add a Memory") } footer: { Text("The only free-text field in the app. Searchable, dictation-friendly, and never scored.") }
+                dishSection
+                particularsSection
+                companySection
+                photoSection
+                memorySection
             }
             .scrollContentBackground(.hidden).background(PaperBackground()).tint(BBTheme.oxblood)
             .navigationTitle("Add More").navigationBarTitleDisplayMode(.inline)
@@ -389,6 +381,147 @@ struct AddMoreVisitView: View {
                 ToolbarItem(placement: .confirmationAction) { Button(isSaving ? "Saving…" : "Save") { Task { await save() } }.disabled(isSaving) }
             }
         }
+    }
+
+    private var verdictSection: some View {
+        Section {
+            ReactionPicker(selected: reaction) { reaction = $0 }
+                .listRowInsets(EdgeInsets(top: 10, leading: 10, bottom: 10, trailing: 10))
+                .listRowBackground(Color.clear)
+            Toggle("Hazy memory · weight it lightly", isOn: $hazy)
+        } header: { Text("Your verdict") } footer: {
+            if reaction == nil { Text("A visit can stay unrated forever. Choose a reaction only when you have one.") }
+        }
+    }
+
+    private var dishSection: some View {
+        Section("Dishes") {
+            ForEach(myDishEntries) { entry in
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(entry.dish?.name ?? "Dish").font(.headline)
+                        Text(entry.dish?.role.rawValue ?? "").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: entry.reaction.symbol).foregroundStyle(BBTheme.oxblood)
+                        .accessibilityLabel(entry.reaction.rawValue)
+                }
+                .swipeActions(edge: .trailing) {
+                    Button(role: .destructive) { store.deleteDishEntry(entry) } label: { Label("Remove", systemImage: "trash") }
+                }
+            }
+            ForEach($dishes) { $dish in
+                VStack(alignment: .leading, spacing: 10) {
+                    TextField("Dish name", text: $dish.name).font(.headline)
+                    let suggestions = dishSuggestions(for: dish.name)
+                    if !suggestions.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                ForEach(suggestions) { known in
+                                    Button {
+                                        dish.name = known.name
+                                        dish.role = known.role
+                                    } label: {
+                                        Label(known.name, systemImage: "clock.arrow.circlepath")
+                                            .font(.caption.weight(.semibold)).lineLimit(1)
+                                            .padding(.horizontal, 10).padding(.vertical, 7)
+                                            .background(BBTheme.ink.opacity(0.06), in: Capsule())
+                                    }
+                                    .buttonStyle(.borderless)
+                                }
+                            }
+                        }
+                    }
+                    Picker("Role", selection: $dish.role) { ForEach(DishRole.allCases) { Text($0.rawValue).tag($0) } }
+                    Picker("Reaction", selection: $dish.reaction) { ForEach(Reaction.allCases) { Text($0.compactTitle).tag($0) } }
+                    Toggle("Would order again", isOn: $dish.wouldOrderAgain)
+                }.padding(.vertical, 6)
+            }
+            Button { dishes.append(.init()) } label: { Label("Add a dish", systemImage: "plus") }
+        }
+    }
+
+    private var particularsSection: some View {
+        Section {
+            optionalReactionPicker("Service", selection: $service)
+            optionalReactionPicker("Atmosphere", selection: $atmosphere)
+            optionalReactionPicker("Value", selection: $value)
+            Picker("Would order again", selection: $wouldOrderAgain) {
+                Text("Not set").tag(Bool?.none); Text("Yes").tag(Bool?.some(true)); Text("No").tag(Bool?.some(false))
+            }
+        } header: { Text("The optional particulars") } footer: {
+            if reaction == nil { Text("These refine your verdict, so they apply once a reaction is chosen.") }
+        }
+    }
+
+    private var companySection: some View {
+        Section("Company") {
+            ForEach(store.people.filter { $0.id != personID }) { person in
+                Button {
+                    if companions.contains(person.id) { companions.remove(person.id) } else { companions.insert(person.id) }
+                } label: {
+                    HStack {
+                        Text(person.name).foregroundStyle(BBTheme.ink)
+                        if !person.isCircleMember { Text("· companion").font(.caption).foregroundStyle(.secondary) }
+                        Spacer()
+                        if companions.contains(person.id) { Image(systemName: "checkmark").foregroundStyle(BBTheme.oxblood) }
+                    }
+                }
+            }
+            HStack {
+                TextField("Add a named companion", text: $newCompanion)
+                Button("Add") {
+                    if let person = store.addNamedCompanion(name: newCompanion) { companions.insert(person.id) }
+                    newCompanion = ""
+                }
+                .disabled(newCompanion.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+    }
+
+    private var photoSection: some View {
+        Section("Photos") {
+            if !visit.photoArray.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(visit.photoArray) { photo in
+                            PhotoImage(photo: photo).frame(width: 64, height: 64).clipped()
+                                .contextMenu { Button("Remove Photo", systemImage: "trash", role: .destructive) { store.deletePhoto(photo) } }
+                        }
+                    }
+                }
+            }
+            let pendingCount = photoItems.count
+            PhotosPicker(selection: $photoItems, maxSelectionCount: 12, matching: .images) {
+                Label(pendingCount == 0 ? "Choose photos" : "\(pendingCount) selected to add", systemImage: "photo.on.rectangle")
+            }
+            Text("Saved copies have location metadata stripped. Originals are never changed.").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var memorySection: some View {
+        Section {
+            DisclosureGroup(isExpanded: $memoryExpanded) {
+                TextField("A birthday, a freezing patio, the burrito move…", text: $memory, axis: .vertical).lineLimit(3...8)
+            } label: {
+                Label(memory.isEmpty ? "Add a Memory" : "Memory", systemImage: "text.quote")
+            }
+        } footer: { Text("The only free-text field in the app. Searchable, dictation-friendly, and never scored.") }
+    }
+
+    private var myDishEntries: [DishEntryEntity] {
+        visit.dishEntryArray.filter { $0.personID == personID }.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    private func dishSuggestions(for text: String) -> [DishEntity] {
+        guard let location = visit.location else { return [] }
+        let typed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let taken = Set(dishes.map { $0.name.lowercased() } + myDishEntries.compactMap { $0.dish?.name.lowercased() })
+        return Array(location.dishArray.filter { dish in
+            !taken.contains(dish.name.lowercased()) &&
+            dish.name.lowercased() != typed.lowercased() &&
+            (typed.isEmpty || dish.name.localizedCaseInsensitiveContains(typed))
+        }.prefix(4))
     }
 
     private var pricePicker: some View {
@@ -407,9 +540,12 @@ struct AddMoreVisitView: View {
     private func save() async {
         isSaving = true
         store.updateVisit(visit, type: visitType, priceBand: priceBand, occasion: occasion, memory: memory, companions: Array(companions))
-        if let rating = visit.ratingArray.first {
-            store.updateRating(rating, service: service, atmosphere: atmosphere, value: value, wouldOrderAgain: wouldOrderAgain, hazy: hazy)
-            for dish in dishes { _ = store.addDish(name: dish.name, role: dish.role, reaction: dish.reaction, wouldOrderAgain: dish.wouldOrderAgain, to: visit, personID: rating.personID) }
+        if let personID {
+            if let reaction {
+                let rating = store.addRating(to: visit, personID: personID, reaction: reaction, hazy: hazy)
+                store.updateRating(rating, service: service, atmosphere: atmosphere, value: value, wouldOrderAgain: wouldOrderAgain, hazy: hazy)
+            }
+            for dish in dishes { _ = store.addDish(name: dish.name, role: dish.role, reaction: dish.reaction, wouldOrderAgain: dish.wouldOrderAgain, to: visit, personID: personID) }
         }
         for item in photoItems {
             if let data = try? await item.loadTransferable(type: Data.self), let photo = ImageSanitizer.process(data) {

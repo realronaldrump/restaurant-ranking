@@ -23,7 +23,7 @@ struct VisitDetailView: View {
         }
         .editorialPage().navigationTitle("Visit").navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Edit") { editingVisit = visit } } }
-        .sheet(item: $editingVisit) { AddMoreVisitView(visit: $0) }
+        .sheet(item: $editingVisit) { AddMoreVisitView(visit: $0, personID: store.currentPerson?.id) }
         .fullScreenCover(item: $selectedPhoto) { PhotoViewer(photo: $0) }
         .confirmationDialog("Delete this visit?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete Visit", role: .destructive) { store.deleteVisit(visit); dismiss() }
@@ -44,8 +44,12 @@ struct VisitDetailView: View {
     }
 
     @ViewBuilder private var ratings: some View {
-        if visit.ratingArray.isEmpty { EmptyLedgerView(title: "An unrated visit", message: "It counts in history and contributes nothing to rankings.", symbol: "questionmark.circle") }
-        else {
+        if visit.ratingArray.isEmpty {
+            VStack(spacing: 4) {
+                EmptyLedgerView(title: "An unrated visit", message: "It counts in history and contributes nothing to rankings.", symbol: "questionmark.circle")
+                Button("Rate This Visit") { editingVisit = visit }.buttonStyle(PrimaryButtonStyle())
+            }
+        } else {
             VStack(alignment: .leading, spacing: 12) {
                 EditorialSectionHeader("Reactions", eyebrow: "Independent opinions")
                 ForEach(visit.ratingArray) { rating in
@@ -57,6 +61,12 @@ struct VisitDetailView: View {
                         if rating.hazyMemory { Label("Hazy memory · lightly weighted", systemImage: "cloud.fog").font(.caption).foregroundStyle(.secondary) }
                         HStack { subrating("Value", rating.value); subrating("Service", rating.service); subrating("Atmosphere", rating.atmosphere) }
                     }.ledgerCard()
+                }
+                if store.currentPerson.flatMap({ visit.rating(for: $0.id) }) == nil {
+                    Button { editingVisit = visit } label: {
+                        Label("Add Your Rating", systemImage: "plus.circle.fill").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered).buttonBorderShape(.roundedRectangle(radius: 2)).frame(minHeight: 48)
                 }
             }
         }
@@ -78,7 +88,18 @@ struct VisitDetailView: View {
             VStack(alignment: .leading, spacing: 12) {
                 EditorialSectionHeader("Photos", eyebrow: "Metadata stripped")
                 ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: 6) { ForEach(visit.photoArray) { photo in if let data = photo.thumbnailData ?? photo.fullData, let image = UIImage(data: data) { Button { selectedPhoto = photo } label: { Image(uiImage: image).resizable().scaledToFill().frame(width: 170, height: 150).clipped() }.buttonStyle(.plain).accessibilityLabel("Open meal photo") } } }
+                    LazyHStack(spacing: 6) {
+                        ForEach(visit.photoArray) { photo in
+                            Button { selectedPhoto = photo } label: {
+                                PhotoImage(photo: photo).frame(width: 170, height: 150).clipped()
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Open meal photo")
+                            .contextMenu {
+                                Button("Remove Photo", systemImage: "trash", role: .destructive) { store.deletePhoto(photo) }
+                            }
+                        }
+                    }
                 }
             }
         }

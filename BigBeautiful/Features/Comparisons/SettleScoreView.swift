@@ -11,16 +11,18 @@ struct SettleScoreView: View {
     @State private var prompts: [Prompt] = []
     @State private var index = 0
     @State private var answered = 0
+    @State private var isReady = false
 
     var body: some View {
         ZStack {
             PaperBackground()
-            if prompts.isEmpty { empty }
+            if !isReady { ProgressView().tint(BBTheme.oxblood) }
+            else if prompts.isEmpty { empty }
             else if index >= prompts.count { complete }
             else { promptView(prompts[index]) }
         }
         .navigationTitle("Settle the Score").navigationBarTitleDisplayMode(.inline)
-        .task { buildPrompts() }
+        .task { buildPrompts(); isReady = true }
     }
 
     private var empty: some View {
@@ -76,7 +78,16 @@ struct SettleScoreView: View {
     }
 
     private var progressHeader: some View {
-        HStack { Eyebrow("Question \(index + 1) of \(prompts.count)"); Spacer(); Text("\(Int(Double(index) / Double(max(1, prompts.count)) * 100))%").font(.caption.monospacedDigit()) }
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Eyebrow("Question \(index + 1) of \(prompts.count)")
+                Spacer()
+                Text("\(answered) answered").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            ProgressView(value: Double(index), total: Double(max(1, prompts.count)))
+                .tint(BBTheme.oxblood)
+                .scaleEffect(y: 0.8)
+        }
     }
 
     private enum Side { case a, b }
@@ -114,7 +125,6 @@ struct DirectComparisonView: View {
     let source: RestaurantLocation
     @State private var opponent: RestaurantLocation?
     @State private var query = ""
-    @State private var saved = false
 
     var body: some View {
         NavigationStack {
@@ -128,8 +138,8 @@ struct DirectComparisonView: View {
     }
     private var candidates: [RestaurantLocation] { store.locations.filter { $0 != source && !$0.isClosed && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query)) } }
     private func comparison(_ other: RestaurantLocation) -> some View {
-        VStack(spacing: 17) { Spacer(); Text("Which would you rather revisit?").font(BBTheme.display(31)).multilineTextAlignment(.center); choice(source, outcome: .a); Text("OR").font(.caption2.weight(.bold)); choice(other, outcome: .b); Button("Too Close to Call") { record(.tie, other) }.buttonStyle(.bordered); Button("Choose another") { opponent = nil }.foregroundStyle(.secondary); Spacer() }.padding(22)
+        VStack(spacing: 17) { Spacer(); Text("Which would you rather revisit?").font(BBTheme.display(31)).multilineTextAlignment(.center); choice(source, outcome: .a, against: other); Text("OR").font(.caption2.weight(.bold)); choice(other, outcome: .b, against: other); Button("Too Close to Call") { record(.tie, other) }.buttonStyle(.bordered); Button("Choose another") { opponent = nil }.foregroundStyle(.secondary); Spacer() }.padding(22)
     }
-    private func choice(_ location: RestaurantLocation, outcome: ComparisonOutcome) -> some View { Button { record(outcome, opponent!) } label: { HStack { Image(systemName: location.category.symbol); Text(location.name).font(BBTheme.display(23)); Spacer(); if let score = store.score(for: location) { Text(score.displayScore).font(BBTheme.score(22)) } }.padding(19).foregroundStyle(BBTheme.paper).background(BBTheme.oxblood) }.buttonStyle(.plain) }
-    private func record(_ outcome: ComparisonOutcome, _ other: RestaurantLocation) { store.recordComparison(a: source, b: other, outcome: outcome); Haptics.success(); saved = true; dismiss() }
+    private func choice(_ location: RestaurantLocation, outcome: ComparisonOutcome, against other: RestaurantLocation) -> some View { Button { record(outcome, other) } label: { HStack { Image(systemName: location.category.symbol); Text(location.name).font(BBTheme.display(23)); Spacer(); if let score = store.score(for: location) { Text(score.displayScore).font(BBTheme.score(22)) } }.padding(19).foregroundStyle(BBTheme.paper).background(BBTheme.oxblood) }.buttonStyle(.plain) }
+    private func record(_ outcome: ComparisonOutcome, _ other: RestaurantLocation) { store.recordComparison(a: source, b: other, outcome: outcome); Haptics.success(); dismiss() }
 }

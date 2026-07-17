@@ -24,7 +24,7 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("DAVIS’S").font(BBTheme.eyebrow).foregroundStyle(BBTheme.oxblood)
+                    Text(mastheadPossessive).font(BBTheme.eyebrow).foregroundStyle(BBTheme.oxblood)
                     Text("Big Beautiful").font(BBTheme.display(43)).tracking(-1.1)
                     Text("Restaurant Ranking App").font(BBTheme.display(23, weight: .regular)).foregroundStyle(.secondary)
                 }
@@ -33,9 +33,20 @@ struct HomeView: View {
                     .font(BBTheme.display(17)).padding(.top, 7)
             }
             Divider().overlay(BBTheme.ink)
-            HStack { Text("THE PERSONAL DINING LEDGER").font(.caption2.weight(.bold)).tracking(1.5); Spacer(); Text("EST. 2026").font(.caption2.weight(.bold)).tracking(1.5) }
+            HStack { Text("THE PERSONAL DINING LEDGER").font(.caption2.weight(.bold)).tracking(1.5); Spacer(); Text("EST. \(establishedYear)").font(.caption2.weight(.bold)).tracking(1.5) }
         }
         .padding(.top, 12)
+    }
+
+    private var mastheadPossessive: String {
+        let name = store.currentPerson?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !name.isEmpty else { return "DAVIS’S" }
+        return "\(name.uppercased())’S"
+    }
+
+    private var establishedYear: String {
+        let earliest = store.visits.map(\.date).min() ?? .now
+        return String(Calendar.current.component(.year, from: earliest))
     }
 
     private var logButton: some View {
@@ -111,7 +122,11 @@ struct HomeView: View {
         }
     }
 
-    private var settleCard: some View {
+    @ViewBuilder private var settleCard: some View {
+        if store.ranked().count >= 2 { settleCardBody }
+    }
+
+    private var settleCardBody: some View {
         let count = store.settleQuestions().count
         return Button { router.ledgerPath.append(.settleScore) } label: {
             HStack(spacing: 18) {
@@ -140,12 +155,17 @@ struct HomeView: View {
 }
 
 struct VisitRow: View {
+    @Environment(AppStore.self) private var store
     let visit: VisitEntity
     var body: some View {
         HStack(spacing: 13) {
             ZStack {
-                Rectangle().fill(BBTheme.ink.opacity(0.06)).frame(width: 54, height: 54)
-                Image(systemName: visit.location?.category.symbol ?? "fork.knife").foregroundStyle(BBTheme.oxblood)
+                if let photo = visit.photoArray.first {
+                    PhotoImage(photo: photo).frame(width: 54, height: 54).clipped()
+                } else {
+                    Rectangle().fill(BBTheme.ink.opacity(0.06)).frame(width: 54, height: 54)
+                    Image(systemName: visit.location?.category.symbol ?? "fork.knife").foregroundStyle(BBTheme.oxblood)
+                }
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text(visit.location?.name ?? "Unknown place").font(.headline)
@@ -156,10 +176,23 @@ struct VisitRow: View {
                 }.font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            if let reaction = visit.ratingArray.first?.reaction {
-                Image(systemName: reaction.symbol).foregroundStyle(BBTheme.oxblood).accessibilityLabel(reaction.rawValue)
-            } else { Text("UNRATED").font(.caption2.weight(.bold)).foregroundStyle(.secondary) }
+            reactionMark
         }
         .contentShape(Rectangle()).padding(.vertical, 4)
+    }
+
+    /// The current person's verdict in oxblood; another diner's verdict, dimmed,
+    /// when only they have rated; UNRATED when nobody has.
+    @ViewBuilder private var reactionMark: some View {
+        let mine = store.currentPerson.flatMap { visit.rating(for: $0.id) }
+        if let mine {
+            Image(systemName: mine.reaction.symbol).foregroundStyle(BBTheme.oxblood).accessibilityLabel(mine.reaction.rawValue)
+        } else if let other = visit.ratingArray.first {
+            let name = store.people.first { $0.id == other.personID }?.name ?? "Someone"
+            Image(systemName: other.reaction.symbol).foregroundStyle(.secondary)
+                .accessibilityLabel("\(other.reaction.rawValue), rated by \(name)")
+        } else {
+            Text("UNRATED").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+        }
     }
 }

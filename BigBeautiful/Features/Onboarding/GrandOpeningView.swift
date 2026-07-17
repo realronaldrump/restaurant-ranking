@@ -21,20 +21,33 @@ struct GrandOpeningView: View {
     var body: some View {
         ZStack {
             PaperBackground()
-            TabView(selection: $page) {
-                welcome.tag(0)
-                people.tag(1)
-                importPage.tag(2)
-                calibration.tag(3)
-                ready.tag(4)
+            // Button-driven paging only: swiping ahead could reach data-creating
+            // pages before the circle exists, orphaning imported records.
+            Group {
+                switch page {
+                case 0: welcome
+                case 1: people
+                case 2: importPage
+                case 3: calibration
+                default: ready
+                }
             }
-            .tabViewStyle(.page(indexDisplayMode: .never))
-            .animation(.easeInOut(duration: 0.35), value: page)
+            .id(page)
+            .transition(.asymmetric(
+                insertion: .move(edge: .trailing).combined(with: .opacity),
+                removal: .move(edge: .leading).combined(with: .opacity)
+            ))
         }
+        .animation(.easeInOut(duration: 0.35), value: page)
         .tint(BBTheme.oxblood)
         .fileImporter(isPresented: $isImporting, allowedContentTypes: [.commaSeparatedText, .plainText]) { result in
             importCSV(result)
         }
+    }
+
+    /// Idempotent: creates the circle from the entered names if it does not exist yet.
+    private func ensureCircle() {
+        if store.activeCircle == nil { store.bootstrap(myName: myName, partnerName: partnerName, circleName: circleName) }
     }
 
     private var welcome: some View {
@@ -239,12 +252,15 @@ struct GrandOpeningView: View {
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             let summary = try CSVImporter.parse(data: Data(contentsOf: url))
-            for meal in summary.meals {
-                let location = store.createLocation(name: meal.establishment, category: meal.category, address: meal.address, cuisines: meal.cuisines)
-                let visit = store.logVisit(at: location, reaction: meal.reaction, date: meal.date, hazy: meal.hazy)
-                if let memory = meal.memory { store.updateVisit(visit, type: nil, priceBand: 0, occasion: nil, memory: memory, companions: []) }
-                if let dish = meal.dish, let personID = store.currentPerson?.id {
-                    _ = store.addDish(name: dish, role: .entree, reaction: meal.reaction ?? .fine, wouldOrderAgain: true, to: visit, personID: personID)
+            ensureCircle()
+            store.performBatch {
+                for meal in summary.meals {
+                    let location = store.createLocation(name: meal.establishment, category: meal.category, address: meal.address, cuisines: meal.cuisines)
+                    let visit = store.logVisit(at: location, reaction: meal.reaction, date: meal.date, hazy: meal.hazy)
+                    if let memory = meal.memory { store.updateVisit(visit, type: nil, priceBand: 0, occasion: nil, memory: memory, companions: []) }
+                    if let dish = meal.dish, let personID = store.currentPerson?.id {
+                        _ = store.addDish(name: dish, role: .entree, reaction: meal.reaction ?? .fine, wouldOrderAgain: true, to: visit, personID: personID)
+                    }
                 }
             }
             importedCount = summary.meals.count
@@ -260,11 +276,14 @@ struct GrandOpeningView: View {
     }
 
     private func seedQuickPlaces() {
-        for index in seedNames.indices {
-            let name = seedNames[index].trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !name.isEmpty else { continue }
-            let location = store.createLocation(name: name, category: DiningCategory.suggested(for: name))
-            _ = store.logVisit(at: location, reaction: seedReactions[index], date: .now.addingTimeInterval(Double(-index) * 60))
+        ensureCircle()
+        store.performBatch {
+            for index in seedNames.indices {
+                let name = seedNames[index].trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !name.isEmpty else { continue }
+                let location = store.createLocation(name: name, category: DiningCategory.suggested(for: name))
+                _ = store.logVisit(at: location, reaction: seedReactions[index], date: .now.addingTimeInterval(Double(-index) * 60))
+            }
         }
         prepareCalibration()
     }

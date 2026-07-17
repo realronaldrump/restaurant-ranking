@@ -41,8 +41,8 @@ struct EstablishmentDetailView: View {
 
     private var hero: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let data = location.visitArray.flatMap(\.photoArray).first?.fullData, let image = UIImage(data: data) {
-                Image(uiImage: image).resizable().scaledToFill().frame(height: 245).clipped()
+            if let heroPhoto = location.visitArray.flatMap(\.photoArray).first {
+                PhotoImage(photo: heroPhoto, displayPixels: 1_400).frame(height: 245).frame(maxWidth: .infinity).clipped()
             } else { CategoryArtwork(category: location.category, height: 220) }
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top, spacing: 14) {
@@ -106,11 +106,9 @@ struct EstablishmentDetailView: View {
                 EditorialSectionHeader("The photo record", eyebrow: "\(photos.count) frames")
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 105), spacing: 4)], spacing: 4) {
                     ForEach(photos) { photo in
-                        if let data = photo.thumbnailData ?? photo.fullData, let image = UIImage(data: data) {
-                            Button { selectedPhoto = photo } label: {
-                                Image(uiImage: image).resizable().scaledToFill().frame(minHeight: 108).aspectRatio(1, contentMode: .fill).clipped()
-                            }.buttonStyle(.plain).accessibilityLabel("Open meal photo")
-                        }
+                        Button { selectedPhoto = photo } label: {
+                            PhotoImage(photo: photo).frame(minHeight: 108).aspectRatio(1, contentMode: .fill).clipped()
+                        }.buttonStyle(.plain).accessibilityLabel("Open meal photo")
                     }
                 }
             }.padding(.horizontal, 16)
@@ -126,6 +124,10 @@ struct EstablishmentDetailView: View {
                 metricBar("Value", value: summary.value)
                 metricBar("Service", value: summary.service)
                 metricBar("Atmosphere", value: summary.atmosphere)
+                if summary.value == nil || summary.service == nil || summary.atmosphere == nil {
+                    Text("Unrated particulars stay neutral. They never count against a place.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
             } else { Text("More detail will appear after rated visits.").foregroundStyle(.secondary) }
         }.padding(.horizontal, 16).padding(.vertical, 4)
     }
@@ -183,23 +185,44 @@ struct EstablishmentDetailView: View {
         }.frame(maxWidth: .infinity, minHeight: 110, alignment: .topLeading).ledgerCard()
     }
 
-    private struct Breakdown { let food, value, service, atmosphere: Double; let explanation: String }
+    private struct Breakdown { let food: Double; let value: Double?; let service: Double?; let atmosphere: Double?; let explanation: String }
     private var breakdown: Breakdown? {
         guard let personID = store.currentPerson?.id else { return nil }
         let ratings = location.visitArray.compactMap { $0.rating(for: personID) }
         guard !ratings.isEmpty else { return nil }
-        func avg(_ values: [Reaction]) -> Double { values.isEmpty ? 55 : values.map(\.anchor).reduce(0, +) / Double(values.count) }
-        let food = avg(ratings.map(\.reaction)), value = avg(ratings.compactMap(\.value)), service = avg(ratings.compactMap(\.service)), atmosphere = avg(ratings.compactMap(\.atmosphere))
-        let strongest = [("food", food), ("value", value), ("service", service), ("atmosphere", atmosphere)].max { $0.1 < $1.1 }?.0 ?? "food"
-        let weakest = [("food", food), ("value", value), ("service", service), ("atmosphere", atmosphere)].min { $0.1 < $1.1 }?.0 ?? "service"
-        return .init(food: food, value: value, service: service, atmosphere: atmosphere, explanation: "Strongest on \(strongest), with \(weakest) leaving the most room.")
+        func avg(_ values: [Reaction]) -> Double? { values.isEmpty ? nil : values.map(\.anchor).reduce(0, +) / Double(values.count) }
+        let food = avg(ratings.map(\.reaction)) ?? 55
+        let value = avg(ratings.compactMap(\.value))
+        let service = avg(ratings.compactMap(\.service))
+        let atmosphere = avg(ratings.compactMap(\.atmosphere))
+        let rated: [(String, Double)] = [("food", food)] + [("value", value), ("service", service), ("atmosphere", atmosphere)].compactMap { name, score in score.map { (name, $0) } }
+        let explanation: String
+        if rated.count <= 1 {
+            explanation = "Built on your overall reactions alone."
+        } else if let strongest = rated.max(by: { $0.1 < $1.1 }), let weakest = rated.min(by: { $0.1 < $1.1 }), strongest.0 != weakest.0, strongest.1 - weakest.1 > 2 {
+            explanation = "Strongest on \(strongest.0), with \(weakest.0) leaving the most room."
+        } else {
+            explanation = "Remarkably consistent across the particulars."
+        }
+        return .init(food: food, value: value, service: service, atmosphere: atmosphere, explanation: explanation)
     }
 
-    private func metricBar(_ title: String, value: Double) -> some View {
+    private func metricBar(_ title: String, value: Double?) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            HStack { Text(title).font(.callout.weight(.semibold)); Spacer(); Text(value.formatted(.number.precision(.fractionLength(0)))).font(.caption.monospacedDigit()) }
-            GeometryReader { proxy in ZStack(alignment: .leading) { Rectangle().fill(BBTheme.ink.opacity(0.07)); Rectangle().fill(BBTheme.oxblood).frame(width: proxy.size.width * value / 100) } }.frame(height: 4)
+            HStack {
+                Text(title).font(.callout.weight(.semibold))
+                Spacer()
+                Text(value.map { $0.formatted(.number.precision(.fractionLength(0))) } ?? "—").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Rectangle().fill(BBTheme.ink.opacity(0.07))
+                    if let value { Rectangle().fill(BBTheme.oxblood).frame(width: proxy.size.width * value / 100) }
+                }
+            }.frame(height: 4)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title): \(value.map { $0.formatted(.number.precision(.fractionLength(0))) } ?? "not yet rated")")
     }
 
     private var scorePoints: [Double] {

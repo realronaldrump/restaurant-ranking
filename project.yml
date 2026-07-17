@@ -9,9 +9,9 @@ settings:
   base:
     SWIFT_VERSION: "5.9"
     SWIFT_STRICT_CONCURRENCY: minimal
-    MARKETING_VERSION: "1.0.0"
-    CURRENT_PROJECT_VERSION: 1
-    DEVELOPMENT_TEAM: ""
+    MARKETING_VERSION: "1.0.1"
+    CURRENT_PROJECT_VERSION: 2
+    DEVELOPMENT_TEAM: CZ3N26YJ75
     CODE_SIGN_STYLE: Automatic
     ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
     ENABLE_USER_SCRIPT_SANDBOXING: YES
@@ -31,6 +31,8 @@ targets:
       path: BigBeautiful/Resources/Info.plist
       properties:
         CFBundleDisplayName: Big Beautiful
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
         NSLocationWhenInUseUsageDescription: Your location helps find nearby restaurants while you log a meal. It is never tracked in the background.
         NSPhotoLibraryUsageDescription: Photo access lets you attach meal photos and privately rebuild your dining history.

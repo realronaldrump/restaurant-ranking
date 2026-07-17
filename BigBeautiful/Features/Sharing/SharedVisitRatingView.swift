@@ -16,9 +16,23 @@ struct SharedVisitRatingView: View {
                     VStack(alignment: .leading, spacing: 6) { Eyebrow("Shared visit · \(visit.date.formatted(date: .abbreviated, time: .omitted))"); Text(visit.location?.name ?? "Shared visit").font(BBTheme.display(34)); Text("The facts are already here. Add only your opinion.").foregroundStyle(.secondary) }
                     ReactionPicker(selected: reaction) { reaction = $0 }
                     if !visit.dishEntryArray.isEmpty {
-                        EditorialSectionHeader("Dish reactions", eyebrow: "Optional")
+                        EditorialSectionHeader("Dish reactions", eyebrow: "Optional · skipped unless chosen")
                         ForEach(uniqueDishes) { dish in
-                            VStack(alignment: .leading, spacing: 8) { Text(dish.name).font(.headline); Picker("Reaction", selection: Binding(get: { dishReactions[dish.id] ?? .liked }, set: { dishReactions[dish.id] = $0 })) { ForEach(Reaction.allCases) { Text($0.compactTitle).tag($0) } }.pickerStyle(.segmented) }.ledgerCard()
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Text(dish.name).font(.headline)
+                                    Spacer()
+                                    if dishReactions[dish.id] != nil {
+                                        Button("Clear") { dishReactions[dish.id] = nil }.font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                                    }
+                                }
+                                Picker("Reaction for \(dish.name)", selection: Binding(get: { dishReactions[dish.id] }, set: { dishReactions[dish.id] = $0 })) {
+                                    ForEach(Reaction.allCases) { value in
+                                        Image(systemName: value.symbol).tag(Reaction?.some(value)).accessibilityLabel(value.rawValue)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                            }.ledgerCard()
                         }
                     }
                 }.padding(18).readablePageWidth()
@@ -34,7 +48,11 @@ struct SharedVisitRatingView: View {
     private func save() {
         guard let reaction, let personID = store.currentPerson?.id else { return }
         _ = store.addRating(to: visit, personID: personID, reaction: reaction)
-        for dish in uniqueDishes { _ = store.addDish(name: dish.name, role: dish.role, reaction: dishReactions[dish.id] ?? .liked, wouldOrderAgain: true, to: visit, personID: personID) }
+        for dish in uniqueDishes {
+            guard let dishReaction = dishReactions[dish.id] else { continue }
+            let wouldOrderAgain = dishReaction == .loved || dishReaction == .liked
+            _ = store.addDish(name: dish.name, role: dish.role, reaction: dishReaction, wouldOrderAgain: wouldOrderAgain, to: visit, personID: personID)
+        }
         Haptics.success(); dismiss()
     }
 }

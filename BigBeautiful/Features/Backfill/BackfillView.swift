@@ -59,7 +59,13 @@ struct BackfillView: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack { Eyebrow("Candidate \(index + 1) of \(clusters.count)"); Spacer(); Text("\(Int(Double(index) / Double(max(1, clusters.count)) * 100))%").font(.caption.monospacedDigit()) }
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 5) { ForEach(cluster.photos) { photo in if let data = photo.thumbnailData, let image = UIImage(data: data) { Image(uiImage: image).resizable().scaledToFill().frame(width: 145, height: 145).clipped() } } }
+                LazyHStack(spacing: 5) {
+                    ForEach(cluster.photos) { photo in
+                        if let image = PhotoImageCache.thumbnail(key: "backfill-\(photo.id.uuidString)", data: photo.thumbnailData ?? photo.fullData) {
+                            Image(uiImage: image).resizable().scaledToFill().frame(width: 145, height: 145).clipped()
+                        }
+                    }
+                }
             }
             Text("\(cluster.photos.count) \(cluster.photos.count == 1 ? "photo" : "photos") from \(cluster.date.formatted(date: .long, time: .shortened))").font(BBTheme.display(24))
             if cluster.coordinate == nil { Text("These selected copies did not include coordinates. Search for the place below.").font(.callout).foregroundStyle(.secondary) }

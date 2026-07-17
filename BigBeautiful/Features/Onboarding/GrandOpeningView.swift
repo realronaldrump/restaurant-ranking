@@ -79,7 +79,7 @@ struct GrandOpeningView: View {
                     Text("Get Started").font(.headline).frame(maxWidth: .infinity).frame(height: 56)
                 }
                 .buttonStyle(.borderedProminent).buttonBorderShape(.roundedRectangle(radius: 2))
-                Text("No account, ads, or social feed.")
+                Text("Best restaurant logger in the world!")
                     .font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity)
                 Spacer(minLength: 30)
             }

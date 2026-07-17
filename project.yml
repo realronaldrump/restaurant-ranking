@@ -33,6 +33,7 @@ targets:
         CFBundleDisplayName: Big Beautiful Restaurant Log
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CKSharingSupported: true
         ITSAppUsesNonExemptEncryption: false
         NSLocationWhenInUseUsageDescription: Your location helps find nearby restaurants while you log a meal. It is never tracked in the background.
         NSPhotoLibraryUsageDescription: Photo access lets you attach meal photos and privately rebuild your dining history.

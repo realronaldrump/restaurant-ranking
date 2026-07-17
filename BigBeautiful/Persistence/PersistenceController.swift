@@ -134,8 +134,36 @@ final class PersistenceController {
     }
 }
 
-final class AppDelegate: NSObject, UIApplicationDelegate {
-    func application(_ application: UIApplication, userDidAcceptCloudKitShareWith cloudKitShareMetadata: CKShare.Metadata) {
+final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+    func scene(
+        _ scene: UIScene,
+        willConnectTo session: UISceneSession,
+        options connectionOptions: UIScene.ConnectionOptions
+    ) {
+        guard let metadata = connectionOptions.cloudKitShareMetadata else { return }
+        PersistenceController.shared.accept(metadata)
+    }
+
+    func windowScene(
+        _ windowScene: UIWindowScene,
+        userDidAcceptCloudKitShareWith cloudKitShareMetadata: CKShare.Metadata
+    ) {
         PersistenceController.shared.accept(cloudKitShareMetadata)
+    }
+}
+
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    static func sceneConfiguration(for role: UISceneSession.Role) -> UISceneConfiguration {
+        let configuration = UISceneConfiguration(name: nil, sessionRole: role)
+        configuration.delegateClass = SceneDelegate.self
+        return configuration
+    }
+
+    func application(
+        _ application: UIApplication,
+        configurationForConnecting connectingSceneSession: UISceneSession,
+        options: UIScene.ConnectionOptions
+    ) -> UISceneConfiguration {
+        Self.sceneConfiguration(for: connectingSceneSession.role)
     }
 }

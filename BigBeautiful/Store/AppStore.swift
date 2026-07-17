@@ -32,6 +32,7 @@ final class AppStore {
     @ObservationIgnored private var coupleScoreCache: [String: [CoupleLocationScore]] = [:]
     @ObservationIgnored private var cachedScoreRevision = -1
     @ObservationIgnored private var isBatching = false
+    @ObservationIgnored private(set) var diagnosticReloadCount = 0
 
     var context: NSManagedObjectContext { persistence.container.viewContext }
     var activeCircle: CircleEntity? {
@@ -488,6 +489,7 @@ final class AppStore {
     }
 
     func reload() {
+        diagnosticReloadCount += 1
         do {
             let previousCircleIDs = Set(circles.map(\.id))
             let previousDevicePersonID = devicePersonID
@@ -525,9 +527,7 @@ final class AppStore {
     }
 
     private func commit() {
-        // Fetches include pending changes, so a reload keeps dedupe and lookups
-        // correct mid-batch while deferring the expensive store save to the end.
-        if isBatching { reload(); return }
+        if isBatching { return }
         do { try persistence.save(); reload() }
         catch { reportError("Your latest changes could not be saved. \(error.localizedDescription)") }
     }

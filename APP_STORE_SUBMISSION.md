@@ -5,7 +5,7 @@
 - Product: Big Beautiful Restaurant Log
 - Bundle identifier: `com.davis.bigbeautifulranking`
 - iCloud container: `iCloud.com.davis.bigbeautifulranking`
-- Version: 1.1 (build 5)
+- Version: 2.0 (build 6)
 - Devices: iPhone only
 - Minimum OS: iOS 17.0
 
@@ -20,7 +20,7 @@ Select **Data Not Collected**. The developer receives no user data. Dining recor
 - Data brokers: No
 - Third-party SDKs: None
 
-The bundled `PrivacyInfo.xcprivacy` declares no collection or tracking and declares `CA92.1` for app-scoped `UserDefaults`, which stores only device-local circle identity, selected ledger, onboarding completion, and haptic preference.
+The bundled `PrivacyInfo.xcprivacy` declares no collection or tracking and declares `CA92.1` for app-scoped `UserDefaults`, which stores only device-local circle identity, selected circle, onboarding completion, and haptic preference.
 
 ## Required App Store Connect fields
 
@@ -46,6 +46,8 @@ The bundled `PrivacyInfo.xcprivacy` declares no collection or tracking and decla
 7. Exercise every entity and relationship, then deploy the CloudKit schema to Production in CloudKit Console.
 8. Test CKShare invitation acceptance between two physical devices signed into different iCloud accounts.
 
+For the comparison-history model update, confirm the two `ComparisonEntity` evidence-fingerprint fields exist in the Development schema before promoting it to Production.
+
 ## Permission behavior
 
 - Location: When In Use only. There is no Always authorization or background visit detection in 1.0.
@@ -54,4 +56,4 @@ The bundled `PrivacyInfo.xcprivacy` declares no collection or tracking and decla
 
 ## Review notes
 
-The app has no developer account system. Sign-in and sharing use the user’s existing iCloud account. A reviewer can choose “Preview with a sample Salt Lake ledger” during the Grand Opening to inspect every primary screen without entering personal data.
+The app has no developer account system. Sign-in and sharing use the user’s existing iCloud account. A reviewer can choose “Preview with a sample Salt Lake log” during the Grand Opening to inspect every primary screen without entering personal data.

@@ -1,4 +1,4 @@
-name: BigBeautiful
+name: Big Beautiful Restaurant Log
 options:
   bundleIdPrefix: com.davis
   deploymentTarget:
@@ -9,8 +9,8 @@ settings:
   base:
     SWIFT_VERSION: "5.9"
     SWIFT_STRICT_CONCURRENCY: minimal
-    MARKETING_VERSION: "1.1"
-    CURRENT_PROJECT_VERSION: 5
+    MARKETING_VERSION: "2.0"
+    CURRENT_PROJECT_VERSION: 6
     DEVELOPMENT_TEAM: CZ3N26YJ75
     CODE_SIGN_STYLE: Automatic
     ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
@@ -20,20 +20,31 @@ settings:
     TARGETED_DEVICE_FAMILY: "1"
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
 targets:
-  BigBeautiful:
+  Big Beautiful Restaurant Log:
     type: application
     platform: iOS
     sources:
-      - path: BigBeautiful
+      - path: RestaurantLog
     resources:
-      - path: BigBeautiful/Resources
+      - path: RestaurantLog/Resources
     info:
-      path: BigBeautiful/Resources/Info.plist
+      path: RestaurantLog/Resources/Info.plist
       properties:
         CFBundleDisplayName: Big Beautiful Restaurant Log
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CKSharingSupported: true
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.davis.bigbeautiful.backup
+            UTTypeDescription: Big Beautiful Restaurant Log Backup
+            UTTypeConformsTo:
+              - public.json
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - bbrlog
+                - bigbeautiful
+              public.mime-type:
+                - application/vnd.bigbeautiful.backup+json
         ITSAppUsesNonExemptEncryption: false
         NSLocationWhenInUseUsageDescription: Your location helps find nearby restaurants while you log a meal. It is never tracked in the background.
         NSPhotoLibraryUsageDescription: Photo access lets you attach meal photos and privately rebuild your dining history.
@@ -44,7 +55,7 @@ targets:
         UILaunchScreen:
           UIColorName: Paper
     entitlements:
-      path: BigBeautiful/Resources/BigBeautiful.entitlements
+      path: RestaurantLog/Resources/RestaurantLog.entitlements
       properties:
         aps-environment: development
         com.apple.developer.icloud-container-identifiers:
@@ -54,10 +65,11 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.davis.bigbeautifulranking
-        PRODUCT_NAME: BigBeautiful
+        PRODUCT_NAME: Big Beautiful Restaurant Log
+        PRODUCT_MODULE_NAME: RestaurantLog
         TARGETED_DEVICE_FAMILY: "1"
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
-        INFOPLIST_FILE: BigBeautiful/Resources/Info.plist
+        INFOPLIST_FILE: RestaurantLog/Resources/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         ENABLE_PREVIEWS: YES
@@ -68,44 +80,44 @@ targets:
       - sdk: MapKit.framework
       - sdk: PhotosUI.framework
       - sdk: Photos.framework
-  BigBeautifulTests:
+  RestaurantLogTests:
     type: bundle.unit-test
     platform: iOS
     sources:
-      - path: BigBeautifulTests
+      - path: RestaurantLogTests
     dependencies:
-      - target: BigBeautiful
+      - target: Big Beautiful Restaurant Log
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.davis.bigbeautifulranking.tests
         TARGETED_DEVICE_FAMILY: "1"
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
         GENERATE_INFOPLIST_FILE: YES
-  BigBeautifulUITests:
+  RestaurantLogUITests:
     type: bundle.ui-testing
     platform: iOS
     sources:
-      - path: BigBeautifulUITests
+      - path: RestaurantLogUITests
     dependencies:
-      - target: BigBeautiful
+      - target: Big Beautiful Restaurant Log
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.davis.bigbeautifulranking.uitests
         TARGETED_DEVICE_FAMILY: "1"
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
         GENERATE_INFOPLIST_FILE: YES
-        TEST_TARGET_NAME: BigBeautiful
+        TEST_TARGET_NAME: Big Beautiful Restaurant Log
 schemes:
-  BigBeautiful:
+  Big Beautiful Restaurant Log:
     build:
       targets:
-        BigBeautiful: all
-        BigBeautifulTests: [test]
-        BigBeautifulUITests: [test]
+        Big Beautiful Restaurant Log: all
+        RestaurantLogTests: [test]
+        RestaurantLogUITests: [test]
     run:
       config: Debug
     test:
       config: Debug
       targets:
-        - BigBeautifulTests
-        - BigBeautifulUITests
+        - RestaurantLogTests
+        - RestaurantLogUITests

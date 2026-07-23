@@ -10,7 +10,7 @@ With permission, foreground location suggests nearby establishments. The app doe
 
 The app contains no advertising SDK, analytics SDK, third-party tracking SDK, or cross-app tracking. The developer does not sell, rent, or use information for advertising or profiling.
 
-Users can revoke Location and Photos permissions in iOS Settings, delete individual visits in the app, manage shared-circle participants with Apple’s sharing controls, and manage app data through their Apple Account’s iCloud storage settings. Records remain until the user deletes the applicable local or iCloud data. Because the developer never receives the ledger, the developer cannot retrieve, export, or delete it on a user’s behalf.
+Users can revoke Location and Photos permissions in iOS Settings, delete individual visits in the app, manage shared-circle participants with Apple’s sharing controls, and manage app data through their Apple Account’s iCloud storage settings. Records remain until the user deletes the applicable local or iCloud data. Because the developer never receives those dining records, the developer cannot retrieve, export, or delete them on a user’s behalf.
 
 The app is a general-audience dining utility and is not directed to children under 13. If its data practices change, the hosted policy and App Store privacy disclosures will be updated.
 

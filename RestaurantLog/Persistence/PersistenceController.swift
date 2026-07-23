@@ -1,0 +1,170 @@
+import CloudKit
+import CoreData
+import UIKit
+
+extension Notification.Name {
+    static let cloudShareWasAccepted = Notification.Name("RestaurantLog.cloudShareWasAccepted")
+    static let persistenceDidFail = Notification.Name("RestaurantLog.persistenceDidFail")
+}
+
+enum PersistenceNotificationKey {
+    static let message = "message"
+}
+
+final class PersistenceController {
+    static let shared: PersistenceController = {
+        let arguments = ProcessInfo.processInfo.arguments
+        let isRunningUnitTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        return PersistenceController(
+            inMemory: isRunningUnitTests || arguments.contains("-resetForUITests"),
+            cloudEnabled: !isRunningUnitTests && !arguments.contains("-disableCloudKit") && !arguments.contains("-resetForUITests")
+        )
+    }()
+    static let cloudContainerIdentifier = "iCloud.com.davis.bigbeautifulranking"
+
+    let container: NSPersistentCloudKitContainer
+    private(set) var loadError: Error?
+    private(set) var isCloudSyncActive = false
+
+    init(inMemory: Bool = false, cloudEnabled: Bool = true) {
+        container = NSPersistentCloudKitContainer(name: "RestaurantLog", managedObjectModel: ManagedObjectModel.make())
+
+        if inMemory {
+            let description = NSPersistentStoreDescription(url: URL(fileURLWithPath: "/dev/null"))
+            description.type = NSInMemoryStoreType
+            container.persistentStoreDescriptions = [description]
+            loadStores()
+        } else {
+            configureDescriptions(cloudEnabled: cloudEnabled)
+            loadStores()
+            if loadError != nil, cloudEnabled {
+                // Missing entitlements or an unreachable CloudKit container must never
+                // make the log unusable: fall back to purely local stores and keep working.
+                loadError = nil
+                for store in container.persistentStoreCoordinator.persistentStores {
+                    try? container.persistentStoreCoordinator.remove(store)
+                }
+                configureDescriptions(cloudEnabled: false)
+                loadStores()
+            }
+            isCloudSyncActive = cloudEnabled && loadError == nil &&
+                container.persistentStoreDescriptions.contains { $0.cloudKitContainerOptions != nil }
+        }
+
+        container.viewContext.automaticallyMergesChangesFromParent = true
+        container.viewContext.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+        container.viewContext.transactionAuthor = "app"
+        container.viewContext.undoManager = UndoManager()
+    }
+
+    private func configureDescriptions(cloudEnabled: Bool) {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        let privateStore = Self.description(
+            url: support.appendingPathComponent("BigBeautiful-private.sqlite"),
+            scope: .private,
+            cloudEnabled: cloudEnabled
+        )
+        let sharedStore = Self.description(
+            url: support.appendingPathComponent("BigBeautiful-shared.sqlite"),
+            scope: .shared,
+            cloudEnabled: cloudEnabled
+        )
+        container.persistentStoreDescriptions = [privateStore, sharedStore]
+    }
+
+    private func loadStores() {
+        container.loadPersistentStores { [weak self] _, error in
+            if let error { self?.loadError = error }
+        }
+    }
+
+    func save() throws {
+        let context = container.viewContext
+        guard context.hasChanges else { return }
+        try context.save()
+    }
+
+    func existingShare(for object: NSManagedObject) throws -> CKShare? {
+        if object.objectID.isTemporaryID {
+            try object.managedObjectContext?.obtainPermanentIDs(for: [object])
+        }
+        return try container.fetchShares(matching: [object.objectID])[object.objectID]
+    }
+
+    func accept(_ metadata: CKShare.Metadata) {
+        let store = container.persistentStoreCoordinator.persistentStores.first { store in
+            store.url?.lastPathComponent.contains("-shared") == true
+        }
+        guard let store else {
+            notifyFailure("The shared iCloud log could not be opened because its local shared store is unavailable.")
+            return
+        }
+        container.acceptShareInvitations(from: [metadata], into: store) { _, error in
+            DispatchQueue.main.async {
+                if let error {
+                    self.notifyFailure("The iCloud invitation could not be accepted. \(error.localizedDescription)")
+                } else {
+                    NotificationCenter.default.post(name: .cloudShareWasAccepted, object: self)
+                }
+            }
+        }
+    }
+
+    private func notifyFailure(_ message: String) {
+        NotificationCenter.default.post(
+            name: .persistenceDidFail,
+            object: self,
+            userInfo: [PersistenceNotificationKey.message: message]
+        )
+    }
+
+    private static func description(url: URL, scope: CKDatabase.Scope, cloudEnabled: Bool) -> NSPersistentStoreDescription {
+        let description = NSPersistentStoreDescription(url: url)
+        description.shouldMigrateStoreAutomatically = true
+        description.shouldInferMappingModelAutomatically = true
+        description.setOption(true as NSNumber, forKey: NSPersistentHistoryTrackingKey)
+        description.setOption(true as NSNumber, forKey: NSPersistentStoreRemoteChangeNotificationPostOptionKey)
+        if cloudEnabled {
+            let options = NSPersistentCloudKitContainerOptions(containerIdentifier: cloudContainerIdentifier)
+            options.databaseScope = scope
+            description.cloudKitContainerOptions = options
+        }
+        return description
+    }
+}
+
+final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+    func scene(
+        _ scene: UIScene,
+        willConnectTo session: UISceneSession,
+        options connectionOptions: UIScene.ConnectionOptions
+    ) {
+        guard let metadata = connectionOptions.cloudKitShareMetadata else { return }
+        PersistenceController.shared.accept(metadata)
+    }
+
+    func windowScene(
+        _ windowScene: UIWindowScene,
+        userDidAcceptCloudKitShareWith cloudKitShareMetadata: CKShare.Metadata
+    ) {
+        PersistenceController.shared.accept(cloudKitShareMetadata)
+    }
+}
+
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    static func sceneConfiguration(for role: UISceneSession.Role) -> UISceneConfiguration {
+        let configuration = UISceneConfiguration(name: nil, sessionRole: role)
+        configuration.delegateClass = SceneDelegate.self
+        return configuration
+    }
+
+    func application(
+        _ application: UIApplication,
+        configurationForConnecting connectingSceneSession: UISceneSession,
+        options: UIScene.ConnectionOptions
+    ) -> UISceneConfiguration {
+        Self.sceneConfiguration(for: connectingSceneSession.role)
+    }
+}

@@ -1,6 +1,6 @@
 # Big Beautiful Restaurant Log
 
-A private, native iPhone dining ledger for effortless meal logging, durable history, and rankings that behave like living predictions rather than permanent grades.
+A private, native iPhone dining log for effortless meal logging, durable history, and rankings that behave like living predictions rather than permanent grades.
 
 Product site: <https://realronaldrump.github.io/restaurant-ranking/>
 
@@ -23,7 +23,7 @@ Privacy policy: <https://realronaldrump.github.io/restaurant-ranking/privacy.htm
 - PhotosPicker and PhotoKit backfill, processed on-device.
 - A deterministic evidence-weighted ranking engine with absolute anchors, recency decay, confidence, comparison evidence, and a ±7 detail-adjustment cap.
 
-Run `xcodegen generate`, open `BigBeautiful.xcodeproj`, select a development team, and provide a CloudKit container matching `iCloud.com.davis.bigbeautifulranking` before testing iCloud sharing on devices.
+Run `xcodegen generate`, open `Big Beautiful Restaurant Log.xcodeproj`, select a development team, and provide a CloudKit container matching `iCloud.com.davis.bigbeautifulranking` before testing iCloud sharing on devices.
 
 The app runs without iCloud in a local fallback store for simulator development and automated tests.
 

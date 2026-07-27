@@ -179,7 +179,9 @@ struct StatsView: View {
         var ratingCount = 0
         var memoryCount = 0
         for visit in visits {
-            if visit.memory?.isEmpty == false { memoryCount += 1 }
+            if let personID, store.memory(for: visit, personID: personID)?.isEmpty == false {
+                memoryCount += 1
+            }
             if let personID, let rating = visit.rating(for: personID) {
                 reactionCounts[rating.reaction, default: 0] += 1
                 ratingCount += 1

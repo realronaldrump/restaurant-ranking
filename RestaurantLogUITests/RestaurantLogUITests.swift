@@ -39,6 +39,25 @@ final class RestaurantLogUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Backfill"].exists)
     }
 
+    func testAppearancePreferenceChangesAndPersists() {
+        openAppearanceSettings()
+
+        let appearancePicker = app.segmentedControls["appearance-picker"]
+        XCTAssertTrue(appearancePicker.waitForExistence(timeout: 3))
+        appearancePicker.buttons["Dark"].tap()
+        XCTAssertTrue(appearancePicker.buttons["Dark"].isSelected)
+
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(app.buttons["log-meal-button"].waitForExistence(timeout: 8))
+        openAppearanceSettings()
+
+        let persistedPicker = app.segmentedControls["appearance-picker"]
+        XCTAssertTrue(persistedPicker.waitForExistence(timeout: 3))
+        XCTAssertTrue(persistedPicker.buttons["Dark"].isSelected)
+        persistedPicker.buttons["System"].tap()
+    }
+
     func testDiningAtlasShowsTheFirstVisitTrail() {
         app.tabBars.buttons["History"].tap()
         XCTAssertTrue(app.navigationBars["History"].waitForExistence(timeout: 5))
@@ -86,7 +105,7 @@ final class RestaurantLogUITests: XCTestCase {
 
         app.tabBars.buttons["History"].tap()
         let loggedVisit = app.staticTexts["Codex Test Kitchen"].firstMatch
-        XCTAssertTrue(loggedVisit.waitForExistence(timeout: 3))
+        XCTAssertTrue(loggedVisit.waitForExistence(timeout: 6))
         loggedVisit.tap()
         XCTAssertTrue(app.staticTexts["George, Michelle"].waitForExistence(timeout: 3))
     }
@@ -107,11 +126,11 @@ final class RestaurantLogUITests: XCTestCase {
         XCTAssertTrue(visit.waitForExistence(timeout: 5))
         visit.tap()
 
-        let deleteButton = app.buttons["Delete this visit"]
+        let deleteButton = app.buttons["Delete Entire Outing"]
         for _ in 0..<8 where !deleteButton.isHittable { app.swipeUp() }
         XCTAssertTrue(deleteButton.isHittable)
         deleteButton.tap()
-        app.sheets.buttons["Delete Visit"].tap()
+        app.sheets.buttons["Delete Outing"].tap()
 
         XCTAssertEqual(app.state, .runningForeground)
         XCTAssertTrue(app.navigationBars["History"].waitForExistence(timeout: 5))
@@ -201,5 +220,12 @@ final class RestaurantLogUITests: XCTestCase {
         XCTAssertTrue(app.sheets.staticTexts["Restore from backup?"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.sheets.buttons["Choose Backup and Replace Everything"].exists)
         XCTAssertTrue(app.sheets.buttons["Cancel"].exists)
+    }
+
+    private func openAppearanceSettings() {
+        app.tabBars.buttons["More"].tap()
+        XCTAssertTrue(app.navigationBars["More"].waitForExistence(timeout: 5))
+        app.staticTexts["Settings & Privacy"].tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
     }
 }

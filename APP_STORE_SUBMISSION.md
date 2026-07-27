@@ -5,7 +5,7 @@
 - Product: Big Beautiful Restaurant Log
 - Bundle identifier: `com.davis.bigbeautifulranking`
 - iCloud container: `iCloud.com.davis.bigbeautifulranking`
-- Version: 2.0 (build 6)
+- Version: 2.5 (build 7)
 - Devices: iPhone only
 - Minimum OS: iOS 17.0
 
@@ -18,7 +18,7 @@ Select **Data Not Collected**. The developer receives no user data. Dining recor
 - Developer advertising or marketing: No
 - Analytics: No
 - Data brokers: No
-- Third-party SDKs: None
+- Third-party SDKs: ZIPFoundation, used only to read user-selected Beli ZIP exports. It contains no advertising, analytics, tracking, accounts, or network service.
 
 The bundled `PrivacyInfo.xcprivacy` declares no collection or tracking and declares `CA92.1` for app-scoped `UserDefaults`, which stores only device-local circle identity, selected circle, onboarding completion, and haptic preference.
 
@@ -35,6 +35,18 @@ The bundled `PrivacyInfo.xcprivacy` declares no collection or tracking and decla
 - Availability: keep iPad unsupported and disable “Make this app available on Apple silicon Mac” so the iPhone app is not distributed for Mac.
 - License agreement: use Apple’s Standard Licensed Application End User License Agreement; do not enter a custom EULA.
 
+## What’s New in Version 2.5
+
+- Import your complete Beli data-export ZIP with guided Apple Maps matching, original visit dates, ranking order, favorite dishes, captions, and photos.
+- Review ambiguous restaurant matches before importing, safely retry an import without creating duplicates, and delete an import later from Settings while preserving pre-existing dining records.
+- Keep restaurants with missing Beli visit dates in a dedicated “Date unknown” history section, and mark dates as unknown when logging or editing future outings.
+- Combine duplicate shared logs into one outing while preserving every diner’s independent reaction, dishes, memory, and photos.
+- Add your own entry to a shared outing, copy only dishes you actually tried, or say that you were not there or do not want to add an entry.
+- See who contributed each photo and memory, and keep editing permissions safely scoped to the appropriate diner or outing creator.
+- Choose System, Light, or Dark appearance from Settings.
+- Preserve shared-outing participation, Beli import history, unknown dates, photo captions, and import undo information in full backups.
+- Enjoy clearer outing language, improved history filters, safer duplicate reconciliation, and expanded reliability coverage throughout the app.
+
 ## Capabilities to configure in the Apple Developer portal
 
 1. Create or select App ID `com.davis.bigbeautifulranking`.
@@ -46,7 +58,7 @@ The bundled `PrivacyInfo.xcprivacy` declares no collection or tracking and decla
 7. Exercise every entity and relationship, then deploy the CloudKit schema to Production in CloudKit Console.
 8. Test CKShare invitation acceptance between two physical devices signed into different iCloud accounts.
 
-For the comparison-history model update, confirm the two `ComparisonEntity` evidence-fingerprint fields exist in the Development schema before promoting it to Production.
+For version 2.5, confirm the participant, import-session, import-link, unknown-date, photo-caption, and comparison evidence-fingerprint fields exist in the Development schema before promoting it to Production.
 
 ## Permission behavior
 

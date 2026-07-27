@@ -11,6 +11,7 @@ struct SettingsView: View {
     @AppStorage("didCompleteGrandOpening") private var didCompleteGrandOpening = false
     @AppStorage("hapticsEnabled") private var hapticsEnabled = true
     @AppStorage("didDismissPhotoVisitTimeSync") private var didDismissPhotoVisitTimeSync = false
+    @AppStorage(AppearancePreference.storageKey) private var appearancePreference = AppearancePreference.system
     @State private var accountStatus = "Checking…"
     @State private var newPerson = ""
     @State private var newCompanion = ""
@@ -21,6 +22,9 @@ struct SettingsView: View {
     @State private var isRestoringBackup = false
     @State private var isExportingBackup = false
     @State private var isImportingBackup = false
+    @State private var isImportingBeli = false
+    @State private var beliSelection: BeliImportSelection?
+    @State private var importToDelete: ExternalImportSessionEntity?
     @State private var backupDocument: AppBackupDocument?
     @State private var backupMessage: String?
 
@@ -101,8 +105,27 @@ struct SettingsView: View {
                     UIApplication.shared.open(url)
                 }
             }
-            Section("Experience") { Toggle("Subtle haptics", isOn: $hapticsEnabled) }
+            Section {
+                Picker("Appearance", selection: $appearancePreference) {
+                    ForEach(AppearancePreference.allCases) { preference in
+                        Text(preference.title).tag(preference)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("appearance-picker")
+
+                Toggle("Subtle haptics", isOn: $hapticsEnabled)
+            } header: {
+                Text("Experience")
+            } footer: {
+                Text("System follows your iPhone’s appearance setting.")
+            }
             Section("Backup & restore") {
+                Button { isImportingBeli = true } label: {
+                    Label("Import from Beli", systemImage: "square.and.arrow.down.on.square")
+                }
+                .disabled(isPreparingBackup || isRestoringBackup)
+
                 Button {
                     prepareBackup()
                 } label: {
@@ -117,11 +140,36 @@ struct SettingsView: View {
                 }
                 .disabled(isPreparingBackup || isRestoringBackup)
 
-                Text("A .bbrlog backup contains every circle, member, restaurant, visit, rating, comparison, wish-list entry, dish, and stored photo. Restore replaces the app’s current data. Backup files are not app-encrypted, and restored shared logs become private copies you can share again.")
+                Text("Beli ZIP imports add or update dining history without duplicating previous imports. A .bbrlog backup contains every circle, member, restaurant, visit, rating, comparison, wish-list entry, dish, stored photo, and import link. Restore replaces the app’s current data.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if let backupMessage {
                     Text(backupMessage).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if !store.beliImportSessions.isEmpty {
+                Section {
+                    ForEach(store.beliImportSessions) { session in
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(alignment: .firstTextBaseline) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("Beli import").font(.headline)
+                                    Text(session.importedAt.formatted(date: .abbreviated, time: .shortened))
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button("Delete", role: .destructive) { importToDelete = session }
+                            }
+                            Text(importSummary(session))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 3)
+                    }
+                } header: {
+                    Text("Imported data")
+                } footer: {
+                    Text("Deleting an import removes the outings, photos, dishes, and ranking seeds it created. Restaurants or outings that existed before the import are preserved.")
                 }
             }
             Section("Privacy") {
@@ -181,6 +229,29 @@ struct SettingsView: View {
         .fileImporter(isPresented: $isImportingBackup, allowedContentTypes: [.restaurantLogBackup]) { result in
             restoreBackup(result)
         }
+        .fileImporter(isPresented: $isImportingBeli, allowedContentTypes: [.zip]) { result in
+            if case .success(let url) = result { beliSelection = .init(url: url) }
+            else if case .failure(let error) = result { backupMessage = error.localizedDescription }
+        }
+        .sheet(item: $beliSelection) { selection in
+            BeliImportView(selection: selection) { summary in
+                backupMessage = "Imported \(summary.outingsCreated) new outings and \(summary.photosAdded) photos from Beli."
+            }
+        }
+        .alert("Delete this Beli import?", isPresented: deletionAlertPresented, presenting: importToDelete) { session in
+            Button("Delete Imported Data", role: .destructive) {
+                if let summary = store.deleteBeliImport(sessionID: session.id) {
+                    backupMessage = deletionMessage(summary)
+                    Haptics.success()
+                } else {
+                    backupMessage = "The Beli import could not be deleted."
+                }
+                importToDelete = nil
+            }
+            Button("Cancel", role: .cancel) { importToDelete = nil }
+        } message: { _ in
+            Text("This permanently removes the data created by this import, including any edits made inside its imported outings. Pre-existing matched records remain. This cannot be undone.")
+        }
         .confirmationDialog("Restore from backup?", isPresented: $isShowingRestoreConfirmation, titleVisibility: .visible) {
             Button("Choose Backup and Replace Everything", role: .destructive) {
                 isImportingBackup = true
@@ -199,6 +270,7 @@ struct SettingsView: View {
                         return
                     }
                     hapticsEnabled = true
+                    appearancePreference = .system
                     didDismissPhotoVisitTimeSync = false
                 }
             }
@@ -234,6 +306,30 @@ struct SettingsView: View {
         } footer: {
             Text("This uses verified capture metadata already saved with your attached photos and does not access your photo library.")
         }
+    }
+
+    private var deletionAlertPresented: Binding<Bool> {
+        Binding(
+            get: { importToDelete != nil },
+            set: { if !$0 { importToDelete = nil } }
+        )
+    }
+
+    private func importSummary(_ session: ExternalImportSessionEntity) -> String {
+        var parts: [String] = []
+        if session.restaurantsCreated > 0 { parts.append("\(session.restaurantsCreated) restaurants") }
+        if session.outingsCreated > 0 { parts.append("\(session.outingsCreated) outings") }
+        if session.photosAdded > 0 { parts.append("\(session.photosAdded) photos") }
+        if session.dishesAdded > 0 { parts.append("\(session.dishesAdded) dishes") }
+        if session.rankingsSeeded > 0 { parts.append("\(session.rankingsSeeded) ranking seeds") }
+        return parts.isEmpty ? "Matched existing dining records" : parts.joined(separator: " · ")
+    }
+
+    private func deletionMessage(_ summary: BeliImportDeletionSummary) -> String {
+        var message = "Deleted \(summary.outingsDeleted) outings, \(summary.photosDeleted) photos, \(summary.dishesDeleted) dishes, and \(summary.rankingsDeleted) ranking seeds from the Beli import."
+        if summary.restaurantsDeleted > 0 { message += " Deleted \(summary.restaurantsDeleted) imported restaurants." }
+        if summary.restaurantsPreserved > 0 { message += " Preserved \(summary.restaurantsPreserved) restaurants with other activity." }
+        return message
     }
 
     private var backupFilename: String {
@@ -374,10 +470,11 @@ struct PrivacyPolicyView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Eyebrow("Effective July 16, 2026")
+                Eyebrow("Effective July 27, 2026")
                 Text("Private by design.").font(BBTheme.display(37))
                 Text("Big Beautiful Restaurant Log does not collect, sell, or transmit personal data to the developer. There are no developer-operated servers, advertising SDKs, analytics SDKs, or third-party tracking systems.")
                 Text("Dining records are stored on the device and, when iCloud is enabled, in your private or explicitly shared CloudKit databases. Map coordinates are sent to Apple only for ordinary MapKit searches. Photos are processed on-device; app-stored copies have embedded location metadata removed.")
+                Text("If you import a Beli export, the ZIP is read on-device. The app contacts Apple Maps to help match restaurants and downloads only the Beli photo links included in that export when you explicitly start the import. Beli profile, social, device, follow, and comment data is not retained.")
                 Text("Location is foreground-only and optional. Photo Library access is optional; the standard picker works without full-library permission. Permissions can be revoked at any time in iOS Settings.")
                 if let privacyURL = URL(string: "https://realronaldrump.github.io/restaurant-ranking/privacy.html") {
                     Link("Read the complete policy and privacy choices", destination: privacyURL)

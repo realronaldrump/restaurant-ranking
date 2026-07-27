@@ -58,10 +58,13 @@ struct LogMealFlow: View {
     @State private var photoError: String?
     @State private var photoRequestID = UUID()
     @State private var visitDate = Date.now
+    @State private var visitDateKnowledge: VisitDateKnowledge = .known
     @State private var savedVisit: VisitEntity?
     @State private var savedScore: LocationScore?
     @State private var oldRank: Int?
     @State private var taggedMemberIDs: Set<UUID> = []
+    @State private var duplicateOuting: VisitEntity?
+    @State private var duplicateReaction: Reaction?
     @State private var addMoreVisit: VisitEntity?
     @State private var quickQuestions: [ComparisonQuestion] = []
     @State private var quickIndex = 0
@@ -105,6 +108,25 @@ struct LogMealFlow: View {
             }
             guard !ProcessInfo.processInfo.arguments.contains("-resetForUITests") else { return }
             locationService.requestNearby()
+        }
+        .confirmationDialog(
+            "A shared outing already exists",
+            isPresented: Binding(
+                get: { duplicateOuting != nil },
+                set: { if !$0 { clearDuplicateChoice() } }
+            ),
+            presenting: duplicateOuting
+        ) { outing in
+            Button("Add My Entry to This Outing") { join(outing) }
+            Button("Keep as a Separate Outing") {
+                guard let reaction = duplicateReaction else { return }
+                clearDuplicateChoice()
+                saveNewVisit(reaction)
+            }
+            Button("Cancel", role: .cancel) { clearDuplicateChoice() }
+        } message: { outing in
+            let author = store.person(id: outing.createdByID)?.name ?? "Someone in your circle"
+            Text("\(author) already logged \(outing.location?.name ?? "this restaurant") near this time and included you. Add your own reaction, dishes, and photos to the same outing?")
         }
     }
 
@@ -412,6 +434,16 @@ struct LogMealFlow: View {
                         }
                     }
                     if !store.otherCircleMembers.isEmpty { circleMemberTags }
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle("Date unknown", isOn: Binding(
+                            get: { visitDateKnowledge == .unknown },
+                            set: { visitDateKnowledge = $0 ? .unknown : .known }
+                        ))
+                        if visitDateKnowledge == .known {
+                            DatePicker("Outing date", selection: $visitDate, displayedComponents: .date)
+                        }
+                    }
+                    .editorialCard()
                     VStack(alignment: .leading, spacing: 14) {
                         Eyebrow("Your immediate verdict")
                         ReactionPicker(selected: nil) { reaction in save(reaction) }
@@ -426,7 +458,7 @@ struct LogMealFlow: View {
     private var circleMemberTags: some View {
         VStack(alignment: .leading, spacing: 10) {
             Eyebrow("Who was there?")
-            Text("Tag circle members so this visit appears for them too.")
+            Text("Add circle members who shared this outing. They can contribute their own entry.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             ScrollView(.horizontal, showsIndicators: false) {
@@ -592,7 +624,35 @@ struct LogMealFlow: View {
 
     private func save(_ reaction: Reaction) {
         guard let choice else { return }
-        let existing: RestaurantLocation? = if case .existing(let value) = choice.source { value } else { nil }
+        if let location = existingLocation(for: choice),
+           let personID = store.currentPerson?.id,
+           let existing = store.existingOuting(at: location, near: visitDate, for: personID),
+           existing.rating(for: personID) == nil {
+            duplicateReaction = reaction
+            duplicateOuting = existing
+            return
+        }
+        saveNewVisit(reaction)
+    }
+
+    private func existingLocation(for choice: PlaceChoice) -> RestaurantLocation? {
+        switch choice.source {
+        case .existing(let location):
+            return location
+        case .map(let candidate):
+            return store.existingLocation(
+                sourceIdentifier: candidate.id,
+                name: candidate.name,
+                address: candidate.address
+            )
+        case .manual(let name):
+            return store.existingLocation(name: name)
+        }
+    }
+
+    private func saveNewVisit(_ reaction: Reaction) {
+        guard let choice else { return }
+        let existing = existingLocation(for: choice)
         oldRank = existing.flatMap { location in store.score(for: location)?.categoryRank }
         let (location, visit) = store.performBatch { () -> (RestaurantLocation, VisitEntity) in
             let location: RestaurantLocation
@@ -613,6 +673,7 @@ struct LogMealFlow: View {
                 at: location,
                 reaction: reaction,
                 date: visitDate,
+                dateKnowledge: visitDateKnowledge,
                 companionIDs: store.circleMembers.filter { taggedMemberIDs.contains($0.id) }.map(\.id),
                 coordinate: visitCoordinate
             )
@@ -640,6 +701,36 @@ struct LogMealFlow: View {
         Haptics.success()
     }
 
+    private func join(_ outing: VisitEntity) {
+        guard let reaction = duplicateReaction, let personID = store.currentPerson?.id,
+              let location = outing.location else { return }
+        oldRank = store.score(for: location, personID: personID)?.categoryRank
+        store.performBatch {
+            _ = store.addRating(to: outing, personID: personID, reaction: reaction)
+            if let mealPhoto {
+                store.addPhoto(
+                    fullData: mealPhoto.fullData,
+                    thumbnailData: mealPhoto.thumbnailData,
+                    to: outing,
+                    personID: personID,
+                    createdAt: mealPhoto.date,
+                    captureDate: mealPhoto.captureDate
+                )
+            }
+        }
+        savedVisit = outing
+        savedScore = store.score(for: location, personID: personID)
+        quickQuestions = []
+        clearDuplicateChoice()
+        stage = .payoff
+        Haptics.success()
+    }
+
+    private func clearDuplicateChoice() {
+        duplicateOuting = nil
+        duplicateReaction = nil
+    }
+
     private func loadMealPhoto(_ item: PhotosPickerItem?) async {
         guard let item else { return }
         let requestID = UUID()
@@ -661,6 +752,7 @@ struct LogMealFlow: View {
         mealPhoto = photo
         selectedPhotoItem = nil
         visitDate = MealPhotoDraftPolicy.visitDate(for: photo, fallback: .now)
+        if photo.captureDate != nil { visitDateKnowledge = .known }
 
         if let coordinate = photo.coordinate {
             let results = await locationService.searchNearby(
@@ -682,6 +774,7 @@ struct LogMealFlow: View {
         isReadingPhoto = false
         photoError = nil
         visitDate = .now
+        visitDateKnowledge = .known
     }
 
     private func recordQuick(_ outcome: ComparisonOutcome, question: ComparisonQuestion) {
@@ -873,6 +966,8 @@ struct AddMoreVisitView: View {
     private let personID: UUID?
     @State private var reaction: Reaction?
     @State private var visitType: VisitType?
+    @State private var visitDate: Date
+    @State private var visitDateKnowledge: VisitDateKnowledge
     @State private var priceBand: Int
     @State private var occasion: Occasion?
     @State private var service: Reaction?
@@ -896,6 +991,8 @@ struct AddMoreVisitView: View {
         let rating = personID.flatMap(visit.rating(for:))
         _reaction = State(initialValue: rating?.reaction)
         _visitType = State(initialValue: visit.visitType)
+        _visitDate = State(initialValue: visit.date)
+        _visitDateKnowledge = State(initialValue: visit.dateKnowledge)
         _priceBand = State(initialValue: Int(visit.priceBand))
         _occasion = State(initialValue: visit.occasion)
         _service = State(initialValue: rating?.service)
@@ -903,8 +1000,10 @@ struct AddMoreVisitView: View {
         _value = State(initialValue: rating?.value)
         _wouldOrderAgain = State(initialValue: rating?.hasWouldOrderAgain == true ? rating?.wouldOrderAgain : nil)
         _hazy = State(initialValue: rating?.hazyMemory ?? false)
-        _memory = State(initialValue: visit.memory ?? "")
-        _memoryExpanded = State(initialValue: visit.memory?.isEmpty == false)
+        let participantMemory = personID.flatMap { visit.participant(for: $0)?.memory }
+        let initialMemory = participantMemory ?? (personID == visit.createdByID ? visit.memory : nil)
+        _memory = State(initialValue: initialMemory ?? "")
+        _memoryExpanded = State(initialValue: initialMemory?.isEmpty == false)
         _companions = State(initialValue: Set(visit.companionIDs))
         _restaurantChoice = State(initialValue: visit.location?.placeChoice)
     }
@@ -912,17 +1011,30 @@ struct AddMoreVisitView: View {
     var body: some View {
         NavigationStack {
             Form {
-                restaurantSection
+                if canEditOuting { restaurantSection }
                 verdictSection
-                Section { detailPicker("Visit type", selection: $visitType, values: VisitType.allCases); pricePicker; detailPicker("Occasion", selection: $occasion, values: Occasion.allCases) } header: { Text("The visit") }
+                if canEditOuting {
+                    Section {
+                        Toggle("Date unknown", isOn: Binding(
+                            get: { visitDateKnowledge == .unknown },
+                            set: { visitDateKnowledge = $0 ? .unknown : .known }
+                        ))
+                        if visitDateKnowledge == .known {
+                            DatePicker("Date", selection: $visitDate, displayedComponents: .date)
+                        }
+                        detailPicker("Visit type", selection: $visitType, values: VisitType.allCases)
+                        pricePicker
+                        detailPicker("Occasion", selection: $occasion, values: Occasion.allCases)
+                    } header: { Text("The outing") }
+                }
                 dishSection
                 particularsSection
-                companySection
+                if canEditOuting { companySection }
                 photoSection
                 memorySection
             }
             .editorialForm()
-            .navigationTitle("Add More").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle(canEditOuting ? "Edit Outing" : "Your Entry").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Not Now") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) { Button(isSaving ? "Saving…" : "Save") { Task { await save() } }.disabled(isSaving) }
@@ -961,6 +1073,10 @@ struct AddMoreVisitView: View {
         } footer: {
             Text("Changing the restaurant keeps this visit’s ratings, dishes, photos, and notes together.")
         }
+    }
+
+    private var canEditOuting: Bool {
+        store.canEditOuting(visit, personID: personID)
     }
 
     private var verdictSection: some View {
@@ -1026,7 +1142,7 @@ struct AddMoreVisitView: View {
             optionalReactionPicker("Service", selection: $service)
             optionalReactionPicker("Atmosphere", selection: $atmosphere)
             optionalReactionPicker("Value", selection: $value)
-            Picker("Would order again", selection: $wouldOrderAgain) {
+            Picker("Would eat here again", selection: $wouldOrderAgain) {
                 Text("Not set").tag(Bool?.none); Text("Yes").tag(Bool?.some(true)); Text("No").tag(Bool?.some(false))
             }
         } header: { Text("Optional ratings") } footer: {
@@ -1082,8 +1198,20 @@ struct AddMoreVisitView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         ForEach(photos) { photo in
-                            PhotoImage(photo: photo).frame(width: 64, height: 64).clipped()
-                                .contextMenu { Button("Remove Photo", systemImage: "trash", role: .destructive) { store.deletePhoto(photo) } }
+                            VStack(spacing: 3) {
+                                PhotoImage(photo: photo).frame(width: 64, height: 64).clipped()
+                                Text(photoContributorName(photo))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            .contextMenu {
+                                if store.canEditPhoto(photo, personID: personID) {
+                                    Button("Remove My Photo", systemImage: "trash", role: .destructive) {
+                                        store.deletePhoto(photo, personID: personID)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1107,7 +1235,13 @@ struct AddMoreVisitView: View {
             } label: {
                 Label(memory.isEmpty ? "Add a Memory" : "Memory", systemImage: "text.quote")
             }
-        } footer: { Text("Memories are searchable and never affect the score.") }
+        } footer: { Text("This memory belongs to your entry. It is searchable and never affects the score.") }
+    }
+
+    private func photoContributorName(_ photo: PhotoEntity) -> String {
+        guard let contributorID = photo.personID ?? photo.visit?.createdByID else { return "Diner" }
+        if contributorID == personID { return "You" }
+        return store.person(id: contributorID)?.name ?? "Diner"
     }
 
     private var myDishEntries: [DishEntryEntity] {
@@ -1149,7 +1283,7 @@ struct AddMoreVisitView: View {
         let sanitizedPhotos = await ImageSanitizer.processSelected(photoItems, fallbackDate: visit.date)
 
         store.performBatch {
-            if let restaurantChoice {
+            if canEditOuting, let restaurantChoice {
                 let selectedLocation: RestaurantLocation
                 switch restaurantChoice.source {
                 case .existing(let location):
@@ -1163,9 +1297,21 @@ struct AddMoreVisitView: View {
                 case .manual(let name):
                     selectedLocation = store.createLocation(name: name, category: DiningCategory.suggested(for: name))
                 }
-                store.changeLocation(of: visit, to: selectedLocation)
+                store.changeLocation(of: visit, to: selectedLocation, editorID: personID)
             }
-            store.updateVisit(visit, type: visitType, priceBand: priceBand, occasion: occasion, memory: memory, companions: Array(companions))
+            if canEditOuting {
+                store.updateVisitDate(
+                    visit,
+                    date: visitDateKnowledge == .known ? visitDate : nil,
+                    editorID: personID
+                )
+                store.updateVisit(
+                    visit, type: visitType, priceBand: priceBand, occasion: occasion,
+                    memory: memory, companions: Array(companions), editorID: personID
+                )
+            } else {
+                store.updateMemory(memory, for: visit, personID: personID)
+            }
             if let personID {
                 if let reaction {
                     let rating = store.addRating(to: visit, personID: personID, reaction: reaction, hazy: hazy)
@@ -1181,6 +1327,7 @@ struct AddMoreVisitView: View {
                     fullData: photo.fullData,
                     thumbnailData: photo.thumbnailData,
                     to: visit,
+                    personID: personID,
                     createdAt: photo.date,
                     captureDate: photo.captureDate
                 )

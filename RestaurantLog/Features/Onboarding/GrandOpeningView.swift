@@ -10,6 +10,7 @@ struct GrandOpeningView: View {
     @State private var myName = ""
     @State private var circleName = "Our Table"
     @State private var isImporting = false
+    @State private var beliSelection: BeliImportSelection?
     @State private var isImportingBackup = false
     @State private var isShowingBackupRestoreConfirmation = false
     @State private var isProcessingImport = false
@@ -48,8 +49,19 @@ struct GrandOpeningView: View {
         .safeAreaInset(edge: .top, spacing: 0) {
             if (1...3).contains(page) { onboardingProgress }
         }
-        .fileImporter(isPresented: $isImporting, allowedContentTypes: [.commaSeparatedText, .plainText]) { result in
-            importCSV(result)
+        .fileImporter(isPresented: $isImporting, allowedContentTypes: [.zip]) { result in
+            switch result {
+            case .success(let url): beliSelection = .init(url: url)
+            case .failure(let error): importMessageIsError = true; importMessage = error.localizedDescription
+            }
+        }
+        .sheet(item: $beliSelection) { selection in
+            BeliImportView(selection: selection) { summary in
+                importedCount = summary.outingsCreated + summary.outingsLinked
+                restoredBackup = false
+                importMessageIsError = false
+                importMessage = "Imported \(summary.outingsCreated) new outings and \(summary.photosAdded) photos from Beli."
+            }
         }
         .fileImporter(isPresented: $isImportingBackup, allowedContentTypes: [.restaurantLogBackup]) { result in
             importBackup(result)
@@ -106,7 +118,7 @@ struct GrandOpeningView: View {
                         .foregroundStyle(BBTheme.paper)
                 }
                 VStack(alignment: .leading, spacing: 10) {
-                    Eyebrow("Your personal dining ledger")
+                    Eyebrow("Your personal dining log")
                     Text("Big Beautiful Restaurant Log")
                         .font(BBTheme.display(48)).minimumScaleFactor(0.62).lineSpacing(-3)
                     Text("Keep track of where you’ve eaten and where you’d go back.")
@@ -165,7 +177,7 @@ struct GrandOpeningView: View {
     private var importPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                pageHeading(number: "02", title: "Bring your history", detail: "Restore a complete Big Beautiful backup, import past visits from a Beli-style CSV, or start fresh.")
+                pageHeading(number: "02", title: "Bring your history", detail: "Restore a complete Big Beautiful backup, import Beli's ZIP export, or start fresh.")
                 VStack(spacing: 0) {
                     Button { isShowingBackupRestoreConfirmation = true } label: {
                         VStack(alignment: .leading, spacing: 5) {
@@ -184,9 +196,9 @@ struct GrandOpeningView: View {
                     Divider()
                     Button { isImporting = true } label: {
                         VStack(alignment: .leading, spacing: 5) {
-                            Label("Import a Beli CSV", systemImage: "tablecells.badge.ellipsis")
+                            Label("Import a Beli ZIP Export", systemImage: "archivebox")
                                 .font(.headline)
-                            Text("Imports place, date, score, cuisine, dish, and note columns.")
+                            Text("Reviews restaurant matches, preserves rank order and unknown dates, and downloads your Beli photos.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading).padding(20)
@@ -347,49 +359,8 @@ struct GrandOpeningView: View {
         .padding(18).frame(minHeight: 84)
     }
 
-    private func importCSV(_ result: Result<URL, Error>) {
-        Task { await processCSVImport(result) }
-    }
-
     private func importBackup(_ result: Result<URL, Error>) {
         Task { await processBackupImport(result) }
-    }
-
-    private func processCSVImport(_ result: Result<URL, Error>) async {
-        isProcessingImport = true
-        importMessage = nil
-        importMessageIsError = false
-        defer { isProcessingImport = false }
-
-        do {
-            let url = try result.get()
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            let summary = try await Task.detached(priority: .userInitiated) {
-                let data = try Data(contentsOf: url, options: .mappedIfSafe)
-                return try CSVImporter.parse(data: data)
-            }.value
-            try Task.checkCancellation()
-            ensureCircle()
-            store.performBatch {
-                for meal in summary.meals {
-                    let location = store.createLocation(name: meal.establishment, category: meal.category, address: meal.address, cuisines: meal.cuisines)
-                    let visit = store.logVisit(at: location, reaction: meal.reaction, date: meal.date, hazy: meal.hazy)
-                    if let memory = meal.memory { store.updateVisit(visit, type: nil, priceBand: 0, occasion: nil, memory: memory, companions: []) }
-                    if let dish = meal.dish, let personID = store.currentPerson?.id {
-                        _ = store.addDish(name: dish, role: .entree, reaction: meal.reaction ?? .fine, wouldOrderAgain: true, to: visit, personID: personID)
-                    }
-                }
-            }
-            importedCount = summary.meals.count
-            restoredBackup = false
-            importMessage = summary.skippedRows > 0
-                ? "Imported \(summary.meals.count) visits. \(summary.skippedRows) incomplete rows were skipped."
-                : "Imported \(summary.meals.count) visits."
-        } catch {
-            importMessageIsError = true
-            importMessage = error.localizedDescription
-        }
     }
 
     private func processBackupImport(_ result: Result<URL, Error>) async {

@@ -80,12 +80,15 @@ struct AppBackupArchive: Codable, Sendable {
     var brands: [BrandRecord]
     var locations: [LocationRecord]
     var visits: [VisitRecord]
+    var participants: [ParticipantRecord]? = nil
     var ratings: [RatingRecord]
     var dishes: [DishRecord]
     var dishEntries: [DishEntryRecord]
     var photos: [PhotoRecord]
     var comparisons: [ComparisonRecord]
     var wantEntries: [WantRecord]
+    var externalImportSessions: [ExternalImportSessionRecord]? = nil
+    var externalImportLinks: [ExternalImportLinkRecord]? = nil
 
     struct Preferences: Codable, Sendable {
         var hapticsEnabled: Bool
@@ -143,6 +146,7 @@ struct AppBackupArchive: Codable, Sendable {
     struct VisitRecord: Codable, Sendable {
         var id: UUID
         var date: Date
+        var dateKnowledge: VisitDateKnowledge? = nil
         var visitType: VisitType?
         var priceBand: Int16
         var occasion: Occasion?
@@ -172,6 +176,16 @@ struct AppBackupArchive: Codable, Sendable {
         var visitID: UUID?
     }
 
+    struct ParticipantRecord: Codable, Sendable {
+        var id: UUID
+        var personID: UUID
+        var status: VisitParticipationStatus
+        var memory: String?
+        var createdAt: Date
+        var updatedAt: Date
+        var visitID: UUID?
+    }
+
     struct DishRecord: Codable, Sendable {
         var id: UUID
         var name: String
@@ -193,10 +207,12 @@ struct AppBackupArchive: Codable, Sendable {
 
     struct PhotoRecord: Codable, Sendable {
         var id: UUID
+        var personID: UUID? = nil
         var thumbnailData: Data?
         var fullData: Data?
         var createdAt: Date
         var captureDate: Date?
+        var caption: String? = nil
         var visitID: UUID?
     }
 
@@ -220,6 +236,34 @@ struct AppBackupArchive: Codable, Sendable {
         var addedAt: Date
         var circleID: UUID?
         var locationID: UUID?
+    }
+
+    struct ExternalImportLinkRecord: Codable, Sendable {
+        var id: UUID
+        var provider: String
+        var recordType: String
+        var externalKey: String
+        var contentHash: String?
+        var targetID: UUID
+        var createdByImport: Bool? = nil
+        var createdAt: Date
+        var updatedAt: Date
+        var circleID: UUID?
+        var sessionID: UUID? = nil
+    }
+
+    struct ExternalImportSessionRecord: Codable, Sendable {
+        var id: UUID
+        var provider: String
+        var sourceNamespace: String
+        var importedAt: Date
+        var exportDate: Date?
+        var restaurantsCreated: Int32
+        var outingsCreated: Int32
+        var photosAdded: Int32
+        var dishesAdded: Int32
+        var rankingsSeeded: Int32
+        var circleID: UUID?
     }
 
     var summary: AppBackupSummary {
@@ -270,12 +314,15 @@ enum AppBackupCodec {
         let brandIDs = try uniqueIDs(archive.brands.map(\.id), kind: "brand")
         _ = try uniqueIDs(archive.locations.map(\.id), kind: "restaurant")
         _ = try uniqueIDs(archive.visits.map(\.id), kind: "visit")
+        _ = try uniqueIDs((archive.participants ?? []).map(\.id), kind: "participant")
         _ = try uniqueIDs(archive.ratings.map(\.id), kind: "rating")
         _ = try uniqueIDs(archive.dishes.map(\.id), kind: "dish")
         _ = try uniqueIDs(archive.dishEntries.map(\.id), kind: "dish entry")
         _ = try uniqueIDs(archive.photos.map(\.id), kind: "photo")
         _ = try uniqueIDs(archive.comparisons.map(\.id), kind: "comparison")
         _ = try uniqueIDs(archive.wantEntries.map(\.id), kind: "wish-list entry")
+        _ = try uniqueIDs((archive.externalImportLinks ?? []).map(\.id), kind: "external import link")
+        let importSessionIDs = try uniqueIDs((archive.externalImportSessions ?? []).map(\.id), kind: "external import session")
         _ = try uniqueIDs(archive.deviceSelections.map(\.circleID), kind: "device selection")
 
         let personCircleIDs = try Dictionary(uniqueKeysWithValues: archive.people.map { person in
@@ -334,6 +381,17 @@ enum AppBackupCodec {
                 throw AppBackupError.missingReference("rating person is missing from the visit’s circle")
             }
         }
+        var participantKeys: Set<String> = []
+        for participant in archive.participants ?? [] {
+            let visitID = try require(participant.visitID, in: visitIDs, detail: "participant’s visit is missing")
+            guard personCircleIDs[participant.personID] == visitCircleIDs[visitID] else {
+                throw AppBackupError.missingReference("participant person is missing from the visit’s circle")
+            }
+            let key = "\(visitID.uuidString)-\(participant.personID.uuidString)"
+            guard participantKeys.insert(key).inserted else {
+                throw AppBackupError.missingReference("visit contains a duplicate participant")
+            }
+        }
         for entry in archive.dishEntries {
             let dishID = try require(entry.dishID, in: dishIDs, detail: "dish entry’s dish is missing")
             let visitID = try require(entry.visitID, in: visitIDs, detail: "dish entry’s visit is missing")
@@ -346,7 +404,10 @@ enum AppBackupCodec {
             }
         }
         for photo in archive.photos {
-            _ = try require(photo.visitID, in: visitIDs, detail: "photo’s visit is missing")
+            let visitID = try require(photo.visitID, in: visitIDs, detail: "photo’s visit is missing")
+            if let personID = photo.personID, personCircleIDs[personID] != visitCircleIDs[visitID] {
+                throw AppBackupError.missingReference("photo contributor is missing from the visit’s circle")
+            }
         }
         for comparison in archive.comparisons {
             let circleID = try require(comparison.circleID, in: circleIDs, detail: "comparison’s circle is missing")
@@ -369,6 +430,17 @@ enum AppBackupCodec {
             }
             guard personCircleIDs[want.addedByID] == circleID else {
                 throw AppBackupError.missingReference("wish-list person is missing from its circle")
+            }
+        }
+        let importSessionCircleIDs = try Dictionary(uniqueKeysWithValues: (archive.externalImportSessions ?? []).map { session in
+            (session.id, try require(session.circleID, in: circleIDs, detail: "external import session's circle is missing"))
+        })
+        for link in archive.externalImportLinks ?? [] {
+            let circleID = try require(link.circleID, in: circleIDs, detail: "external import link's circle is missing")
+            if let sessionID = link.sessionID {
+                guard importSessionIDs.contains(sessionID), importSessionCircleIDs[sessionID] == circleID else {
+                    throw AppBackupError.missingReference("external import link's session is missing")
+                }
             }
         }
     }
@@ -408,12 +480,15 @@ enum AppBackupService {
             let brands: [BrandEntity] = try fetch(in: context)
             let locations: [RestaurantLocation] = try fetch(in: context)
             let visits: [VisitEntity] = try fetch(in: context)
+            let participants: [VisitParticipantEntity] = try fetch(in: context)
             let ratings: [RatingEntity] = try fetch(in: context)
             let dishes: [DishEntity] = try fetch(in: context)
             let dishEntries: [DishEntryEntity] = try fetch(in: context)
             let photos: [PhotoEntity] = try fetch(in: context)
             let comparisons: [ComparisonEntity] = try fetch(in: context)
             let wantEntries: [WantEntryEntity] = try fetch(in: context)
+            let externalImportSessions: [ExternalImportSessionEntity] = try fetch(in: context)
+            let externalImportLinks: [ExternalImportLinkEntity] = try fetch(in: context)
 
             let archive = AppBackupArchive(
                 signature: AppBackupArchive.signature,
@@ -438,11 +513,16 @@ enum AppBackupService {
                           circleID: $0.circle?.id, brandID: $0.brand?.id)
                 },
                 visits: visits.map {
-                    .init(id: $0.id, date: $0.date, visitType: $0.visitType, priceBand: $0.priceBand,
+                    .init(id: $0.id, date: $0.date, dateKnowledge: $0.dateKnowledge,
+                          visitType: $0.visitType, priceBand: $0.priceBand,
                           occasion: $0.occasion, memory: $0.memory, latitude: $0.latitude, longitude: $0.longitude,
                           hasCoordinates: $0.hasCoordinates, createdAt: $0.createdAt, isShared: $0.isShared,
                           createdByID: $0.createdByID, companionIDs: $0.companionIDs,
                           circleID: $0.circle?.id, locationID: $0.location?.id)
+                },
+                participants: participants.map {
+                    .init(id: $0.id, personID: $0.personID, status: $0.status, memory: $0.memory,
+                          createdAt: $0.createdAt, updatedAt: $0.updatedAt, visitID: $0.visit?.id)
                 },
                 ratings: ratings.map {
                     .init(id: $0.id, personID: $0.personID, reaction: $0.reaction, service: $0.service,
@@ -460,8 +540,9 @@ enum AppBackupService {
                           dishID: $0.dish?.id, visitID: $0.visit?.id)
                 },
                 photos: photos.map {
-                    .init(id: $0.id, thumbnailData: $0.thumbnailData, fullData: $0.fullData,
-                          createdAt: $0.createdAt, captureDate: $0.captureDate, visitID: $0.visit?.id)
+                    .init(id: $0.id, personID: $0.personID, thumbnailData: $0.thumbnailData, fullData: $0.fullData,
+                          createdAt: $0.createdAt, captureDate: $0.captureDate, caption: $0.caption,
+                          visitID: $0.visit?.id)
                 },
                 comparisons: comparisons.map {
                     .init(id: $0.id, personID: $0.personID, locationAID: $0.locationAID,
@@ -474,6 +555,22 @@ enum AppBackupService {
                 wantEntries: wantEntries.map {
                     .init(id: $0.id, addedByID: $0.addedByID, addedAt: $0.addedAt,
                           circleID: $0.circle?.id, locationID: $0.location?.id)
+                },
+                externalImportSessions: externalImportSessions.map {
+                    .init(
+                        id: $0.id, provider: $0.provider, sourceNamespace: $0.sourceNamespace,
+                        importedAt: $0.importedAt, exportDate: $0.exportDate,
+                        restaurantsCreated: $0.restaurantsCreated, outingsCreated: $0.outingsCreated,
+                        photosAdded: $0.photosAdded, dishesAdded: $0.dishesAdded,
+                        rankingsSeeded: $0.rankingsSeeded, circleID: $0.circle?.id
+                    )
+                },
+                externalImportLinks: externalImportLinks.map {
+                    .init(id: $0.id, provider: $0.provider, recordType: $0.recordType,
+                          externalKey: $0.externalKey, contentHash: $0.contentHash, targetID: $0.targetID,
+                          createdByImport: $0.createdByImport,
+                          createdAt: $0.createdAt, updatedAt: $0.updatedAt, circleID: $0.circle?.id,
+                          sessionID: $0.session?.id)
                 }
             )
             try AppBackupCodec.validate(archive)
@@ -545,12 +642,19 @@ enum AppBackupService {
             for record in archive.visits {
                 let object = VisitEntity(context: context); context.assign(object, to: destinationStore)
                 object.id = record.id; object.date = record.date; object.visitType = record.visitType
+                object.dateKnowledge = record.dateKnowledge ?? .known
                 object.priceBand = record.priceBand; object.occasion = record.occasion; object.memory = record.memory
                 object.latitude = record.latitude; object.longitude = record.longitude; object.hasCoordinates = record.hasCoordinates
                 object.createdAt = record.createdAt; object.isShared = record.isShared; object.createdByID = record.createdByID
                 object.companionIDs = record.companionIDs; object.circle = record.circleID.flatMap { circles[$0] }
                 object.location = record.locationID.flatMap { locations[$0] }
                 visits[record.id] = object
+            }
+            for record in archive.participants ?? [] {
+                let object = VisitParticipantEntity(context: context); context.assign(object, to: destinationStore)
+                object.id = record.id; object.personID = record.personID; object.status = record.status
+                object.memory = record.memory; object.createdAt = record.createdAt; object.updatedAt = record.updatedAt
+                object.visit = record.visitID.flatMap { visits[$0] }
             }
             for record in archive.ratings {
                 let object = RatingEntity(context: context); context.assign(object, to: destinationStore)
@@ -568,8 +672,9 @@ enum AppBackupService {
             }
             for record in archive.photos {
                 let object = PhotoEntity(context: context); context.assign(object, to: destinationStore)
-                object.id = record.id; object.thumbnailData = record.thumbnailData; object.fullData = record.fullData
-                object.createdAt = record.createdAt; object.captureDate = record.captureDate
+                object.id = record.id; object.personID = record.personID
+                object.thumbnailData = record.thumbnailData; object.fullData = record.fullData
+                object.createdAt = record.createdAt; object.captureDate = record.captureDate; object.caption = record.caption
                 object.visit = record.visitID.flatMap { visits[$0] }
             }
             for record in archive.comparisons {
@@ -585,6 +690,25 @@ enum AppBackupService {
                 let object = WantEntryEntity(context: context); context.assign(object, to: destinationStore)
                 object.id = record.id; object.addedByID = record.addedByID; object.addedAt = record.addedAt
                 object.circle = record.circleID.flatMap { circles[$0] }; object.location = record.locationID.flatMap { locations[$0] }
+            }
+            var importSessions: [UUID: ExternalImportSessionEntity] = [:]
+            for record in archive.externalImportSessions ?? [] {
+                let object = ExternalImportSessionEntity(context: context); context.assign(object, to: destinationStore)
+                object.id = record.id; object.provider = record.provider; object.sourceNamespace = record.sourceNamespace
+                object.importedAt = record.importedAt; object.exportDate = record.exportDate
+                object.restaurantsCreated = record.restaurantsCreated; object.outingsCreated = record.outingsCreated
+                object.photosAdded = record.photosAdded; object.dishesAdded = record.dishesAdded
+                object.rankingsSeeded = record.rankingsSeeded; object.circle = record.circleID.flatMap { circles[$0] }
+                importSessions[record.id] = object
+            }
+            for record in archive.externalImportLinks ?? [] {
+                let object = ExternalImportLinkEntity(context: context); context.assign(object, to: destinationStore)
+                object.id = record.id; object.provider = record.provider; object.recordType = record.recordType
+                object.externalKey = record.externalKey; object.contentHash = record.contentHash; object.targetID = record.targetID
+                object.createdByImport = record.createdByImport ?? false
+                object.createdAt = record.createdAt; object.updatedAt = record.updatedAt
+                object.circle = record.circleID.flatMap { circles[$0] }
+                object.session = record.sessionID.flatMap { importSessions[$0] }
             }
 
                 try context.save()

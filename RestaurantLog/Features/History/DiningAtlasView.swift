@@ -24,7 +24,7 @@ private struct DiningAtlasSnapshot {
 
     init(visits: [VisitEntity], personID: UUID?) {
         let orderedVisits = visits
-            .filter { $0.managedObjectContext != nil && !$0.isDeleted && $0.location != nil }
+            .filter { $0.managedObjectContext != nil && !$0.isDeleted && $0.location != nil && $0.dateKnowledge == .known }
             .sorted {
                 if $0.date != $1.date { return $0.date < $1.date }
                 return $0.createdAt < $1.createdAt

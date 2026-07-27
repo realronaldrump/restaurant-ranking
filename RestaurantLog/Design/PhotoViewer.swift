@@ -28,6 +28,16 @@ struct PhotoViewer: View {
             } else {
                 ProgressView().tint(.white)
             }
+            if let caption = photo.caption, !caption.isEmpty {
+                Text(caption)
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 10)
+                    .background(.black.opacity(0.6), in: Capsule())
+                    .padding(.bottom, 24)
+                    .frame(maxHeight: .infinity, alignment: .bottom)
+            }
             Button { dismiss() } label: { Image(systemName: "xmark").font(.headline).foregroundStyle(.white).frame(width: 46, height: 46).background(.black.opacity(0.6), in: Circle()) }
                 .padding(18).accessibilityLabel("Close photo")
         }

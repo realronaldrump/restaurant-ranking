@@ -11,6 +11,8 @@ final class CircleEntity: NSManagedObject, Identifiable {
     @NSManaged var visits: NSSet?
     @NSManaged var comparisons: NSSet?
     @NSManaged var wantEntries: NSSet?
+    @NSManaged var externalImportLinks: NSSet?
+    @NSManaged var externalImportSessions: NSSet?
 }
 
 @objc(PersonEntity)
@@ -91,6 +93,7 @@ final class RestaurantLocation: NSManagedObject, Identifiable {
 final class VisitEntity: NSManagedObject, Identifiable {
     @NSManaged var id: UUID
     @NSManaged var date: Date
+    @NSManaged var dateKnowledgeRaw: String
     @NSManaged var visitTypeRaw: String?
     @NSManaged var priceBand: Int16
     @NSManaged var occasionRaw: String?
@@ -107,11 +110,17 @@ final class VisitEntity: NSManagedObject, Identifiable {
     @NSManaged var ratings: NSSet?
     @NSManaged var dishEntries: NSSet?
     @NSManaged var photos: NSSet?
+    @NSManaged var participants: NSSet?
 
     var visitType: VisitType? {
         get { visitTypeRaw.flatMap(VisitType.init(rawValue:)) }
         set { visitTypeRaw = newValue?.rawValue }
     }
+    var dateKnowledge: VisitDateKnowledge {
+        get { VisitDateKnowledge(rawValue: dateKnowledgeRaw) ?? .known }
+        set { dateKnowledgeRaw = newValue.rawValue }
+    }
+    var hasKnownDate: Bool { dateKnowledge == .known }
     var occasion: Occasion? {
         get { occasionRaw.flatMap(Occasion.init(rawValue:)) }
         set { occasionRaw = newValue?.rawValue }
@@ -128,10 +137,32 @@ final class VisitEntity: NSManagedObject, Identifiable {
     }
     var ratingArray: [RatingEntity] { (ratings?.allObjects as? [RatingEntity]) ?? [] }
     var dishEntryArray: [DishEntryEntity] { (dishEntries?.allObjects as? [DishEntryEntity]) ?? [] }
+    var participantArray: [VisitParticipantEntity] {
+        ((participants?.allObjects as? [VisitParticipantEntity]) ?? []).sorted { $0.createdAt < $1.createdAt }
+    }
     var photoArray: [PhotoEntity] {
         ((photos?.allObjects as? [PhotoEntity]) ?? []).sorted { $0.createdAt < $1.createdAt }
     }
     func rating(for personID: UUID) -> RatingEntity? { ratingArray.first { $0.personID == personID } }
+    func participant(for personID: UUID) -> VisitParticipantEntity? {
+        participantArray.first { $0.personID == personID }
+    }
+}
+
+@objc(VisitParticipantEntity)
+final class VisitParticipantEntity: NSManagedObject, Identifiable {
+    @NSManaged var id: UUID
+    @NSManaged var personID: UUID
+    @NSManaged var statusRaw: String
+    @NSManaged var memory: String?
+    @NSManaged var createdAt: Date
+    @NSManaged var updatedAt: Date
+    @NSManaged var visit: VisitEntity?
+
+    var status: VisitParticipationStatus {
+        get { VisitParticipationStatus(rawValue: statusRaw) ?? .attended }
+        set { statusRaw = newValue.rawValue }
+    }
 }
 
 @objc(RatingEntity)
@@ -185,6 +216,8 @@ final class DishEntryEntity: NSManagedObject, Identifiable {
 @objc(PhotoEntity)
 final class PhotoEntity: NSManagedObject, Identifiable {
     @NSManaged var id: UUID
+    @NSManaged var personID: UUID?
+    @NSManaged var caption: String?
     @NSManaged var thumbnailData: Data?
     @NSManaged var fullData: Data?
     @NSManaged var createdAt: Date
@@ -215,6 +248,41 @@ final class WantEntryEntity: NSManagedObject, Identifiable {
     @NSManaged var addedAt: Date
     @NSManaged var circle: CircleEntity?
     @NSManaged var location: RestaurantLocation?
+}
+
+@objc(ExternalImportLinkEntity)
+final class ExternalImportLinkEntity: NSManagedObject, Identifiable {
+    @NSManaged var id: UUID
+    @NSManaged var provider: String
+    @NSManaged var recordType: String
+    @NSManaged var externalKey: String
+    @NSManaged var contentHash: String?
+    @NSManaged var targetID: UUID
+    @NSManaged var createdByImport: Bool
+    @NSManaged var createdAt: Date
+    @NSManaged var updatedAt: Date
+    @NSManaged var circle: CircleEntity?
+    @NSManaged var session: ExternalImportSessionEntity?
+}
+
+@objc(ExternalImportSessionEntity)
+final class ExternalImportSessionEntity: NSManagedObject, Identifiable {
+    @NSManaged var id: UUID
+    @NSManaged var provider: String
+    @NSManaged var sourceNamespace: String
+    @NSManaged var importedAt: Date
+    @NSManaged var exportDate: Date?
+    @NSManaged var restaurantsCreated: Int32
+    @NSManaged var outingsCreated: Int32
+    @NSManaged var photosAdded: Int32
+    @NSManaged var dishesAdded: Int32
+    @NSManaged var rankingsSeeded: Int32
+    @NSManaged var circle: CircleEntity?
+    @NSManaged var links: NSSet?
+
+    var linkArray: [ExternalImportLinkEntity] {
+        (links?.allObjects as? [ExternalImportLinkEntity]) ?? []
+    }
 }
 
 extension Array where Element: Hashable {

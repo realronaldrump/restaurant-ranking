@@ -26,7 +26,7 @@ struct HomeView: View {
     private func masthead(_ visits: [VisitEntity]) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Eyebrow("\(mastheadPossessive) dining ledger")
+                Eyebrow("\(mastheadPossessive) dining log")
                 Spacer(minLength: 12)
                 Label(
                     Date.now.formatted(.dateTime.month(.abbreviated).day()),
@@ -51,15 +51,15 @@ struct HomeView: View {
                 .frame(maxWidth: 560, alignment: .leading)
             Divider().overlay(BBTheme.strongHairline)
             ViewThatFits(in: .horizontal) {
-                HStack(spacing: 18) { ledgerStats(visits) }
-                VStack(alignment: .leading, spacing: 8) { ledgerStats(visits) }
+                HStack(spacing: 18) { visitStats(visits) }
+                VStack(alignment: .leading, spacing: 8) { visitStats(visits) }
             }
         }
         .padding(.top, 14)
     }
 
     @ViewBuilder
-    private func ledgerStats(_ visits: [VisitEntity]) -> some View {
+    private func visitStats(_ visits: [VisitEntity]) -> some View {
         Label("\(visits.count) \(visits.count == 1 ? "visit" : "visits")", systemImage: "fork.knife")
         Label("\(Set(visits.compactMap { $0.location?.id }).count) places", systemImage: "mappin")
         Label("Since \(establishedYear(visits))", systemImage: "clock")
@@ -84,10 +84,15 @@ struct HomeView: View {
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
                 )
-                Circle()
-                    .stroke(BBTheme.paper.opacity(0.13), lineWidth: 1)
-                    .frame(width: 150, height: 150)
-                    .offset(x: 48, y: -44)
+                RadialGradient(
+                    colors: [BBTheme.paper.opacity(0.14), BBTheme.paper.opacity(0)],
+                    center: .center,
+                    startRadius: 0,
+                    endRadius: 92
+                )
+                .frame(width: 184, height: 184)
+                .offset(x: 62, y: -54)
+                .accessibilityHidden(true)
                 HStack(spacing: 18) {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("NEW VISIT")
@@ -124,14 +129,14 @@ struct HomeView: View {
         let pending = store.pendingVisits()
         if !pending.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
-                EditorialSectionHeader("Your opinion, please", eyebrow: "Shared visits")
+                EditorialSectionHeader("Your entry, please", eyebrow: "Shared outings")
                 ForEach(pending.prefix(2), id: \.objectID) { visit in
                     Button { router.sheet = .rateVisit(visit.id) } label: {
                         HStack(spacing: 14) {
                             IconTile(symbol: "person.2.wave.2.fill")
                             VStack(alignment: .leading) {
-                                Text(visit.location?.name ?? "Shared visit").font(.headline)
-                                Text("\(visit.date.formatted(date: .abbreviated, time: .omitted)) · Add your reaction")
+                                Text(visit.location?.name ?? "Shared outing").font(.headline)
+                                Text("\(visit.dateKnowledge == .known ? visit.date.formatted(date: .abbreviated, time: .omitted) : "Date unknown") · Add only what you tried")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -259,7 +264,7 @@ struct VisitRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(visit.location?.name ?? "Unknown place").font(.headline)
                 HStack(spacing: 5) {
-                    Text(visit.date.formatted(date: .abbreviated, time: .omitted))
+                    Text(visit.dateKnowledge == .known ? visit.date.formatted(date: .abbreviated, time: .omitted) : "Date unknown")
                     if let type = visit.visitType { Text("· \(type.rawValue)") }
                     if !photos.isEmpty { Image(systemName: "photo.fill") }
                 }.font(.caption).foregroundStyle(.secondary)

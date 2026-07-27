@@ -35,12 +35,19 @@ enum ManagedObjectModel {
         ])
         let visit = entity("VisitEntity", VisitEntity.self, [
             attribute("id", .UUIDAttributeType), attribute("date", .dateAttributeType),
+            attribute("dateKnowledgeRaw", .stringAttributeType, defaultValue: VisitDateKnowledge.known.rawValue),
             attribute("visitTypeRaw", .stringAttributeType, optional: true), attribute("priceBand", .integer16AttributeType, defaultValue: 0),
             attribute("occasionRaw", .stringAttributeType, optional: true), attribute("memory", .stringAttributeType, optional: true),
             attribute("latitude", .doubleAttributeType, defaultValue: 0), attribute("longitude", .doubleAttributeType, defaultValue: 0),
             attribute("hasCoordinates", .booleanAttributeType, defaultValue: false), attribute("createdAt", .dateAttributeType),
             attribute("isShared", .booleanAttributeType, defaultValue: false), attribute("createdByID", .UUIDAttributeType),
             attribute("companionIDsBlob", .binaryDataAttributeType, optional: true)
+        ])
+        let participant = entity("VisitParticipantEntity", VisitParticipantEntity.self, [
+            attribute("id", .UUIDAttributeType), attribute("personID", .UUIDAttributeType),
+            attribute("statusRaw", .stringAttributeType, defaultValue: VisitParticipationStatus.attended.rawValue),
+            attribute("memory", .stringAttributeType, optional: true),
+            attribute("createdAt", .dateAttributeType), attribute("updatedAt", .dateAttributeType)
         ])
         let rating = entity("RatingEntity", RatingEntity.self, [
             attribute("id", .UUIDAttributeType), attribute("personID", .UUIDAttributeType), attribute("reactionRaw", .stringAttributeType),
@@ -58,7 +65,9 @@ enum ManagedObjectModel {
             attribute("wouldOrderAgain", .booleanAttributeType, defaultValue: false), attribute("createdAt", .dateAttributeType)
         ])
         let photo = entity("PhotoEntity", PhotoEntity.self, [
-            attribute("id", .UUIDAttributeType), binaryAttribute("thumbnailData", optional: true, external: true),
+            attribute("id", .UUIDAttributeType), attribute("personID", .UUIDAttributeType, optional: true),
+            attribute("caption", .stringAttributeType, optional: true),
+            binaryAttribute("thumbnailData", optional: true, external: true),
             binaryAttribute("fullData", optional: true, external: true), attribute("createdAt", .dateAttributeType),
             attribute("captureDate", .dateAttributeType, optional: true)
         ])
@@ -72,12 +81,32 @@ enum ManagedObjectModel {
         let want = entity("WantEntryEntity", WantEntryEntity.self, [
             attribute("id", .UUIDAttributeType), attribute("addedByID", .UUIDAttributeType), attribute("addedAt", .dateAttributeType)
         ])
+        let importLink = entity("ExternalImportLinkEntity", ExternalImportLinkEntity.self, [
+            attribute("id", .UUIDAttributeType), attribute("provider", .stringAttributeType),
+            attribute("recordType", .stringAttributeType), attribute("externalKey", .stringAttributeType),
+            attribute("contentHash", .stringAttributeType, optional: true), attribute("targetID", .UUIDAttributeType),
+            attribute("createdByImport", .booleanAttributeType, defaultValue: false),
+            attribute("createdAt", .dateAttributeType), attribute("updatedAt", .dateAttributeType)
+        ])
+        let importSession = entity("ExternalImportSessionEntity", ExternalImportSessionEntity.self, [
+            attribute("id", .UUIDAttributeType), attribute("provider", .stringAttributeType),
+            attribute("sourceNamespace", .stringAttributeType), attribute("importedAt", .dateAttributeType),
+            attribute("exportDate", .dateAttributeType, optional: true),
+            attribute("restaurantsCreated", .integer32AttributeType, defaultValue: 0),
+            attribute("outingsCreated", .integer32AttributeType, defaultValue: 0),
+            attribute("photosAdded", .integer32AttributeType, defaultValue: 0),
+            attribute("dishesAdded", .integer32AttributeType, defaultValue: 0),
+            attribute("rankingsSeeded", .integer32AttributeType, defaultValue: 0)
+        ])
 
         pair(circle, "people", person, "circle", toManyA: true, deleteA: .cascadeDeleteRule)
         pair(circle, "locations", location, "circle", toManyA: true, deleteA: .cascadeDeleteRule)
         pair(circle, "visits", visit, "circle", toManyA: true, deleteA: .cascadeDeleteRule)
         pair(circle, "comparisons", comparison, "circle", toManyA: true, deleteA: .cascadeDeleteRule)
         pair(circle, "wantEntries", want, "circle", toManyA: true, deleteA: .cascadeDeleteRule)
+        pair(circle, "externalImportLinks", importLink, "circle", toManyA: true, deleteA: .cascadeDeleteRule)
+        pair(circle, "externalImportSessions", importSession, "circle", toManyA: true, deleteA: .cascadeDeleteRule)
+        pair(importSession, "links", importLink, "session", toManyA: true, deleteA: .cascadeDeleteRule)
         pair(brand, "locations", location, "brand", toManyA: true, deleteA: .nullifyDeleteRule)
         pair(location, "visits", visit, "location", toManyA: true, deleteA: .cascadeDeleteRule)
         pair(location, "dishes", dish, "location", toManyA: true, deleteA: .cascadeDeleteRule)
@@ -85,9 +114,10 @@ enum ManagedObjectModel {
         pair(visit, "ratings", rating, "visit", toManyA: true, deleteA: .cascadeDeleteRule)
         pair(visit, "dishEntries", dishEntry, "visit", toManyA: true, deleteA: .cascadeDeleteRule)
         pair(visit, "photos", photo, "visit", toManyA: true, deleteA: .cascadeDeleteRule)
+        pair(visit, "participants", participant, "visit", toManyA: true, deleteA: .cascadeDeleteRule)
         pair(dish, "entries", dishEntry, "dish", toManyA: true, deleteA: .cascadeDeleteRule)
 
-        model.entities = [circle, person, brand, location, visit, rating, dish, dishEntry, photo, comparison, want]
+        model.entities = [circle, person, brand, location, visit, participant, rating, dish, dishEntry, photo, comparison, want, importLink, importSession]
         return model
     }
 

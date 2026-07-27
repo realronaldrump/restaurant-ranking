@@ -1,13 +1,14 @@
 import SwiftUI
 
 private enum HistoryFilter: String, CaseIterable, Identifiable {
-    case all = "All", unrated = "Unrated", hazy = "Hazy", shared = "Shared", closed = "Closed"
+    case all = "All", unrated = "Unrated", hazy = "Hazy", unknownDate = "Date Unknown", shared = "Shared", closed = "Closed"
     var id: String { rawValue }
     var symbol: String {
         switch self {
         case .all: "square.stack.3d.up"
         case .unrated: "questionmark.circle"
         case .hazy: "cloud.fog"
+        case .unknownDate: "calendar.badge.questionmark"
         case .shared: "person.2"
         case .closed: "door.left.hand.closed"
         }
@@ -20,6 +21,7 @@ private struct HistorySearchRecord: Identifiable {
     let searchableText: String
     let isUnrated: Bool
     let isHazy: Bool
+    let hasUnknownDate: Bool
     let isShared: Bool
     let isClosed: Bool
     var id: UUID { visit.id }
@@ -146,7 +148,7 @@ struct HistoryView: View {
     private func historySection(_ section: HistoryYearSection) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
-                Text(String(section.year))
+                Text(section.year == Int.min ? "Date unknown" : String(section.year))
                     .font(BBTheme.score(25))
                     .foregroundStyle(BBTheme.oxblood)
                 Spacer()
@@ -186,6 +188,7 @@ struct HistoryView: View {
             case .all: true
             case .unrated: record.isUnrated
             case .hazy: record.isHazy
+            case .unknownDate: record.hasUnknownDate
             case .shared: record.isShared
             case .closed: record.isClosed
             }
@@ -194,7 +197,11 @@ struct HistoryView: View {
             return record.searchableText.localizedCaseInsensitiveContains(effectiveQuery)
         }
         let grouped = Dictionary(grouping: records, by: \.year)
-        let sections = grouped.keys.sorted(by: >).map { year in
+        let sections = grouped.keys.sorted { lhs, rhs in
+            if lhs == Int.min { return false }
+            if rhs == Int.min { return true }
+            return lhs > rhs
+        }.map { year in
             HistoryYearSection(year: year, visits: (grouped[year] ?? []).map(\.visit))
         }
         return .init(count: records.count, sections: sections)
@@ -204,16 +211,22 @@ struct HistoryView: View {
         isPreparing = true
         let peopleByID = Dictionary(uniqueKeysWithValues: store.people.map { ($0.id, $0.name) })
         searchRecords = store.visits.map { visit in
-            let people = Set(visit.companionIDs + [visit.createdByID]).compactMap { peopleByID[$0] }
+            let participantIDs = visit.participantArray
+                .filter { $0.status != .notThere }
+                .map(\.personID)
+            let people = Set(participantIDs.isEmpty ? visit.companionIDs + [visit.createdByID] : participantIDs)
+                .compactMap { peopleByID[$0] }
             let searchable = [visit.location?.name, visit.location?.city, visit.memory]
                 + visit.dishEntryArray.map { $0.dish?.name }
+                + visit.participantArray.map(\.memory)
                 + people.map(Optional.some)
             return HistorySearchRecord(
                 visit: visit,
-                year: Calendar.current.component(.year, from: visit.date),
+                year: visit.dateKnowledge == .known ? Calendar.current.component(.year, from: visit.date) : Int.min,
                 searchableText: searchable.compactMap { $0 }.joined(separator: " "),
                 isUnrated: visit.ratingArray.isEmpty,
                 isHazy: visit.ratingArray.contains(where: \.hazyMemory),
+                hasUnknownDate: visit.dateKnowledge == .unknown,
                 isShared: store.isSharedVisit(visit),
                 isClosed: visit.location?.isClosed == true
             )

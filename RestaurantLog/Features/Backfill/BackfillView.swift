@@ -279,7 +279,7 @@ private struct BackfillRatingView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     Eyebrow("Past visit")
                     Text(visit.location?.name ?? "Meal").font(BBTheme.display(35))
-                    Text(visit.date.formatted(date: .complete, time: .shortened)).foregroundStyle(.secondary)
+                    Text(visit.dateKnowledge == .known ? visit.date.formatted(date: .complete, time: .shortened) : "Date unknown").foregroundStyle(.secondary)
                     Text("How clearly do you remember it?").font(BBTheme.display(24))
                     ReactionPicker(selected: reaction) { reaction = $0 }
                     Toggle("Hazy memory · weight this lightly", isOn: $hazy)

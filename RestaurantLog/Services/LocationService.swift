@@ -2,7 +2,7 @@ import CoreLocation
 import MapKit
 import Observation
 
-struct PlaceCandidate: Identifiable, Hashable {
+struct PlaceCandidate: Identifiable, Hashable, Sendable {
     let id: String
     let name: String
     let address: String?

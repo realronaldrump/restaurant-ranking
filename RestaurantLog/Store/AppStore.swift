@@ -27,6 +27,7 @@ final class AppStore {
     private var allVisits: [VisitEntity] = []
     private var allComparisons: [ComparisonEntity] = []
     private var allWantEntries: [WantEntryEntity] = []
+    private var allImportSessions: [ExternalImportSessionEntity] = []
     private(set) var activeCircleID: UUID?
     private(set) var devicePersonID: UUID?
     private(set) var revision = 0
@@ -61,6 +62,9 @@ final class AppStore {
     var visits: [VisitEntity] { allVisits.filter { $0.circle?.id == activeCircle?.id } }
     var comparisons: [ComparisonEntity] { allComparisons.filter { $0.circle?.id == activeCircle?.id } }
     var wantEntries: [WantEntryEntity] { allWantEntries.filter { $0.circle?.id == activeCircle?.id } }
+    var beliImportSessions: [ExternalImportSessionEntity] {
+        allImportSessions.filter { $0.circle?.id == activeCircle?.id && $0.provider == "beli" }
+    }
     var photoDateSyncCandidateCount: Int {
         _ = revision
         return photoDateSyncCandidates.count
@@ -190,6 +194,7 @@ final class AppStore {
         allVisits.removeAll()
         allComparisons.removeAll()
         allWantEntries.removeAll()
+        allImportSessions.removeAll()
         locationsByIdentity.removeAll()
         locationsBySource.removeAll()
         cachedScoreRevision = -1
@@ -221,6 +226,7 @@ final class AppStore {
             allVisits.removeAll()
             allComparisons.removeAll()
             allWantEntries.removeAll()
+            allImportSessions.removeAll()
             activeCircleID = nil
             devicePersonID = nil
             devicePersonIDsByCircle.removeAll()
@@ -257,7 +263,10 @@ final class AppStore {
             existing.isCircleMember = true
             existing.colorHex = memberColor(at: circleMembers.count)
             for visit in visits where visit.companionIDs.contains(existing.id) {
-                visit.isShared = true
+                let status: VisitParticipationStatus = visit.rating(for: existing.id) == nil ? .pending : .attended
+                let participant = upsertParticipant(for: visit, personID: existing.id, status: status)
+                participant.updatedAt = .now
+                synchronizeLegacyCompanionIDs(for: visit)
             }
             commit()
             return existing
@@ -294,12 +303,12 @@ final class AppStore {
     func person(id: UUID) -> PersonEntity? { people.first { $0.id == id } }
 
     func taggedPeople(for visit: VisitEntity) -> [PersonEntity] {
-        let ids = Set(visit.companionIDs)
+        let ids = activeParticipantIDs(for: visit).subtracting([visit.createdByID])
         return people.filter { ids.contains($0.id) && $0.id != visit.createdByID }
     }
 
     func attendees(for visit: VisitEntity) -> [PersonEntity] {
-        let ids = Set(visit.companionIDs).union([visit.createdByID])
+        let ids = activeParticipantIDs(for: visit)
         return people.filter { ids.contains($0.id) }
     }
 
@@ -315,7 +324,9 @@ final class AppStore {
 
     func isSharedVisit(_ visit: VisitEntity) -> Bool {
         let memberIDs = Set(circleMembers.map(\.id))
-        return visit.companionIDs.contains { $0 != visit.createdByID && memberIDs.contains($0) }
+        return activeParticipantIDs(for: visit).contains {
+            $0 != visit.createdByID && memberIDs.contains($0)
+        }
     }
 
     @discardableResult
@@ -328,6 +339,7 @@ final class AppStore {
         phone: String? = nil,
         url: URL? = nil,
         sourceIdentifier: String? = nil,
+        forceDistinct: Bool = false,
         cuisines: [String] = [],
         tags: [String] = []
     ) -> RestaurantLocation {
@@ -338,7 +350,7 @@ final class AppStore {
             return existing
         }
         let identityKey = LocationIdentityKey(circleID: circleID, name: normalizedName, address: address)
-        if let existing = locationsByIdentity[identityKey] { return existing }
+        if !forceDistinct, let existing = locationsByIdentity[identityKey] { return existing }
         let location = RestaurantLocation(context: context)
         assign(location, alongside: activeCircle)
         location.id = UUID(); location.name = normalizedName
@@ -356,12 +368,26 @@ final class AppStore {
         return location
     }
 
+    func existingLocation(
+        sourceIdentifier: String? = nil,
+        name: String,
+        address: String? = nil
+    ) -> RestaurantLocation? {
+        let circleID = activeCircle?.id
+        if let sourceIdentifier, !sourceIdentifier.isEmpty,
+           let location = locationsBySource[.init(circleID: circleID, sourceIdentifier: sourceIdentifier)] {
+            return location
+        }
+        return locationsByIdentity[.init(circleID: circleID, name: name, address: address)]
+    }
+
     @discardableResult
     func logVisit(
         at location: RestaurantLocation,
         reaction: Reaction?,
         personID: UUID? = nil,
         date: Date = .now,
+        dateKnowledge: VisitDateKnowledge = .known,
         hazy: Bool = false,
         companionIDs: [UUID] = [],
         coordinate: (Double, Double)? = nil
@@ -372,7 +398,8 @@ final class AppStore {
             }
             let visit = VisitEntity(context: context)
             assign(visit, alongside: location)
-            visit.id = UUID(); visit.date = date; visit.createdAt = .now; visit.createdByID = authorID
+            visit.id = UUID(); visit.date = date; visit.dateKnowledge = dateKnowledge
+            visit.createdAt = .now; visit.createdByID = authorID
             let resolvedCompanionIDs = canonicalCompanionIDs(companionIDs, excluding: authorID)
             visit.location = location; visit.circle = activeCircle
             visit.companionIDs = resolvedCompanionIDs
@@ -386,10 +413,33 @@ final class AppStore {
             }
             allVisits.append(visit)
             pendingSorts.insert(.visits)
+            synchronizeParticipants(for: visit, requestedCompanionIDs: Set(resolvedCompanionIDs))
             if let reaction { _ = addRating(to: visit, personID: authorID, reaction: reaction, hazy: hazy) }
             location.updatedAt = .now
             return visit
         }
+    }
+
+    /// Finds a high-confidence shared outing that already names this diner. The
+    /// logging flow can offer to add the diner entry instead of creating a second
+    /// visit. Time matching uses the visit date, which is photo capture time when
+    /// that metadata is available.
+    func existingOuting(
+        at location: RestaurantLocation,
+        near date: Date,
+        for personID: UUID? = nil
+    ) -> VisitEntity? {
+        guard let personID = personID ?? currentPerson?.id else { return nil }
+        return visits
+            .filter {
+                $0.location?.id == location.id &&
+                $0.createdByID != personID &&
+                abs($0.date.timeIntervalSince(date)) <= 8 * 60 * 60 &&
+                activeParticipantIDs(for: $0).contains(personID)
+            }
+            .min { lhs, rhs in
+                abs(lhs.date.timeIntervalSince(date)) < abs(rhs.date.timeIntervalSince(date))
+            }
     }
 
     @discardableResult
@@ -403,8 +453,49 @@ final class AppStore {
             rating.id = UUID(); rating.visit = visit; rating.personID = personID; rating.createdAt = .now
         }
         rating.reaction = reaction; rating.hazyMemory = hazy
+        let participant = upsertParticipant(for: visit, personID: personID, status: .attended)
+        participant.updatedAt = .now
+        synchronizeLegacyCompanionIDs(for: visit)
         commit()
         return rating
+    }
+
+    func declineRating(for visit: VisitEntity, personID: UUID? = nil) {
+        guard let personID = personID ?? currentPerson?.id else { return }
+        let participant = upsertParticipant(for: visit, personID: personID, status: .declined)
+        participant.updatedAt = .now
+        synchronizeLegacyCompanionIDs(for: visit)
+        commit()
+    }
+
+    func markNotPresent(for visit: VisitEntity, personID: UUID? = nil) {
+        guard let personID = personID ?? currentPerson?.id, personID != visit.createdByID else { return }
+        let participant = upsertParticipant(for: visit, personID: personID, status: .notThere)
+        participant.updatedAt = .now
+        synchronizeLegacyCompanionIDs(for: visit)
+        commit()
+    }
+
+    func memory(for visit: VisitEntity, personID: UUID? = nil) -> String? {
+        guard let personID = personID ?? currentPerson?.id else { return nil }
+        if let memory = visit.participant(for: personID)?.memory, !memory.isEmpty { return memory }
+        return personID == visit.createdByID ? visit.memory : nil
+    }
+
+    func updateMemory(_ memory: String?, for visit: VisitEntity, personID: UUID? = nil) {
+        guard let personID = personID ?? currentPerson?.id else { return }
+        let clean = memory?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stored = clean?.isEmpty == true ? nil : clean
+        let status: VisitParticipationStatus = stored == nil
+            ? (visit.participant(for: personID)?.status ?? .attended)
+            : .attended
+        let participant = upsertParticipant(for: visit, personID: personID, status: status)
+        participant.memory = stored
+        participant.updatedAt = .now
+        // Preserve the legacy author field for backward-compatible backups.
+        if personID == visit.createdByID { visit.memory = stored }
+        synchronizeLegacyCompanionIDs(for: visit)
+        commit()
     }
 
     func updateRating(
@@ -424,22 +515,56 @@ final class AppStore {
         commit()
     }
 
-    func updateVisit(_ visit: VisitEntity, type: VisitType?, priceBand: Int, occasion: Occasion?, memory: String?, companions: [UUID]) {
+    func canEditOuting(_ visit: VisitEntity, personID: UUID? = nil) -> Bool {
+        guard let personID = personID ?? currentPerson?.id else { return false }
+        return visit.createdByID == personID
+    }
+
+    @discardableResult
+    func updateVisit(
+        _ visit: VisitEntity,
+        type: VisitType?,
+        priceBand: Int,
+        occasion: Occasion?,
+        memory: String?,
+        companions: [UUID],
+        editorID: UUID? = nil
+    ) -> Bool {
+        guard canEditOuting(visit, personID: editorID) else { return false }
         visit.visitType = type; visit.priceBand = Int16(priceBand); visit.occasion = occasion
         let cleanMemory = memory?.trimmingCharacters(in: .whitespacesAndNewlines)
         visit.memory = cleanMemory?.isEmpty == true ? nil : cleanMemory
+        let author = upsertParticipant(for: visit, personID: visit.createdByID, status: .attended)
+        author.memory = visit.memory
+        author.updatedAt = .now
         let resolvedCompanionIDs = canonicalCompanionIDs(companions, excluding: visit.createdByID)
         visit.companionIDs = resolvedCompanionIDs
+        synchronizeParticipants(for: visit, requestedCompanionIDs: Set(resolvedCompanionIDs))
         visit.isShared = resolvedCompanionIDs.contains { id in circleMembers.contains { $0.id == id } }
         commit()
+        return true
     }
 
     /// Uses the earliest actual capture time when a set of meal photos was
     /// taken over several minutes. Fallback storage dates are intentionally
     /// ignored so screenshots and metadata-free images do not rewrite a visit.
     func updateVisitDateFromPhotoMetadata(_ visit: VisitEntity, photos: [BackfillPhoto]) {
-        guard let captureDate = photos.compactMap(\.captureDate).min(), captureDate < visit.date else { return }
+        guard let captureDate = photos.compactMap(\.captureDate).min(),
+              visit.dateKnowledge == .unknown || captureDate < visit.date else { return }
         visit.date = captureDate
+        visit.dateKnowledge = .known
+        pendingSorts.insert(.visits)
+        commit()
+    }
+
+    func updateVisitDate(_ visit: VisitEntity, date: Date?, editorID: UUID? = nil) {
+        guard canEditOuting(visit, personID: editorID) else { return }
+        if let date {
+            visit.date = date
+            visit.dateKnowledge = .known
+        } else {
+            visit.dateKnowledge = .unknown
+        }
         pendingSorts.insert(.visits)
         commit()
     }
@@ -453,6 +578,7 @@ final class AppStore {
         performBatch {
             for (visit, photoDate) in candidates {
                 visit.date = photoDate
+                visit.dateKnowledge = .known
             }
             pendingSorts.insert(.visits)
         }
@@ -461,8 +587,14 @@ final class AppStore {
 
     /// Reassigns a visit without leaving its dish evidence attached to the old
     /// establishment. Existing dishes at the destination are reused by name.
-    func changeLocation(of visit: VisitEntity, to location: RestaurantLocation) {
-        guard visit.location != location else { return }
+    @discardableResult
+    func changeLocation(
+        of visit: VisitEntity,
+        to location: RestaurantLocation,
+        editorID: UUID? = nil
+    ) -> Bool {
+        guard canEditOuting(visit, personID: editorID) else { return false }
+        guard visit.location != location else { return true }
 
         let previousLocation = visit.location
         let previousDishes = Set(visit.dishEntryArray.compactMap(\.dish))
@@ -508,6 +640,7 @@ final class AppStore {
         previousLocation?.updatedAt = .now
         location.updatedAt = .now
         commit()
+        return true
     }
 
     @discardableResult
@@ -522,10 +655,22 @@ final class AppStore {
             return newDish
         }()
         dish.role = role
+        if let existing = visit.dishEntryArray.first(where: {
+            $0.personID == personID && $0.dish?.id == dish.id
+        }) {
+            existing.reaction = reaction
+            existing.wouldOrderAgain = wouldOrderAgain
+            _ = upsertParticipant(for: visit, personID: personID, status: .attended)
+            synchronizeLegacyCompanionIDs(for: visit)
+            commit()
+            return existing
+        }
         let entry = DishEntryEntity(context: context)
         assign(entry, alongside: visit)
         entry.id = UUID(); entry.personID = personID; entry.reaction = reaction; entry.wouldOrderAgain = wouldOrderAgain
         entry.createdAt = .now; entry.dish = dish; entry.visit = visit
+        _ = upsertParticipant(for: visit, personID: personID, status: .attended)
+        synchronizeLegacyCompanionIDs(for: visit)
         commit()
         return entry
     }
@@ -534,14 +679,324 @@ final class AppStore {
         fullData: Data,
         thumbnailData: Data?,
         to visit: VisitEntity,
+        personID: UUID? = nil,
         createdAt: Date = .now,
-        captureDate: Date? = nil
+        captureDate: Date? = nil,
+        caption: String? = nil
     ) {
+        let contributorID = personID ?? currentPerson?.id ?? visit.createdByID
         let photo = PhotoEntity(context: context)
         assign(photo, alongside: visit)
-        photo.id = UUID(); photo.fullData = fullData; photo.thumbnailData = thumbnailData
-        photo.createdAt = createdAt; photo.captureDate = captureDate; photo.visit = visit
+        photo.id = UUID(); photo.personID = contributorID
+        photo.fullData = fullData; photo.thumbnailData = thumbnailData
+        photo.createdAt = createdAt; photo.captureDate = captureDate
+        photo.caption = caption?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+        photo.visit = visit
+        let participant = upsertParticipant(for: visit, personID: contributorID, status: .attended)
+        participant.updatedAt = .now
+        synchronizeLegacyCompanionIDs(for: visit)
         commit()
+    }
+
+    func importBeli(_ request: BeliImportRequest) -> BeliImportSummary {
+        guard let circle = activeCircle, let personID = currentPerson?.id else { return .init() }
+        var summary = BeliImportSummary()
+        summary.failedPhotos = max(0, request.archive.photos.count - request.downloadedPhotos.count)
+
+        return performBatch {
+            let session = ExternalImportSessionEntity(context: context)
+            assign(session, alongside: circle)
+            session.id = UUID(); session.provider = "beli"; session.sourceNamespace = request.archive.namespace
+            session.importedAt = .now; session.exportDate = request.archive.exportDate; session.circle = circle
+            allImportSessions.insert(session, at: 0)
+            var links = externalImportLinks(in: circle)
+            var linksByKey = Dictionary(uniqueKeysWithValues: links.map { (importLinkKey($0.recordType, $0.externalKey), $0) })
+            var locationsByRankingID: [String: RestaurantLocation] = [:]
+            var visitsByRankingID: [String: [VisitEntity]] = [:]
+            let orderedRankings = request.archive.rankings.sorted { $0.rank < $1.rank }
+
+            @MainActor func link(
+                recordType: String,
+                externalKey: String,
+                targetID: UUID,
+                contentHash: String? = nil,
+                createdByImport: Bool
+            ) {
+                let key = importLinkKey(recordType, externalKey)
+                if let existing = linksByKey[key] {
+                    existing.targetID = targetID
+                    existing.contentHash = contentHash
+                    existing.updatedAt = .now
+                    return
+                }
+                let value = ExternalImportLinkEntity(context: context)
+                assign(value, alongside: circle)
+                value.id = UUID(); value.provider = "beli"; value.recordType = recordType
+                value.externalKey = externalKey; value.contentHash = contentHash; value.targetID = targetID
+                value.createdByImport = createdByImport
+                value.createdAt = .now; value.updatedAt = .now; value.circle = circle
+                value.session = session
+                links.append(value); linksByKey[key] = value
+            }
+
+            for row in orderedRankings {
+                let locationLink = linksByKey[importLinkKey("restaurant", row.id)]
+                let linkedLocation = locationLink.flatMap { source in locations.first { $0.id == source.targetID } }
+                let location: RestaurantLocation?
+                var locationCreatedByImport = false
+                if let linkedLocation {
+                    location = linkedLocation
+                    summary.restaurantsLinked += 1
+                } else {
+                    let resolution = request.resolutions[row.id] ?? .unresolved(markClosed: false)
+                    switch resolution {
+                    case .skip:
+                        location = nil
+                        summary.skippedRows += 1
+                    case .existing(let id):
+                        location = locations.first { $0.id == id }
+                        if location != nil { summary.restaurantsLinked += 1 }
+                    case .map(let candidate):
+                        let before = locations.count
+                        location = createLocation(
+                            name: candidate.name, category: candidate.suggestedCategory,
+                            address: candidate.address, city: candidate.city,
+                            coordinate: (candidate.latitude, candidate.longitude), phone: candidate.phone,
+                            url: candidate.url, sourceIdentifier: candidate.id, cuisines: candidate.cuisines
+                        )
+                        if locations.count > before {
+                            summary.restaurantsCreated += 1
+                            locationCreatedByImport = true
+                        } else { summary.restaurantsLinked += 1 }
+                    case .unresolved(let markClosed):
+                        let value = createLocation(
+                            name: row.restaurantName, category: DiningCategory.suggested(for: row.restaurantName),
+                            city: row.city, sourceIdentifier: "beli:\(row.id)", forceDistinct: true
+                        )
+                        value.isClosed = markClosed
+                        location = value
+                        summary.restaurantsCreated += 1
+                        locationCreatedByImport = true
+                    }
+                }
+                guard let location else { continue }
+                locationsByRankingID[row.id] = location
+                link(
+                    recordType: "restaurant", externalKey: row.id, targetID: location.id,
+                    createdByImport: locationCreatedByImport
+                )
+
+                var rowVisits: [VisitEntity] = []
+                let visitInputs: [(key: String, date: Date, knowledge: VisitDateKnowledge)] = row.visitDates.isEmpty
+                    ? [("\(row.id):unknown", row.createdAt, .unknown)]
+                    : row.visitDates.enumerated().map { ("\(row.id):visit:\($0.offset):\(Int($0.element.timeIntervalSince1970))", $0.element, .known) }
+                for input in visitInputs {
+                    let existingLink = linksByKey[importLinkKey("outing", input.key)]
+                    var visit = existingLink.flatMap { source in visits.first { $0.id == source.targetID } }
+                    if visit == nil, input.knowledge == .known {
+                        let sameDay = location.visitArray.filter { $0.dateKnowledge == .known && Calendar.current.isDate($0.date, inSameDayAs: input.date) }
+                        if sameDay.count == 1 { visit = sameDay[0] }
+                    }
+                    if let visit {
+                        rowVisits.append(visit)
+                        link(recordType: "outing", externalKey: input.key, targetID: visit.id, createdByImport: false)
+                        summary.outingsLinked += 1
+                    } else {
+                        let created = logVisit(
+                            at: location, reaction: nil, personID: personID, date: input.date,
+                            dateKnowledge: input.knowledge
+                        )
+                        created.createdAt = row.createdAt
+                        rowVisits.append(created)
+                        link(recordType: "outing", externalKey: input.key, targetID: created.id, createdByImport: true)
+                        summary.outingsCreated += 1
+                    }
+                }
+                visitsByRankingID[row.id] = rowVisits
+
+                let anchorKey = row.id
+                let maximumRank = max(1, orderedRankings.map(\.rank).max() ?? 1)
+                let fraction = maximumRank == 1 ? 0.15 : Double(row.rank - 1) / Double(maximumRank - 1)
+                let anchorValue = 95 - 70 * fraction
+                let anchorLink = linksByKey[importLinkKey("ranking", anchorKey)]
+                var comparison = anchorLink.flatMap { source in comparisons.first { $0.id == source.targetID } }
+                if comparison == nil {
+                    let value = ComparisonEntity(context: context)
+                    assign(value, alongside: circle)
+                    value.id = UUID(); value.personID = personID; value.locationAID = location.id; value.locationBID = location.id
+                    value.outcome = .tie; value.date = request.archive.exportDate ?? row.createdAt
+                    value.isAnchor = true; value.anchorValue = anchorValue; value.circle = circle
+                    value.locationAEvidenceFingerprint = "beli:\(row.id)"
+                    value.locationBEvidenceFingerprint = "beli:\(row.id)"
+                    allComparisons.append(value); pendingSorts.insert(.comparisons)
+                    comparison = value
+                    summary.rankingsSeeded += 1
+                }
+                if let comparison {
+                    link(
+                        recordType: "ranking", externalKey: anchorKey, targetID: comparison.id,
+                        createdByImport: anchorLink == nil
+                    )
+                }
+            }
+
+            let rankingByIdentity = Dictionary(grouping: orderedRankings) {
+                "\(BeliImporter.normalize($0.restaurantName))|\(BeliImporter.normalize($0.city))"
+            }
+            func assignedRankingID(for name: String, city: String, explicit: String?) -> String? {
+                if let explicit, locationsByRankingID[explicit] != nil { return explicit }
+                let key = "\(BeliImporter.normalize(name))|\(BeliImporter.normalize(city))"
+                return rankingByIdentity[key]?.first(where: { locationsByRankingID[$0.id] != nil })?.id
+            }
+            func targetVisit(rankingID: String, near date: Date) -> VisitEntity? {
+                let values = visitsByRankingID[rankingID] ?? []
+                if values.count == 1 { return values[0] }
+                let sameDay = values.filter { $0.dateKnowledge == .known && Calendar.current.isDate($0.date, inSameDayAs: date) }
+                if sameDay.count == 1 { return sameDay[0] }
+                return values.min { abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date)) }
+            }
+
+            for row in request.archive.photos {
+                guard let downloaded = request.downloadedPhotos[row.id],
+                      let rankingID = assignedRankingID(
+                        for: row.restaurantName, city: row.city,
+                        explicit: request.photoRankingAssignments[row.id]
+                      ), let visit = targetVisit(rankingID: rankingID, near: row.uploadDate) else { continue }
+                if linksByKey[importLinkKey("photo", row.id)] != nil { continue }
+                if let duplicate = links.first(where: { $0.recordType == "photo" && $0.contentHash == downloaded.contentHash }) {
+                    link(
+                        recordType: "photo", externalKey: row.id, targetID: duplicate.targetID,
+                        contentHash: downloaded.contentHash, createdByImport: false
+                    )
+                    continue
+                }
+                addPhoto(
+                    fullData: downloaded.photo.fullData, thumbnailData: downloaded.photo.thumbnailData,
+                    to: visit, personID: personID, createdAt: row.uploadDate,
+                    captureDate: downloaded.photo.captureDate, caption: row.caption
+                )
+                guard let photo = visit.photoArray.last else { continue }
+                link(
+                    recordType: "photo", externalKey: row.id, targetID: photo.id,
+                    contentHash: downloaded.contentHash, createdByImport: true
+                )
+                summary.photosAdded += 1
+                if row.isFavoriteDish, let caption = row.caption {
+                    if let entry = addDish(name: caption, role: .entree, reaction: .loved, wouldOrderAgain: true, to: visit, personID: personID) {
+                        link(
+                            recordType: "dish", externalKey: "photo:\(row.id)", targetID: entry.id,
+                            createdByImport: true
+                        )
+                        summary.dishesAdded += 1
+                    }
+                }
+            }
+
+            for row in request.archive.dishNotes {
+                if linksByKey[importLinkKey("dish", row.id)] != nil { continue }
+                guard let rankingID = assignedRankingID(
+                    for: row.restaurantName, city: row.city,
+                    explicit: request.dishRankingAssignments[row.id]
+                ), let visit = targetVisit(rankingID: rankingID, near: row.createdAt),
+                      let entry = addDish(name: row.name, role: .entree, reaction: .loved, wouldOrderAgain: true, to: visit, personID: personID) else { continue }
+                link(recordType: "dish", externalKey: row.id, targetID: entry.id, createdByImport: true)
+                summary.dishesAdded += 1
+            }
+
+            session.restaurantsCreated = Int32(summary.restaurantsCreated)
+            session.outingsCreated = Int32(summary.outingsCreated)
+            session.photosAdded = Int32(summary.photosAdded)
+            session.dishesAdded = Int32(summary.dishesAdded)
+            session.rankingsSeeded = Int32(summary.rankingsSeeded)
+            if !links.contains(where: { $0.session == session }) {
+                allImportSessions.removeAll { $0.id == session.id }
+                context.delete(session)
+            }
+
+            return summary
+        }
+    }
+
+    @discardableResult
+    func deleteBeliImport(sessionID: UUID) -> BeliImportDeletionSummary? {
+        guard let session = allImportSessions.first(where: {
+            $0.id == sessionID && $0.provider == "beli" && $0.circle?.id == activeCircle?.id
+        }), let circle = session.circle else { return nil }
+
+        var summary = BeliImportDeletionSummary()
+        let sessionLinks = session.linkArray
+        let ownedLinks = sessionLinks.filter(\.createdByImport)
+        let otherLinks = externalImportLinks(in: circle).filter { $0.session?.id != sessionID }
+        func isStillReferenced(_ link: ExternalImportLinkEntity) -> Bool {
+            otherLinks.contains { $0.recordType == link.recordType && $0.targetID == link.targetID }
+        }
+
+        let photoIDs = Set(ownedLinks.filter { $0.recordType == "photo" && !isStillReferenced($0) }.map(\.targetID))
+        let dishEntryIDs = Set(ownedLinks.filter { $0.recordType == "dish" && !isStillReferenced($0) }.map(\.targetID))
+        let rankingIDs = Set(ownedLinks.filter { $0.recordType == "ranking" && !isStillReferenced($0) }.map(\.targetID))
+        let visitIDs = Set(ownedLinks.filter { $0.recordType == "outing" && !isStillReferenced($0) }.map(\.targetID))
+        let locationIDs = Set(ownedLinks.filter { $0.recordType == "restaurant" && !isStillReferenced($0) }.map(\.targetID))
+
+        do {
+            let photoRequest = NSFetchRequest<PhotoEntity>(entityName: "PhotoEntity")
+            photoRequest.predicate = NSPredicate(format: "id IN %@", Array(photoIDs))
+            for photo in try context.fetch(photoRequest) {
+                context.delete(photo)
+                summary.photosDeleted += 1
+            }
+
+            let entryRequest = NSFetchRequest<DishEntryEntity>(entityName: "DishEntryEntity")
+            entryRequest.predicate = NSPredicate(format: "id IN %@", Array(dishEntryIDs))
+            var possiblyOrphanedDishes = Set<DishEntity>()
+            for entry in try context.fetch(entryRequest) {
+                if let dish = entry.dish { possiblyOrphanedDishes.insert(dish) }
+                context.delete(entry)
+                summary.dishesDeleted += 1
+            }
+
+            for comparison in allComparisons where rankingIDs.contains(comparison.id) {
+                context.delete(comparison)
+                summary.rankingsDeleted += 1
+            }
+
+            for visit in allVisits where visitIDs.contains(visit.id) {
+                possiblyOrphanedDishes.formUnion(visit.dishEntryArray.compactMap(\.dish))
+                context.delete(visit)
+                summary.outingsDeleted += 1
+            }
+
+            context.processPendingChanges()
+            for dish in possiblyOrphanedDishes where !dish.isDeleted && dish.entryArray.isEmpty {
+                context.delete(dish)
+            }
+            context.processPendingChanges()
+
+            for location in allLocations where locationIDs.contains(location.id) {
+                let hasComparison = allComparisons.contains {
+                    !$0.isDeleted && ($0.locationAID == location.id || $0.locationBID == location.id)
+                }
+                let hasActivity = !location.visitArray.isEmpty ||
+                    !location.dishArray.isEmpty ||
+                    !((location.wantEntries?.allObjects as? [WantEntryEntity]) ?? []).isEmpty ||
+                    hasComparison
+                if hasActivity {
+                    summary.restaurantsPreserved += 1
+                } else {
+                    context.delete(location)
+                    summary.restaurantsDeleted += 1
+                }
+            }
+
+            context.delete(session)
+            try persistence.save()
+            reload()
+            return summary
+        } catch {
+            context.rollback()
+            reload()
+            reportError("The Beli import could not be deleted. \(error.localizedDescription)")
+            return nil
+        }
     }
 
     func recordComparison(a: RestaurantLocation, b: RestaurantLocation, outcome: ComparisonOutcome, personID: UUID? = nil) {
@@ -614,7 +1069,9 @@ final class AppStore {
     func pendingVisits(for personID: UUID? = nil) -> [VisitEntity] {
         guard let personID = personID ?? currentPerson?.id else { return [] }
         // `visits` is already maintained newest-first by the store cache.
-        return visits.filter { $0.companionIDs.contains(personID) && $0.rating(for: personID) == nil }
+        return visits.filter {
+            $0.participant(for: personID)?.status == .pending && $0.rating(for: personID) == nil
+        }
     }
 
     func toggleWant(_ location: RestaurantLocation, by personID: UUID? = nil) {
@@ -678,6 +1135,13 @@ final class AppStore {
 
     func merge(_ duplicate: RestaurantLocation, into keeper: RestaurantLocation) {
         guard duplicate != keeper else { return }
+        if let circle = activeCircle {
+            for link in externalImportLinks(in: circle) where link.recordType == "restaurant" && link.targetID == duplicate.id {
+                link.targetID = keeper.id
+                link.createdByImport = false
+                link.updatedAt = .now
+            }
+        }
         for visit in duplicate.visitArray { visit.location = keeper }
         for dish in duplicate.dishArray {
             if let existing = keeper.dishArray.first(where: { $0.name.localizedCaseInsensitiveCompare(dish.name) == .orderedSame }) {
@@ -702,7 +1166,9 @@ final class AppStore {
         commit()
     }
 
-    func deleteVisit(_ visit: VisitEntity) {
+    @discardableResult
+    func deleteVisit(_ visit: VisitEntity, personID: UUID? = nil) -> Bool {
+        guard canEditOuting(visit, personID: personID) else { return false }
         let visitID = visit.id
         let possibleOrphanedDishes = Set(visit.dishEntryArray.compactMap(\.dish))
         allVisits.removeAll { $0.id == visitID }
@@ -712,21 +1178,37 @@ final class AppStore {
             context.delete(dish)
         }
         commit()
+        return true
     }
 
-    func deleteVisit(id: UUID) {
-        guard let visit = allVisits.first(where: { $0.id == id }) else { return }
-        deleteVisit(visit)
+    @discardableResult
+    func deleteVisit(id: UUID, personID: UUID? = nil) -> Bool {
+        guard let visit = allVisits.first(where: { $0.id == id }) else { return false }
+        return deleteVisit(visit, personID: personID)
     }
 
-    func deletePhoto(_ photo: PhotoEntity) { context.delete(photo); commit() }
+    func canEditPhoto(_ photo: PhotoEntity, personID: UUID? = nil) -> Bool {
+        guard let personID = personID ?? currentPerson?.id else { return false }
+        return (photo.personID ?? photo.visit?.createdByID) == personID
+    }
 
-    func deleteDishEntry(_ entry: DishEntryEntity) {
+    @discardableResult
+    func deletePhoto(_ photo: PhotoEntity, personID: UUID? = nil) -> Bool {
+        guard canEditPhoto(photo, personID: personID) else { return false }
+        context.delete(photo)
+        commit()
+        return true
+    }
+
+    @discardableResult
+    func deleteDishEntry(_ entry: DishEntryEntity, personID: UUID? = nil) -> Bool {
+        guard let personID = personID ?? currentPerson?.id, entry.personID == personID else { return false }
         let dish = entry.dish
         let remaining = dish?.entryArray.filter { $0.id != entry.id } ?? []
         context.delete(entry)
         if let dish, remaining.isEmpty { context.delete(dish) }
         commit()
+        return true
     }
 
     func settleQuestions(limit: Int = 5, personID: UUID? = nil) -> [ComparisonQuestion] {
@@ -837,13 +1319,18 @@ final class AppStore {
             circles = try fetch(CircleEntity.self, sort: [NSSortDescriptor(key: "createdAt", ascending: true)])
             allPeople = try fetch(PersonEntity.self, sort: [NSSortDescriptor(key: "createdAt", ascending: true)])
             allLocations = try fetch(RestaurantLocation.self, sort: [NSSortDescriptor(key: "name", ascending: true, selector: #selector(NSString.localizedCaseInsensitiveCompare(_:)))])
-            rebuildLocationIndexes()
             allVisits = try fetch(VisitEntity.self, sort: [NSSortDescriptor(key: "date", ascending: false)])
             allComparisons = try fetch(ComparisonEntity.self, sort: [NSSortDescriptor(key: "date", ascending: false)])
             allWantEntries = try fetch(WantEntryEntity.self, sort: [NSSortDescriptor(key: "addedAt", ascending: false)])
+            allImportSessions = try fetch(ExternalImportSessionEntity.self, sort: [NSSortDescriptor(key: "importedAt", ascending: false)])
             let reconciledPeople = reconcileDuplicatePeople()
+            let reconciledLocations = reconcileDuplicateLocations()
+            rebuildLocationIndexes()
+            let reconciledDishes = reconcileDuplicateDishes()
+            let reconciledParticipants = reconcileParticipants()
+            let reconciledOutings = reconcileDuplicateOutings()
             let backfilledComparisons = backfillComparisonEvidenceFingerprints()
-            if reconciledPeople || backfilledComparisons {
+            if reconciledPeople || reconciledLocations || reconciledDishes || reconciledParticipants || reconciledOutings || backfilledComparisons {
                 do { try persistence.save() }
                 catch { reportError("Older circle data could not be upgraded yet. \(error.localizedDescription)") }
             }
@@ -936,6 +1423,344 @@ final class AppStore {
             )
     }
 
+    /// Converges restaurant records that were independently created on offline
+    /// devices. A stable Maps identifier is preferred; otherwise an exact
+    /// normalized address or a close coordinate is required alongside the name.
+    @discardableResult
+    private func reconcileDuplicateLocations() -> Bool {
+        let candidates = allLocations.compactMap { location -> (LocationReconciliationKey, RestaurantLocation)? in
+            guard let key = locationReconciliationKey(for: location) else { return nil }
+            return (key, location)
+        }
+        let groups = Dictionary(grouping: candidates, by: \.0).mapValues { $0.map(\.1) }
+        var changed = false
+        for group in groups.values where group.count > 1 {
+            let ordered = group.sorted {
+                if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+                return $0.id.uuidString < $1.id.uuidString
+            }
+            guard let keeper = ordered.first else { continue }
+            for duplicate in ordered.dropFirst() {
+                mergeLocationRecord(duplicate, into: keeper)
+                changed = true
+            }
+        }
+
+        // Two offline devices can also create separate manual restaurant records
+        // with no Maps ID, address, or coordinates. Mutual outing tags provide
+        // enough event-level evidence to reconcile those otherwise ambiguous names.
+        let nameGroups = Dictionary(grouping: allLocations) { location in
+            LocationReconciliationKey(
+                circleID: location.circle?.id,
+                value: "name:\(restaurantNameKey(location.name))"
+            )
+        }
+        for group in nameGroups.values where group.count > 1 {
+            let ordered = group.sorted {
+                if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+                return $0.id.uuidString < $1.id.uuidString
+            }
+            guard let keeper = ordered.first else { continue }
+            for duplicate in ordered.dropFirst()
+            where locationsShareMutuallyTaggedOuting(keeper, duplicate) {
+                mergeLocationRecord(duplicate, into: keeper)
+                changed = true
+            }
+        }
+        if changed {
+            context.processPendingChanges()
+            allLocations.removeAll { $0.isDeleted }
+            allLocations.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        }
+        return changed
+    }
+
+    private func locationsShareMutuallyTaggedOuting(
+        _ first: RestaurantLocation,
+        _ second: RestaurantLocation
+    ) -> Bool {
+        first.visitArray.contains { firstVisit in
+            second.visitArray.contains { secondVisit in
+                firstVisit.createdByID != secondVisit.createdByID &&
+                abs(firstVisit.date.timeIntervalSince(secondVisit.date)) <= 8 * 60 * 60 &&
+                firstVisit.companionIDs.contains(secondVisit.createdByID) &&
+                secondVisit.companionIDs.contains(firstVisit.createdByID)
+            }
+        }
+    }
+
+    private func restaurantNameKey(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(
+                options: [.caseInsensitive, .diacriticInsensitive],
+                locale: Locale(identifier: "en_US_POSIX")
+            )
+    }
+
+    private func locationReconciliationKey(for location: RestaurantLocation) -> LocationReconciliationKey? {
+        let circleID = location.circle?.id
+        if let source = location.sourceIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines), !source.isEmpty {
+            return .init(circleID: circleID, value: "source:\(source.lowercased())")
+        }
+        let name = location.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let address = location.address?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !address.isEmpty {
+            return .init(circleID: circleID, value: "address:\(name)|\(address)")
+        }
+        if location.hasCoordinates {
+            let latitude = (location.latitude * 10_000).rounded() / 10_000
+            let longitude = (location.longitude * 10_000).rounded() / 10_000
+            return .init(circleID: circleID, value: "coordinate:\(name)|\(latitude)|\(longitude)")
+        }
+        return nil
+    }
+
+    private func mergeLocationRecord(_ duplicate: RestaurantLocation, into keeper: RestaurantLocation) {
+        for visit in duplicate.visitArray { visit.location = keeper }
+        for dish in duplicate.dishArray {
+            if let existing = keeper.dishArray.first(where: {
+                $0.name.localizedCaseInsensitiveCompare(dish.name) == .orderedSame
+            }) {
+                for entry in dish.entryArray { entry.dish = existing }
+                context.delete(dish)
+            } else {
+                dish.location = keeper
+            }
+        }
+        for entry in allWantEntries where entry.location == duplicate { entry.location = keeper }
+        var deletedComparisonIDs: Set<UUID> = []
+        for comparison in allComparisons {
+            if comparison.locationAID == duplicate.id { comparison.locationAID = keeper.id }
+            if comparison.locationBID == duplicate.id { comparison.locationBID = keeper.id }
+            if comparison.locationAID == comparison.locationBID && !comparison.isAnchor {
+                deletedComparisonIDs.insert(comparison.id)
+                context.delete(comparison)
+            }
+        }
+        allComparisons.removeAll { deletedComparisonIDs.contains($0.id) }
+        if keeper.address?.isEmpty != false { keeper.address = duplicate.address }
+        if keeper.city?.isEmpty != false { keeper.city = duplicate.city }
+        if keeper.phone?.isEmpty != false { keeper.phone = duplicate.phone }
+        if keeper.urlString?.isEmpty != false { keeper.urlString = duplicate.urlString }
+        if !keeper.hasCoordinates, duplicate.hasCoordinates {
+            keeper.latitude = duplicate.latitude
+            keeper.longitude = duplicate.longitude
+            keeper.hasCoordinates = true
+        }
+        keeper.cuisines = (keeper.cuisines + duplicate.cuisines).uniqued()
+        keeper.tags = (keeper.tags + duplicate.tags).uniqued()
+        keeper.updatedAt = max(keeper.updatedAt, duplicate.updatedAt)
+        allLocations.removeAll { $0.id == duplicate.id }
+        context.delete(duplicate)
+    }
+
+    /// CloudKit can deliver two menu-item records created offline for the same
+    /// restaurant. Keep the diner-owned reactions, but converge the canonical
+    /// dish and any duplicate per-diner entry deterministically.
+    @discardableResult
+    private func reconcileDuplicateDishes() -> Bool {
+        var changed = false
+        for location in allLocations {
+            let groups = Dictionary(grouping: location.dishArray) { dishLookupKey($0.name) }
+            for group in groups.values where group.count > 1 {
+                let ordered = group.sorted {
+                    if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+                    return $0.id.uuidString < $1.id.uuidString
+                }
+                guard let keeper = ordered.first else { continue }
+                for duplicate in ordered.dropFirst() {
+                    for entry in duplicate.entryArray { entry.dish = keeper }
+                    context.delete(duplicate)
+                    changed = true
+                }
+            }
+        }
+        if changed { context.processPendingChanges() }
+
+        for visit in allVisits {
+            let groups = Dictionary(grouping: visit.dishEntryArray) { entry in
+                "\(entry.personID.uuidString)-\(entry.dish?.id.uuidString ?? "missing")"
+            }
+            for group in groups.values where group.count > 1 {
+                let ordered = group.sorted {
+                    if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+                    return $0.id.uuidString < $1.id.uuidString
+                }
+                for duplicate in ordered.dropLast() {
+                    context.delete(duplicate)
+                    changed = true
+                }
+            }
+        }
+        if changed { context.processPendingChanges() }
+        return changed
+    }
+
+    /// Independently saved records can describe the same real-world outing when
+    /// two offline circle members both log it and tag one another. Mutual tags,
+    /// the same restaurant, and a close visit time form a deliberately strict
+    /// match so ordinary same-day revisits are not silently combined.
+    @discardableResult
+    private func reconcileDuplicateOutings() -> Bool {
+        let groups = Dictionary(grouping: allVisits) { visit in
+            OutingReconciliationKey(circleID: visit.circle?.id, locationID: visit.location?.id)
+        }
+        var changed = false
+
+        for group in groups.values where group.count > 1 {
+            var edges: [(first: VisitEntity, second: VisitEntity, distance: TimeInterval)] = []
+            for firstIndex in group.indices {
+                for secondIndex in group.indices where secondIndex > firstIndex {
+                    let first = group[firstIndex]
+                    let second = group[secondIndex]
+                    guard outingsRepresentSameEvent(first, second) else { continue }
+                    edges.append((first, second, abs(first.date.timeIntervalSince(second.date))))
+                }
+            }
+            edges.sort {
+                if $0.distance != $1.distance { return $0.distance < $1.distance }
+                let lhs = [$0.first.id.uuidString, $0.second.id.uuidString].sorted().joined()
+                let rhs = [$1.first.id.uuidString, $1.second.id.uuidString].sorted().joined()
+                return lhs < rhs
+            }
+
+            // Match the closest independent submissions first. A cluster may
+            // contain only one submission per author, preventing a lunch and
+            // dinner seven hours apart from being cross-paired by the broad
+            // offline-entry window.
+            var clusters = group.map { [$0] }
+            for edge in edges {
+                guard let firstIndex = clusters.firstIndex(where: { cluster in
+                    cluster.contains { $0.id == edge.first.id }
+                }), let secondIndex = clusters.firstIndex(where: { cluster in
+                    cluster.contains { $0.id == edge.second.id }
+                }), firstIndex != secondIndex else { continue }
+
+                let firstAuthors = Set(clusters[firstIndex].map(\.createdByID))
+                let secondAuthors = Set(clusters[secondIndex].map(\.createdByID))
+                guard firstAuthors.isDisjoint(with: secondAuthors) else { continue }
+                let combined = clusters[firstIndex] + clusters[secondIndex]
+                guard let earliest = combined.map(\.date).min(),
+                      let latest = combined.map(\.date).max(),
+                      latest.timeIntervalSince(earliest) <= 8 * 60 * 60 else { continue }
+
+                let lower = min(firstIndex, secondIndex)
+                let upper = max(firstIndex, secondIndex)
+                clusters[lower] = combined
+                clusters.remove(at: upper)
+            }
+
+            for cluster in clusters where cluster.count > 1 {
+                let ordered = cluster.sorted(by: outingComesBefore)
+                guard let keeper = ordered.first else { continue }
+                for duplicate in ordered.dropFirst() {
+                    mergeOuting(duplicate, into: keeper)
+                    changed = true
+                }
+            }
+        }
+        if changed {
+            context.processPendingChanges()
+            allVisits.removeAll { $0.isDeleted }
+            allVisits.sort { $0.date > $1.date }
+        }
+        return changed
+    }
+
+    private func outingsRepresentSameEvent(_ first: VisitEntity, _ second: VisitEntity) -> Bool {
+        guard first.createdByID != second.createdByID,
+              first.circle?.id == second.circle?.id,
+              first.location?.id == second.location?.id,
+              abs(first.date.timeIntervalSince(second.date)) <= 8 * 60 * 60 else { return false }
+        return first.companionIDs.contains(second.createdByID) &&
+            second.companionIDs.contains(first.createdByID)
+    }
+
+    private func outingComesBefore(_ lhs: VisitEntity, _ rhs: VisitEntity) -> Bool {
+        if lhs.date != rhs.date { return lhs.date < rhs.date }
+        if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
+        return lhs.id.uuidString < rhs.id.uuidString
+    }
+
+    private func mergeOuting(_ duplicate: VisitEntity, into keeper: VisitEntity) {
+        if let circle = duplicate.circle {
+            for link in externalImportLinks(in: circle) where link.recordType == "outing" && link.targetID == duplicate.id {
+                link.targetID = keeper.id
+                link.createdByImport = false
+                link.updatedAt = .now
+            }
+        }
+        for participant in duplicate.participantArray {
+            if let existing = keeper.participant(for: participant.personID) {
+                if existing.memory?.isEmpty != false { existing.memory = participant.memory }
+                existing.status = combinedParticipationStatus(existing.status, participant.status)
+                existing.updatedAt = max(existing.updatedAt, participant.updatedAt)
+                context.delete(participant)
+            } else {
+                participant.visit = keeper
+            }
+        }
+
+        for rating in duplicate.ratingArray {
+            if let existing = keeper.rating(for: rating.personID) {
+                let existingIsSelfAuthored = keeper.createdByID == rating.personID
+                let incomingIsSelfAuthored = duplicate.createdByID == rating.personID
+                if incomingIsSelfAuthored && !existingIsSelfAuthored {
+                    context.delete(existing)
+                    rating.visit = keeper
+                } else {
+                    context.delete(rating)
+                }
+            } else {
+                rating.visit = keeper
+            }
+        }
+
+        for entry in duplicate.dishEntryArray {
+            let existing = keeper.dishEntryArray.first {
+                $0.personID == entry.personID && $0.dish?.id == entry.dish?.id
+            }
+            if let existing {
+                let existingIsSelfAuthored = keeper.createdByID == entry.personID
+                let incomingIsSelfAuthored = duplicate.createdByID == entry.personID
+                if incomingIsSelfAuthored && !existingIsSelfAuthored {
+                    context.delete(existing)
+                    entry.visit = keeper
+                } else {
+                    context.delete(entry)
+                }
+            } else {
+                entry.visit = keeper
+            }
+        }
+        for photo in duplicate.photoArray { photo.visit = keeper }
+
+        keeper.date = min(keeper.date, duplicate.date)
+        keeper.createdAt = min(keeper.createdAt, duplicate.createdAt)
+        if keeper.visitType == nil { keeper.visitType = duplicate.visitType }
+        if keeper.priceBand == 0 { keeper.priceBand = duplicate.priceBand }
+        if keeper.occasion == nil { keeper.occasion = duplicate.occasion }
+        if !keeper.hasCoordinates, duplicate.hasCoordinates {
+            keeper.latitude = duplicate.latitude
+            keeper.longitude = duplicate.longitude
+            keeper.hasCoordinates = true
+        }
+
+        synchronizeLegacyCompanionIDs(for: keeper)
+
+        allVisits.removeAll { $0.id == duplicate.id }
+        context.delete(duplicate)
+    }
+
+    private func combinedParticipationStatus(
+        _ first: VisitParticipationStatus,
+        _ second: VisitParticipationStatus
+    ) -> VisitParticipationStatus {
+        let priority: [VisitParticipationStatus: Int] = [
+            .notThere: 0, .pending: 1, .declined: 2, .attended: 3
+        ]
+        return (priority[first, default: 0] >= priority[second, default: 0]) ? first : second
+    }
+
     private func personComesBefore(_ lhs: PersonEntity, _ rhs: PersonEntity) -> Bool {
         if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
         return lhs.id.uuidString < rhs.id.uuidString
@@ -944,6 +1769,151 @@ final class AppStore {
     private func canonicalCompanionIDs(_ ids: [UUID], excluding authorID: UUID) -> [UUID] {
         let requested = Set(ids).subtracting([authorID])
         return people.filter { requested.contains($0.id) }.map(\.id)
+    }
+
+    private func activeParticipantIDs(for visit: VisitEntity) -> Set<UUID> {
+        let participants = visit.participantArray
+        guard !participants.isEmpty else {
+            return Set(visit.companionIDs).union([visit.createdByID])
+        }
+        return Set(participants.filter { $0.status != .notThere }.map(\.personID))
+    }
+
+    @discardableResult
+    private func upsertParticipant(
+        for visit: VisitEntity,
+        personID: UUID,
+        status: VisitParticipationStatus
+    ) -> VisitParticipantEntity {
+        if let existing = visit.participant(for: personID) {
+            existing.status = status
+            return existing
+        }
+        let participant = VisitParticipantEntity(context: context)
+        assign(participant, alongside: visit)
+        participant.id = UUID()
+        participant.personID = personID
+        participant.status = status
+        participant.createdAt = .now
+        participant.updatedAt = .now
+        participant.visit = visit
+        return participant
+    }
+
+    private func synchronizeParticipants(for visit: VisitEntity, requestedCompanionIDs: Set<UUID>) {
+        let author = upsertParticipant(for: visit, personID: visit.createdByID, status: .attended)
+        author.updatedAt = .now
+
+        for personID in requestedCompanionIDs {
+            let isMember = allPeople.contains {
+                $0.id == personID && $0.circle?.id == visit.circle?.id && $0.isCircleMember
+            }
+            if let existing = visit.participant(for: personID), isMember,
+               existing.status == .declined || existing.status == .notThere {
+                continue
+            }
+            let status: VisitParticipationStatus = visit.rating(for: personID) != nil
+                ? .attended
+                : (isMember ? .pending : .attended)
+            _ = upsertParticipant(for: visit, personID: personID, status: status)
+        }
+
+        for participant in visit.participantArray
+        where participant.personID != visit.createdByID && !requestedCompanionIDs.contains(participant.personID) {
+            let isMember = allPeople.contains {
+                $0.id == participant.personID && $0.circle?.id == visit.circle?.id && $0.isCircleMember
+            }
+            if isMember && (participant.status == .declined || participantHasDinerEntry(participant.personID, in: visit)) {
+                continue
+            }
+            participant.status = .notThere
+            participant.updatedAt = .now
+        }
+        synchronizeLegacyCompanionIDs(for: visit)
+    }
+
+    private func participantHasDinerEntry(_ personID: UUID, in visit: VisitEntity) -> Bool {
+        visit.rating(for: personID) != nil ||
+            visit.dishEntryArray.contains { $0.personID == personID } ||
+            visit.participant(for: personID)?.memory?.isEmpty == false ||
+            visit.photoArray.contains { ($0.personID ?? visit.createdByID) == personID }
+    }
+
+    private func synchronizeLegacyCompanionIDs(for visit: VisitEntity) {
+        visit.companionIDs = visit.participantArray
+            .filter { $0.personID != visit.createdByID && $0.status != .notThere }
+            .map(\.personID)
+        let memberIDs = Set(allPeople.filter {
+            $0.circle?.id == visit.circle?.id && $0.isCircleMember
+        }.map(\.id))
+        visit.isShared = visit.companionIDs.contains { memberIDs.contains($0) }
+    }
+
+    /// Backfills the participant model from legacy attendee IDs and converges
+    /// duplicate participant records that can arrive from multiple devices.
+    @discardableResult
+    private func reconcileParticipants() -> Bool {
+        var changed = false
+        for visit in allVisits {
+            var newestByPerson: [UUID: VisitParticipantEntity] = [:]
+            var removedDuplicate = false
+            for participant in visit.participantArray.sorted(by: {
+                if $0.updatedAt != $1.updatedAt { return $0.updatedAt < $1.updatedAt }
+                return $0.id.uuidString < $1.id.uuidString
+            }) {
+                if let older = newestByPerson[participant.personID] {
+                    if participant.memory?.isEmpty != false { participant.memory = older.memory }
+                    context.delete(older)
+                    changed = true
+                    removedDuplicate = true
+                }
+                newestByPerson[participant.personID] = participant
+            }
+            if removedDuplicate { context.processPendingChanges() }
+
+            let legacyIDs = Set(visit.companionIDs).union([visit.createdByID])
+            for personID in legacyIDs where newestByPerson[personID] == nil {
+                let isAuthor = personID == visit.createdByID
+                let isMember = allPeople.contains {
+                    $0.id == personID && $0.circle?.id == visit.circle?.id && $0.isCircleMember
+                }
+                let status: VisitParticipationStatus = isAuthor || visit.rating(for: personID) != nil
+                    ? .attended
+                    : (isMember ? .pending : .attended)
+                newestByPerson[personID] = upsertParticipant(for: visit, personID: personID, status: status)
+                changed = true
+            }
+
+            if let author = newestByPerson[visit.createdByID],
+               author.memory?.isEmpty != false,
+               visit.memory?.isEmpty == false {
+                author.memory = visit.memory
+                author.updatedAt = .now
+                changed = true
+            }
+            for photo in visit.photoArray where photo.personID == nil {
+                photo.personID = visit.createdByID
+                changed = true
+            }
+
+            let contributorIDs = Set(
+                visit.ratingArray.map(\.personID) +
+                visit.dishEntryArray.map(\.personID) +
+                visit.photoArray.compactMap(\.personID)
+            )
+            for personID in contributorIDs {
+                if newestByPerson[personID] == nil {
+                    newestByPerson[personID] = upsertParticipant(for: visit, personID: personID, status: .attended)
+                    changed = true
+                } else if let participant = newestByPerson[personID], participant.status != .attended {
+                    participant.status = .attended
+                    participant.updatedAt = .now
+                    changed = true
+                }
+            }
+            synchronizeLegacyCompanionIDs(for: visit)
+        }
+        return changed
     }
 
     private func memberColor(at index: Int) -> String {
@@ -988,8 +1958,26 @@ final class AppStore {
                 .map(canonicalID)
                 .filter { $0 != visit.createdByID }
 
+            var newestParticipantByPerson: [UUID: VisitParticipantEntity] = [:]
+            for participant in visit.participantArray.sorted(by: {
+                if $0.updatedAt != $1.updatedAt { return $0.updatedAt < $1.updatedAt }
+                return $0.id.uuidString < $1.id.uuidString
+            }) {
+                let personID = canonicalID(participant.personID)
+                if let older = newestParticipantByPerson[personID] {
+                    if participant.memory?.isEmpty != false { participant.memory = older.memory }
+                    participant.status = combinedParticipationStatus(participant.status, older.status)
+                    context.delete(older)
+                }
+                participant.personID = personID
+                newestParticipantByPerson[personID] = participant
+            }
+
             var newestRatingByPerson: [UUID: RatingEntity] = [:]
-            for rating in visit.ratingArray.sorted(by: { $0.createdAt < $1.createdAt }) {
+            for rating in visit.ratingArray.sorted(by: {
+                if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+                return $0.id.uuidString < $1.id.uuidString
+            }) {
                 let personID = canonicalID(rating.personID)
                 if let olderRating = newestRatingByPerson[personID] {
                     context.delete(olderRating)
@@ -998,7 +1986,10 @@ final class AppStore {
                 newestRatingByPerson[personID] = rating
             }
             var newestDishEntryByPersonAndDish: [String: DishEntryEntity] = [:]
-            for entry in visit.dishEntryArray.sorted(by: { $0.createdAt < $1.createdAt }) {
+            for entry in visit.dishEntryArray.sorted(by: {
+                if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+                return $0.id.uuidString < $1.id.uuidString
+            }) {
                 let personID = canonicalID(entry.personID)
                 entry.personID = personID
                 guard let dishID = entry.dish?.id else { continue }
@@ -1008,11 +1999,11 @@ final class AppStore {
                 }
                 newestDishEntryByPersonAndDish[key] = entry
             }
+            for photo in visit.photoArray {
+                if let personID = photo.personID { photo.personID = canonicalID(personID) }
+            }
 
-            let memberIDs = Set(allPeople.filter {
-                $0.circle?.id == visit.circle?.id && $0.isCircleMember
-            }.map(\.id))
-            visit.isShared = visit.companionIDs.contains { memberIDs.contains($0) }
+            synchronizeLegacyCompanionIDs(for: visit)
         }
         for comparison in allComparisons {
             let personID = canonicalID(comparison.personID)
@@ -1045,7 +2036,8 @@ final class AppStore {
 
     private var photoDateSyncCandidates: [(visit: VisitEntity, photoDate: Date)] {
         allVisits.compactMap { visit in
-            guard let photoDate = visit.photoArray.compactMap(\.captureDate).min(), photoDate < visit.date else { return nil }
+            guard let photoDate = visit.photoArray.compactMap(\.captureDate).min(),
+                  visit.dateKnowledge == .unknown || photoDate < visit.date else { return nil }
             return (visit, photoDate)
         }
     }
@@ -1061,6 +2053,16 @@ final class AppStore {
             let source = LocationSourceKey(circleID: location.circle?.id, sourceIdentifier: sourceIdentifier)
             if locationsBySource[source] == nil { locationsBySource[source] = location }
         }
+    }
+
+    private func externalImportLinks(in circle: CircleEntity) -> [ExternalImportLinkEntity] {
+        let request = NSFetchRequest<ExternalImportLinkEntity>(entityName: "ExternalImportLinkEntity")
+        request.predicate = NSPredicate(format: "circle == %@ AND provider == %@", circle, "beli")
+        return (try? context.fetch(request)) ?? []
+    }
+
+    private func importLinkKey(_ recordType: String, _ externalKey: String) -> String {
+        "\(recordType)|\(externalKey)"
     }
 
     private func rebuildLocationIndexes() {
@@ -1246,6 +2248,16 @@ final class AppStore {
     private struct LocationSourceKey: Hashable {
         let circleID: UUID?
         let sourceIdentifier: String
+    }
+
+    private struct LocationReconciliationKey: Hashable {
+        let circleID: UUID?
+        let value: String
+    }
+
+    private struct OutingReconciliationKey: Hashable {
+        let circleID: UUID?
+        let locationID: UUID?
     }
 
     private enum CachedCollection: Hashable {

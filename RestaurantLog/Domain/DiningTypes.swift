@@ -80,6 +80,18 @@ enum Reaction: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
+enum VisitParticipationStatus: String, Codable, Sendable {
+    case pending
+    case attended
+    case declined
+    case notThere
+}
+
+enum VisitDateKnowledge: String, Codable, Sendable {
+    case known
+    case unknown
+}
+
 enum VisitType: String, CaseIterable, Codable, Identifiable, Sendable {
     case meal = "Meal"
     case drinks = "Drinks"

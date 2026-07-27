@@ -113,10 +113,9 @@ struct RankingEngine {
                 base.weight += anchorWeight
             }
 
-            let dishOutlook = predictiveDishAdjustment(location: location, personID: personID)
             states[location.id] = State(
                 location: location,
-                score: (base.mean + dishOutlook).clamped(to: 0...100),
+                score: base.mean.clamped(to: 0...100),
                 certainty: base.weight,
                 visits: ratings.count,
                 comparisons: 0
@@ -251,24 +250,14 @@ struct RankingEngine {
         var weight = 0.08
         for evidence in ratings {
             let memoryWeight = evidence.rating.hazyMemory ? 0.35 : 1.0
-            let evidenceWeight = recencyWeight(visitDate: evidence.visit.date, asOf: date) * memoryWeight
+            let recency = evidence.visit.dateKnowledge == .known
+                ? recencyWeight(visitDate: evidence.visit.date, asOf: date)
+                : 1
+            let evidenceWeight = recency * memoryWeight
             total += evidence.value * evidenceWeight
             weight += evidenceWeight
         }
         return (total / weight, weight)
-    }
-
-    private func predictiveDishAdjustment(location: RestaurantLocation, personID: UUID) -> Double {
-        let entries = location.dishArray.flatMap(\.entryArray).filter { $0.personID == personID }
-        guard !entries.isEmpty else { return 0 }
-        let reorderable = entries.filter(\.wouldOrderAgain)
-        let pool = reorderable.isEmpty ? entries : reorderable
-        let average = pool.reduce(into: (total: 0.0, weight: 0.0)) { partial, entry in
-            let weight = entry.dish?.role.weight ?? 0.6
-            partial.total += signal(entry.reaction) * weight
-            partial.weight += weight
-        }
-        return ((average.total / max(0.01, average.weight)) * 2.6).clamped(to: -3...3)
     }
 
     private func signal(_ reaction: Reaction) -> Double {

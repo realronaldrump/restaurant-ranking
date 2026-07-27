@@ -30,7 +30,8 @@ final class AppBackupTests: XCTestCase {
         let second = source.createLocation(name: "Second Supper", category: .fullService)
         let visit = source.logVisit(
             at: first, reaction: .loved, personID: me.id,
-            date: Date(timeIntervalSince1970: 1_720_000_000), hazy: true,
+            date: Date(timeIntervalSince1970: 1_720_000_000), dateKnowledge: .unknown,
+            hazy: true,
             companionIDs: [michelle.id, friend.id],
             coordinate: (40.7602, -111.8911)
         )
@@ -44,6 +45,7 @@ final class AppBackupTests: XCTestCase {
             value: .notForMe, wouldOrderAgain: false, hazy: true
         )
         _ = source.addRating(to: visit, personID: michelle.id, reaction: .liked)
+        source.updateMemory("Michelle's own memory", for: visit, personID: michelle.id)
         _ = source.addDish(
             name: "Cardamom Bun", role: .dessert, reaction: .loved,
             wouldOrderAgain: true, to: visit, personID: me.id
@@ -51,7 +53,7 @@ final class AppBackupTests: XCTestCase {
         source.addPhoto(
             fullData: Data([1, 2, 3, 4]), thumbnailData: Data([5, 6]), to: visit,
             createdAt: Date(timeIntervalSince1970: 1_720_000_100),
-            captureDate: Date(timeIntervalSince1970: 1_719_999_900)
+            captureDate: Date(timeIntervalSince1970: 1_719_999_900), caption: "Cardamom and sunshine"
         )
         source.recordComparison(a: first, b: second, outcome: .a, personID: me.id)
         source.recordAnchor(for: first, value: 92, personID: michelle.id)
@@ -60,10 +62,24 @@ final class AppBackupTests: XCTestCase {
         let brand = BrandEntity(context: source.context)
         brand.id = UUID(); brand.name = "Complete Group"; brand.createdAt = Date(timeIntervalSince1970: 1_700_000_000)
         first.brand = brand
+        let importLink = ExternalImportLinkEntity(context: source.context)
+        let importSession = ExternalImportSessionEntity(context: source.context)
+        importSession.id = UUID(); importSession.provider = "beli"; importSession.sourceNamespace = "private-hash"
+        importSession.importedAt = Date(timeIntervalSince1970: 1_720_000_200); importSession.exportDate = Date(timeIntervalSince1970: 1_720_000_000)
+        importSession.restaurantsCreated = 1; importSession.outingsCreated = 1; importSession.photosAdded = 1
+        importSession.dishesAdded = 1; importSession.rankingsSeeded = 1
+        importSession.circle = try XCTUnwrap(source.activeCircle)
+        importLink.id = UUID(); importLink.provider = "beli"; importLink.recordType = "restaurant"
+        importLink.externalKey = "private-hash:restaurant-1"; importLink.contentHash = "content-hash"
+        importLink.createdByImport = true
+        importLink.targetID = first.id; importLink.createdAt = .now; importLink.updatedAt = .now
+        importLink.circle = try XCTUnwrap(source.activeCircle)
+        importLink.session = importSession
         try source.persistence.save()
         UserDefaults.standard.set(false, forKey: "hapticsEnabled")
 
         let original = try await AppBackupService.makeArchive(from: source)
+        XCTAssertEqual(try XCTUnwrap(original.participants).count, 3)
         let originalComparison = try XCTUnwrap(original.comparisons.first { !$0.isAnchor })
         XCTAssertFalse(try XCTUnwrap(originalComparison.locationAEvidenceFingerprint).isEmpty)
         XCTAssertFalse(try XCTUnwrap(originalComparison.locationBEvidenceFingerprint).isEmpty)
@@ -93,9 +109,11 @@ final class AppBackupTests: XCTestCase {
 
         let restoredVisit = try XCTUnwrap(destination.visits.first)
         XCTAssertEqual(restoredVisit.id, visit.id)
+        XCTAssertEqual(restoredVisit.dateKnowledge, .unknown)
         XCTAssertEqual(restoredVisit.visitType, .coffee)
         XCTAssertEqual(restoredVisit.occasion, .dateNight)
         XCTAssertEqual(restoredVisit.memory, "A complete memory")
+        XCTAssertEqual(destination.memory(for: restoredVisit, personID: michelle.id), "Michelle's own memory")
         XCTAssertEqual(Set(restoredVisit.companionIDs), Set([michelle.id, friend.id]))
         XCTAssertEqual(restoredVisit.ratingArray.count, 2)
         let restoredRating = try XCTUnwrap(restoredVisit.rating(for: me.id))
@@ -108,6 +126,15 @@ final class AppBackupTests: XCTestCase {
         XCTAssertEqual(restoredVisit.photoArray.first?.fullData, Data([1, 2, 3, 4]))
         XCTAssertEqual(restoredVisit.photoArray.first?.thumbnailData, Data([5, 6]))
         XCTAssertEqual(restoredVisit.photoArray.first?.captureDate, Date(timeIntervalSince1970: 1_719_999_900))
+        XCTAssertEqual(restoredVisit.photoArray.first?.caption, "Cardamom and sunshine")
+        XCTAssertEqual(restoredVisit.photoArray.first?.personID, me.id)
+        let restoredLinks = try XCTUnwrap(destination.activeCircle?.externalImportLinks?.allObjects as? [ExternalImportLinkEntity])
+        XCTAssertEqual(restoredLinks.count, 1)
+        XCTAssertEqual(restoredLinks.first?.targetID, first.id)
+        XCTAssertEqual(restoredLinks.first?.createdByImport, true)
+        XCTAssertEqual(restoredLinks.first?.session?.id, importSession.id)
+        XCTAssertEqual(destination.beliImportSessions.count, 1)
+        XCTAssertEqual(destination.beliImportSessions.first?.photosAdded, 1)
         XCTAssertEqual(destination.comparisons.count, 2)
         let restoredComparison = try XCTUnwrap(destination.comparisons.first { !$0.isAnchor })
         XCTAssertEqual(restoredComparison.locationAEvidenceFingerprint, originalComparison.locationAEvidenceFingerprint)
@@ -244,7 +271,7 @@ final class AppBackupTests: XCTestCase {
         }
     }
 
-    func testLegacyBackupWithoutPhotoCaptureDateStillDecodes() async throws {
+    func testLegacyBackupWithoutParticipantOrPhotoContributorFieldsStillDecodes() async throws {
         let store = makeStore()
         store.bootstrap(myName: "Source")
         let location = store.createLocation(name: "Legacy Cafe")
@@ -255,10 +282,14 @@ final class AppBackupTests: XCTestCase {
         var payload = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         var photos = try XCTUnwrap(payload["photos"] as? [[String: Any]])
         photos[0].removeValue(forKey: "captureDate")
+        photos[0].removeValue(forKey: "personID")
         payload["photos"] = photos
+        payload.removeValue(forKey: "participants")
 
         let decoded = try AppBackupCodec.decode(JSONSerialization.data(withJSONObject: payload))
+        XCTAssertNil(decoded.participants)
         XCTAssertNil(decoded.photos.first?.captureDate)
+        XCTAssertNil(decoded.photos.first?.personID)
     }
 
     func testReloadSelectsFirstCircleWhenStoredActiveCircleIsMissing() throws {

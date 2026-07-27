@@ -22,41 +22,39 @@ struct VisitDetailView: View {
     }
 
     private var visitContent: some View {
-        let ratingValues = store.ratings(for: visit)
-        let dishEntries = visit.dishEntryArray
         let photoValues = visit.photoArray
         return ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header
-                ratingsSection(ratingValues)
-                dishesSection(dishEntries)
-                photosSection(photoValues)
-                memory
                 companions
-                Button(role: .destructive) { confirmDelete = true } label: {
-                    Label("Delete this visit", systemImage: "trash")
-                        .frame(maxWidth: .infinity)
+                dinerEntriesSection
+                photosSection(photoValues)
+                if store.canEditOuting(visit) {
+                    Button(role: .destructive) { confirmDelete = true } label: {
+                        Label("Delete Entire Outing", systemImage: "trash")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
                 }
-                .buttonStyle(SecondaryButtonStyle())
             }
             .padding(BBTheme.Spacing.page)
             .padding(.bottom, 72)
             .readablePageWidth()
         }
-        .editorialPage().navigationTitle("Visit").navigationBarTitleDisplayMode(.inline)
+        .editorialPage().navigationTitle("Outing").navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Edit") { editingVisit = visit } } }
         .sheet(item: $editingVisit) { AddMoreVisitView(visit: $0, personID: store.currentPerson?.id) }
         .fullScreenCover(item: $selectedPhoto) { PhotoViewer(photo: $0) }
-        .confirmationDialog("Delete this visit?", isPresented: $confirmDelete, titleVisibility: .visible) {
-            Button("Delete Visit", role: .destructive) { deleteVisit() }
+        .confirmationDialog("Delete this entire outing?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Delete Outing", role: .destructive) { deleteVisit() }
         } message: {
-            Text("The restaurant remains in your log. This visit and its ratings, dishes, and app-stored photos will be removed.")
+            Text("Every diner’s entry, dishes, and app-stored photos for this outing will be removed. The restaurant remains in the log.")
         }
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Eyebrow(visit.date.formatted(date: .complete, time: .omitted))
+            Eyebrow(visit.dateKnowledge == .known ? visit.date.formatted(date: .complete, time: .omitted) : "Date unknown")
             if let location = visit.location {
                 NavigationLink(value: AppRoute.location(location.id)) {
                     HStack(alignment: .top, spacing: 10) {
@@ -96,64 +94,98 @@ struct VisitDetailView: View {
         return chips
     }
 
-    @ViewBuilder private func ratingsSection(_ ratings: [RatingEntity]) -> some View {
-        if ratings.isEmpty {
-            VStack(spacing: 4) {
-                EmptyLogView(title: "An unrated visit", message: "It counts in history and contributes nothing to rankings.", symbol: "questionmark.circle")
-                Button("Rate This Visit") { editingVisit = visit }.buttonStyle(PrimaryButtonStyle())
-            }
-        } else {
-            VStack(alignment: .leading, spacing: 12) {
-                EditorialSectionHeader("Reactions", eyebrow: "Independent opinions")
-                ForEach(ratings, id: \.objectID) { rating in
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            Text(store.person(id: rating.personID)?.name ?? "Diner").font(.headline)
-                            Spacer(); Label(rating.reaction.rawValue, systemImage: rating.reaction.symbol).font(.callout.weight(.semibold)).foregroundStyle(BBTheme.oxblood)
-                        }
-                        if rating.hazyMemory { Label("Hazy memory · lightly weighted", systemImage: "cloud.fog").font(.caption).foregroundStyle(.secondary) }
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 10)], alignment: .leading, spacing: 10) {
-                            subrating("Value", rating.value)
-                            subrating("Service", rating.service)
-                            subrating("Atmosphere", rating.atmosphere)
-                        }
-                    }.editorialCard(padding: 14)
-                }
-                if store.currentPerson.flatMap({ person in ratings.first { $0.personID == person.id } }) == nil {
-                    Button { editingVisit = visit } label: {
-                        Label("Add Your Rating", systemImage: "plus.circle.fill")
-                    }
-                    .buttonStyle(SecondaryButtonStyle())
-                }
+    private var dinerEntriesSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            EditorialSectionHeader("Diner entries", eyebrow: "Each person rates only what they tried")
+            ForEach(store.attendees(for: visit)) { person in
+                dinerEntryCard(person)
             }
         }
     }
 
-    @ViewBuilder private func dishesSection(_ entries: [DishEntryEntity]) -> some View {
-        if !entries.isEmpty {
-            VStack(alignment: .leading, spacing: 12) {
-                EditorialSectionHeader("What was ordered", eyebrow: "Dish memory")
-                VStack(spacing: 0) {
-                    ForEach(Array(entries.enumerated()), id: \.element.objectID) { index, entry in
-                        HStack(spacing: 12) {
-                            IconTile(symbol: entry.dish?.role.symbol ?? "fork.knife")
-                            VStack(alignment: .leading) {
-                                Text(entry.dish?.name ?? "Dish").font(.headline)
-                                Text(entry.dish?.role.rawValue ?? "").font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Image(systemName: entry.reaction.symbol).foregroundStyle(BBTheme.oxblood).accessibilityLabel(entry.reaction.rawValue)
-                            if entry.wouldOrderAgain {
-                                Image(systemName: "arrow.clockwise.circle.fill").foregroundStyle(BBTheme.sage).accessibilityLabel("Would order again")
-                            }
+    private func dinerEntryCard(_ person: PersonEntity) -> some View {
+        let rating = visit.rating(for: person.id)
+        let dishes = visit.dishEntryArray
+            .filter { $0.personID == person.id }
+            .sorted { $0.createdAt < $1.createdAt }
+        let memory = store.memory(for: visit, personID: person.id)
+        let status = visit.participant(for: person.id)?.status
+        let isCurrentPerson = person.id == store.currentPerson?.id
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(isCurrentPerson ? "Your entry" : person.name).font(.headline)
+                if person.id == visit.createdByID {
+                    Text("OUTING CREATOR").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let rating {
+                    Label(rating.reaction.rawValue, systemImage: rating.reaction.symbol)
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(BBTheme.oxblood)
+                }
+            }
+            if let rating {
+                if rating.hazyMemory {
+                    Label("Hazy memory · lightly weighted", systemImage: "cloud.fog")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 10)], alignment: .leading, spacing: 10) {
+                    subrating("Value", rating.value)
+                    subrating("Service", rating.service)
+                    subrating("Atmosphere", rating.atmosphere)
+                }
+            } else {
+                Text(participationDescription(status))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            if !dishes.isEmpty {
+                Divider()
+                ForEach(dishes, id: \.objectID) { entry in
+                    HStack(spacing: 10) {
+                        Image(systemName: entry.dish?.role.symbol ?? "fork.knife")
+                            .foregroundStyle(BBTheme.oxblood)
+                            .frame(width: 24)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(entry.dish?.name ?? "Dish").font(.headline)
+                            Text(entry.dish?.role.rawValue ?? "").font(.caption).foregroundStyle(.secondary)
                         }
-                        .frame(minHeight: 62)
-                        .padding(.vertical, 6)
-                        if index < entries.count - 1 { Divider() }
+                        Spacer()
+                        Image(systemName: entry.reaction.symbol)
+                            .foregroundStyle(BBTheme.oxblood)
+                            .accessibilityLabel(entry.reaction.rawValue)
+                        if entry.wouldOrderAgain {
+                            Image(systemName: "arrow.clockwise.circle.fill")
+                                .foregroundStyle(BBTheme.sage)
+                                .accessibilityLabel("Would order again")
+                        }
                     }
                 }
-                .editorialCard(padding: 12)
             }
+            if let memory, !memory.isEmpty {
+                Divider()
+                Label(memory, systemImage: "quote.opening")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            if isCurrentPerson && rating == nil {
+                Button { editingVisit = visit } label: {
+                    Label("Complete Your Entry", systemImage: "plus.circle.fill")
+                }
+                .buttonStyle(SecondaryButtonStyle())
+            }
+        }
+        .editorialCard(padding: 14)
+    }
+
+    private func participationDescription(_ status: VisitParticipationStatus?) -> String {
+        switch status {
+        case .pending: "Waiting for their response"
+        case .declined: "Attended · chose not to rate"
+        case .attended: "Attended · no overall rating"
+        case .notThere: "Marked as not there"
+        case nil: "No overall rating"
         }
     }
 
@@ -164,15 +196,27 @@ struct VisitDetailView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(spacing: 6) {
                         ForEach(photos, id: \.objectID) { photo in
-                            Button { selectedPhoto = photo } label: {
-                                PhotoImage(photo: photo)
-                                    .frame(width: 170, height: 150)
-                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            VStack(alignment: .leading, spacing: 4) {
+                                Button { selectedPhoto = photo } label: {
+                                    PhotoImage(photo: photo)
+                                        .frame(width: 170, height: 150)
+                                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Open meal photo")
+                                Text(photoContributorName(photo))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                if let caption = photo.caption, !caption.isEmpty {
+                                    Text(caption).font(.caption.weight(.semibold)).lineLimit(2)
+                                }
                             }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Open meal photo")
                             .contextMenu {
-                                Button("Remove Photo", systemImage: "trash", role: .destructive) { store.deletePhoto(photo) }
+                                if store.canEditPhoto(photo) {
+                                    Button("Remove My Photo", systemImage: "trash", role: .destructive) {
+                                        store.deletePhoto(photo)
+                                    }
+                                }
                             }
                         }
                     }
@@ -181,15 +225,10 @@ struct VisitDetailView: View {
         }
     }
 
-    @ViewBuilder private var memory: some View {
-        if let memory = visit.memory, !memory.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
-                Eyebrow("Memory")
-                Image(systemName: "quote.opening").font(.title3).foregroundStyle(BBTheme.oxblood.opacity(0.65))
-                Text(memory).font(BBTheme.display(23, weight: .regular)).lineSpacing(4)
-            }
-            .editorialCard(padding: 14)
-        }
+    private func photoContributorName(_ photo: PhotoEntity) -> String {
+        guard let contributorID = photo.personID ?? photo.visit?.createdByID else { return "Added by a diner" }
+        if contributorID == store.currentPerson?.id { return "Added by you" }
+        return "Added by \(store.person(id: contributorID)?.name ?? "a diner")"
     }
 
     @ViewBuilder private var companions: some View {

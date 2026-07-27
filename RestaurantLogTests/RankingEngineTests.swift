@@ -90,6 +90,65 @@ final class RankingEngineTests: XCTestCase {
         }
     }
 
+    func testExistingStoreLightweightMigratesParticipantAndPhotoOwnershipFields() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("participant-migration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appendingPathComponent("Legacy.sqlite")
+
+        let legacyModel = try XCTUnwrap(ManagedObjectModel.make().copy() as? NSManagedObjectModel)
+        let legacyVisit = try XCTUnwrap(legacyModel.entitiesByName["VisitEntity"])
+        legacyVisit.properties.removeAll { $0.name == "participants" }
+        let legacyPhoto = try XCTUnwrap(legacyModel.entitiesByName["PhotoEntity"])
+        legacyPhoto.properties.removeAll { $0.name == "personID" }
+        legacyModel.entities.removeAll { $0.name == "VisitParticipantEntity" }
+
+        let legacyContainer = NSPersistentContainer(name: "Legacy", managedObjectModel: legacyModel)
+        let legacyDescription = NSPersistentStoreDescription(url: storeURL)
+        legacyDescription.shouldAddStoreAsynchronously = false
+        legacyContainer.persistentStoreDescriptions = [legacyDescription]
+        var legacyLoadError: Error?
+        legacyContainer.loadPersistentStores { _, error in legacyLoadError = error }
+        if let legacyLoadError { throw legacyLoadError }
+
+        let visitID = UUID()
+        let visit = NSEntityDescription.insertNewObject(forEntityName: "VisitEntity", into: legacyContainer.viewContext)
+        visit.setValue(visitID, forKey: "id")
+        visit.setValue(Date.now, forKey: "date")
+        visit.setValue(Date.now, forKey: "createdAt")
+        visit.setValue(UUID(), forKey: "createdByID")
+        let photo = NSEntityDescription.insertNewObject(forEntityName: "PhotoEntity", into: legacyContainer.viewContext)
+        photo.setValue(UUID(), forKey: "id")
+        photo.setValue(Date.now, forKey: "createdAt")
+        photo.setValue(visit, forKey: "visit")
+        try legacyContainer.viewContext.save()
+        legacyContainer.viewContext.reset()
+        if let legacyStore = legacyContainer.persistentStoreCoordinator.persistentStores.first {
+            try legacyContainer.persistentStoreCoordinator.remove(legacyStore)
+        }
+
+        let currentContainer = NSPersistentContainer(name: "Current", managedObjectModel: ManagedObjectModel.make())
+        let currentDescription = NSPersistentStoreDescription(url: storeURL)
+        currentDescription.shouldAddStoreAsynchronously = false
+        currentDescription.shouldMigrateStoreAutomatically = true
+        currentDescription.shouldInferMappingModelAutomatically = true
+        currentContainer.persistentStoreDescriptions = [currentDescription]
+        var currentLoadError: Error?
+        currentContainer.loadPersistentStores { _, error in currentLoadError = error }
+        if let currentLoadError { throw currentLoadError }
+
+        let visitRequest = NSFetchRequest<VisitEntity>(entityName: "VisitEntity")
+        let migratedVisit = try XCTUnwrap(currentContainer.viewContext.fetch(visitRequest).first)
+        XCTAssertEqual(migratedVisit.id, visitID)
+        XCTAssertTrue(migratedVisit.participantArray.isEmpty)
+        XCTAssertNil(migratedVisit.photoArray.first?.personID)
+        currentContainer.viewContext.reset()
+        if let currentStore = currentContainer.persistentStoreCoordinator.persistentStores.first {
+            try currentContainer.persistentStoreCoordinator.remove(currentStore)
+        }
+    }
+
     func testSingleLovedVisitLandsNearAbsoluteAnchor() {
         let place = store.createLocation(name: "Anchor House", category: .fullService)
         _ = store.logVisit(at: place, reaction: .loved)
@@ -999,7 +1058,7 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertTrue(location.visitArray.isEmpty)
         XCTAssertTrue(location.dishArray.isEmpty)
         XCTAssertFalse(store.ranked().contains { $0.id == locationID })
-        for entityName in ["VisitEntity", "RatingEntity", "DishEntity", "DishEntryEntity", "PhotoEntity"] {
+        for entityName in ["VisitEntity", "VisitParticipantEntity", "RatingEntity", "DishEntity", "DishEntryEntity", "PhotoEntity"] {
             let request = NSFetchRequest<NSManagedObject>(entityName: entityName)
             XCTAssertEqual(try store.context.count(for: request), 0, "Expected \(entityName) to be removed with the visit")
         }
@@ -1030,6 +1089,443 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertEqual(store.attendees(for: visit).map(\.name), ["George", "Michelle"])
         _ = store.addRating(to: visit, personID: michelle.id, reaction: .liked)
         XCTAssertTrue(store.pendingVisits().isEmpty)
+    }
+
+    func testMutuallyTaggedIndependentLogsReconcileIntoOneOuting() throws {
+        let george = try XCTUnwrap(store.currentPerson)
+        let michelle = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" })
+        let location = store.createLocation(name: "One Real Dinner", category: .fullService)
+        let dinnerTime = Date(timeIntervalSince1970: 1_720_000_000)
+
+        _ = store.logVisit(
+            at: location,
+            reaction: .loved,
+            personID: george.id,
+            date: dinnerTime,
+            companionIDs: [michelle.id]
+        )
+        let michelleVisit = store.logVisit(
+            at: location,
+            reaction: .liked,
+            personID: michelle.id,
+            date: dinnerTime.addingTimeInterval(5 * 60),
+            companionIDs: [george.id]
+        )
+        store.updateMemory("Michelle remembered dessert.", for: michelleVisit, personID: michelle.id)
+
+        store.reload()
+
+        XCTAssertEqual(store.visits.count, 1)
+        let outing = try XCTUnwrap(store.visits.first)
+        XCTAssertEqual(Set(store.attendees(for: outing).map(\.id)), Set([george.id, michelle.id]))
+        XCTAssertEqual(Set(outing.ratingArray.map(\.personID)), Set([george.id, michelle.id]))
+        XCTAssertTrue(store.pendingVisits(for: george.id).isEmpty)
+        XCTAssertTrue(store.pendingVisits(for: michelle.id).isEmpty)
+        XCTAssertNil(store.memory(for: outing, personID: george.id))
+        XCTAssertEqual(store.memory(for: outing, personID: michelle.id), "Michelle remembered dessert.")
+        XCTAssertEqual(store.score(for: location, personID: george.id)?.ratedVisitCount, 1)
+        XCTAssertEqual(store.score(for: location, personID: michelle.id)?.ratedVisitCount, 1)
+    }
+
+    func testDecliningTaggedOutingClearsPromptWithoutRemovingAttendee() throws {
+        let george = try XCTUnwrap(store.currentPerson)
+        let michelle = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" })
+        let visit = store.logVisit(
+            at: store.createLocation(name: "No Rating Needed"),
+            reaction: .liked,
+            personID: george.id,
+            companionIDs: [michelle.id]
+        )
+
+        XCTAssertEqual(store.pendingVisits(for: michelle.id).map(\.id), [visit.id])
+
+        store.declineRating(for: visit, personID: michelle.id)
+
+        XCTAssertTrue(store.pendingVisits(for: michelle.id).isEmpty)
+        XCTAssertEqual(Set(store.attendees(for: visit).map(\.id)), Set([george.id, michelle.id]))
+        XCTAssertNil(visit.rating(for: michelle.id))
+    }
+
+    func testRejectingIncorrectTagClearsPromptAndRemovesAttendee() throws {
+        let george = try XCTUnwrap(store.currentPerson)
+        let michelle = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" })
+        let visit = store.logVisit(
+            at: store.createLocation(name: "Wrong Tag"),
+            reaction: .liked,
+            personID: george.id,
+            companionIDs: [michelle.id]
+        )
+
+        store.markNotPresent(for: visit, personID: michelle.id)
+
+        XCTAssertTrue(store.pendingVisits(for: michelle.id).isEmpty)
+        XCTAssertEqual(store.attendees(for: visit).map(\.id), [george.id])
+        XCTAssertFalse(store.isSharedVisit(visit))
+    }
+
+    func testReloadReconcilesConcurrentMapRestaurantAndOutingRecords() throws {
+        let circle = try XCTUnwrap(store.activeCircle)
+        let george = try XCTUnwrap(store.currentPerson)
+        let michelle = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" })
+        let first = store.createLocation(
+            name: "Convergent Cafe",
+            address: "10 Main Street",
+            sourceIdentifier: "maps-convergent-cafe"
+        )
+        let concurrent = RestaurantLocation(context: store.context)
+        concurrent.id = UUID()
+        concurrent.name = first.name
+        concurrent.category = first.category
+        concurrent.address = first.address
+        concurrent.sourceIdentifier = first.sourceIdentifier
+        concurrent.createdAt = first.createdAt.addingTimeInterval(1)
+        concurrent.updatedAt = concurrent.createdAt
+        concurrent.circle = circle
+        try persistence.save()
+
+        let dinnerTime = Date(timeIntervalSince1970: 1_720_000_000)
+        _ = store.logVisit(
+            at: first, reaction: .loved, personID: george.id,
+            date: dinnerTime, companionIDs: [michelle.id]
+        )
+        _ = store.logVisit(
+            at: concurrent, reaction: .liked, personID: michelle.id,
+            date: dinnerTime, companionIDs: [george.id]
+        )
+
+        store.reload()
+
+        XCTAssertEqual(store.locations.filter { $0.sourceIdentifier == "maps-convergent-cafe" }.count, 1)
+        XCTAssertEqual(store.visits.count, 1)
+        XCTAssertEqual(Set(store.visits.first?.ratingArray.map(\.personID) ?? []), Set([george.id, michelle.id]))
+    }
+
+    func testReloadReconcilesMutuallyTaggedManualRestaurantRecords() throws {
+        let circle = try XCTUnwrap(store.activeCircle)
+        let george = try XCTUnwrap(store.currentPerson)
+        let michelle = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" })
+        let first = store.createLocation(name: "Neighborhood Supper")
+        let concurrent = RestaurantLocation(context: store.context)
+        concurrent.id = UUID()
+        concurrent.name = " neighborhood supper "
+        concurrent.category = .fullService
+        concurrent.createdAt = first.createdAt.addingTimeInterval(1)
+        concurrent.updatedAt = concurrent.createdAt
+        concurrent.circle = circle
+        try persistence.save()
+
+        let dinnerTime = Date(timeIntervalSince1970: 1_720_000_000)
+        _ = store.logVisit(
+            at: first, reaction: .loved, personID: george.id,
+            date: dinnerTime, companionIDs: [michelle.id]
+        )
+        _ = store.logVisit(
+            at: concurrent, reaction: .liked, personID: michelle.id,
+            date: dinnerTime.addingTimeInterval(5 * 60 * 60), companionIDs: [george.id]
+        )
+
+        store.reload()
+
+        XCTAssertEqual(store.locations.filter {
+            $0.name.trimmingCharacters(in: .whitespaces).localizedCaseInsensitiveCompare("Neighborhood Supper") == .orderedSame
+        }.count, 1)
+        XCTAssertEqual(store.visits.count, 1)
+        XCTAssertEqual(Set(store.visits.first?.ratingArray.map(\.personID) ?? []), Set([george.id, michelle.id]))
+    }
+
+    func testReconciliationKeepsTwoSameDayMutualOutingsSeparate() throws {
+        let george = try XCTUnwrap(store.currentPerson)
+        let michelle = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" })
+        let location = store.createLocation(name: "Lunch and Dinner")
+        let lunch = Date(timeIntervalSince1970: 1_720_000_000)
+        let dinner = lunch.addingTimeInterval(7 * 60 * 60)
+
+        _ = store.logVisit(
+            at: location, reaction: .loved, personID: george.id,
+            date: lunch, companionIDs: [michelle.id]
+        )
+        _ = store.logVisit(
+            at: location, reaction: .liked, personID: michelle.id,
+            date: lunch.addingTimeInterval(5 * 60), companionIDs: [george.id]
+        )
+        _ = store.logVisit(
+            at: location, reaction: .fine, personID: george.id,
+            date: dinner, companionIDs: [michelle.id]
+        )
+        _ = store.logVisit(
+            at: location, reaction: .notForMe, personID: michelle.id,
+            date: dinner.addingTimeInterval(5 * 60), companionIDs: [george.id]
+        )
+
+        store.reload()
+
+        XCTAssertEqual(store.visits.count, 2)
+        XCTAssertTrue(store.visits.allSatisfy { $0.ratingArray.count == 2 })
+        let ordered = store.visits.sorted { $0.date < $1.date }
+        XCTAssertEqual(ordered.first?.rating(for: george.id)?.reaction, .loved)
+        XCTAssertEqual(ordered.first?.rating(for: michelle.id)?.reaction, .liked)
+        XCTAssertEqual(ordered.last?.rating(for: george.id)?.reaction, .fine)
+        XCTAssertEqual(ordered.last?.rating(for: michelle.id)?.reaction, .notForMe)
+    }
+
+    func testReloadReconcilesConcurrentSameNamedDishRecordsWithoutCombiningDiners() throws {
+        let george = try XCTUnwrap(store.currentPerson)
+        let michelle = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" })
+        let location = store.createLocation(name: "Concurrent Dishes")
+        let dinnerTime = Date(timeIntervalSince1970: 1_720_000_000)
+        let georgeVisit = store.logVisit(
+            at: location, reaction: .liked, personID: george.id,
+            date: dinnerTime, companionIDs: [michelle.id]
+        )
+        _ = store.addDish(
+            name: "Spicy Ramen", role: .entree, reaction: .loved,
+            wouldOrderAgain: true, to: georgeVisit, personID: george.id
+        )
+        let michelleVisit = store.logVisit(
+            at: location, reaction: .loved, personID: michelle.id,
+            date: dinnerTime.addingTimeInterval(5 * 60), companionIDs: [george.id]
+        )
+        let duplicateDish = DishEntity(context: store.context)
+        duplicateDish.id = UUID()
+        duplicateDish.name = " spicy ramen "
+        duplicateDish.role = .entree
+        duplicateDish.createdAt = .now
+        duplicateDish.location = location
+        let michelleEntry = DishEntryEntity(context: store.context)
+        michelleEntry.id = UUID()
+        michelleEntry.personID = michelle.id
+        michelleEntry.reaction = .fine
+        michelleEntry.wouldOrderAgain = false
+        michelleEntry.createdAt = .now
+        michelleEntry.dish = duplicateDish
+        michelleEntry.visit = michelleVisit
+        try persistence.save()
+
+        store.reload()
+
+        let outing = try XCTUnwrap(store.visits.first)
+        XCTAssertEqual(store.visits.count, 1)
+        XCTAssertEqual(location.dishArray.count, 1)
+        XCTAssertEqual(outing.dishEntryArray.count, 2)
+        XCTAssertEqual(Set(outing.dishEntryArray.compactMap { $0.dish?.id }).count, 1)
+        XCTAssertEqual(Set(outing.dishEntryArray.map(\.personID)), Set([george.id, michelle.id]))
+    }
+
+    func testLoggingFindsAnExistingNearbyOutingThatAlreadyTaggedTheDiner() throws {
+        let george = try XCTUnwrap(store.currentPerson)
+        let michelle = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" })
+        let location = store.createLocation(name: "Already Shared")
+        let dinnerTime = Date(timeIntervalSince1970: 1_720_000_000)
+        let existing = store.logVisit(
+            at: location, reaction: .loved, personID: george.id,
+            date: dinnerTime, companionIDs: [michelle.id]
+        )
+
+        let match = store.existingOuting(
+            at: location,
+            near: dinnerTime.addingTimeInterval(4 * 60 * 60),
+            for: michelle.id
+        )
+
+        XCTAssertEqual(match?.id, existing.id)
+        XCTAssertNil(store.existingOuting(
+            at: location,
+            near: dinnerTime.addingTimeInterval(9 * 60 * 60),
+            for: michelle.id
+        ))
+    }
+
+    func testSharedOutingKeepsEachParticipantsMemoryIndependent() throws {
+        let george = try XCTUnwrap(store.currentPerson)
+        let michelle = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" })
+        let visit = store.logVisit(
+            at: store.createLocation(name: "Two Memories"),
+            reaction: .loved,
+            personID: george.id,
+            companionIDs: [michelle.id]
+        )
+
+        store.updateMemory("George remembered the patio.", for: visit, personID: george.id)
+        store.updateMemory("Michelle remembered her pasta.", for: visit, personID: michelle.id)
+
+        XCTAssertEqual(store.memory(for: visit, personID: george.id), "George remembered the patio.")
+        XCTAssertEqual(store.memory(for: visit, personID: michelle.id), "Michelle remembered her pasta.")
+    }
+
+    func testAddingTheSameDishForOneDinerUpdatesTheirDishEntry() throws {
+        let george = try XCTUnwrap(store.currentPerson)
+        let visit = store.logVisit(
+            at: store.createLocation(name: "One Dish Entry"),
+            reaction: .liked,
+            personID: george.id
+        )
+
+        let first = try XCTUnwrap(store.addDish(
+            name: "Pasta", role: .entree, reaction: .fine,
+            wouldOrderAgain: false, to: visit, personID: george.id
+        ))
+        let updated = try XCTUnwrap(store.addDish(
+            name: "pasta", role: .entree, reaction: .loved,
+            wouldOrderAgain: true, to: visit, personID: george.id
+        ))
+
+        XCTAssertEqual(first.id, updated.id)
+        XCTAssertEqual(visit.dishEntryArray.filter { $0.personID == george.id }.count, 1)
+        XCTAssertEqual(updated.reaction, .loved)
+        XCTAssertTrue(updated.wouldOrderAgain)
+    }
+
+    func testDishEvidenceAdjustsTheVisitOnceWithoutASecondLocationBoost() throws {
+        let george = try XCTUnwrap(store.currentPerson)
+        let location = store.createLocation(name: "Single Dish Influence")
+        let visit = store.logVisit(at: location, reaction: .liked, personID: george.id)
+        _ = store.addDish(
+            name: "Excellent Noodles", role: .entree, reaction: .loved,
+            wouldOrderAgain: true, to: visit, personID: george.id
+        )
+
+        let rating = try XCTUnwrap(visit.rating(for: george.id))
+        let visitValue = store.rankingEngine.visitValue(visit: visit, rating: rating)
+        let expectedScore = ((60 * 0.08) + visitValue) / 1.08
+
+        let score = try XCTUnwrap(store.score(for: location, personID: george.id))
+        XCTAssertEqual(score.score, expectedScore, accuracy: 0.000_001)
+    }
+
+    func testAnotherDinersDishNeverChangesMyVisitEvidence() throws {
+        let george = try XCTUnwrap(store.currentPerson)
+        let michelle = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" })
+        let visit = store.logVisit(
+            at: store.createLocation(name: "Separate Plates"),
+            reaction: .liked,
+            personID: george.id,
+            companionIDs: [michelle.id]
+        )
+        let georgeRating = try XCTUnwrap(visit.rating(for: george.id))
+        let before = store.rankingEngine.visitValue(visit: visit, rating: georgeRating)
+
+        _ = store.addDish(
+            name: "Michelle's Curry", role: .entree, reaction: .notForMe,
+            wouldOrderAgain: false, to: visit, personID: michelle.id
+        )
+
+        XCTAssertEqual(
+            store.rankingEngine.visitValue(visit: visit, rating: georgeRating),
+            before,
+            accuracy: 0.000_001
+        )
+    }
+
+    func testOnlyThePhotoContributorCanRemoveTheirSharedOutingPhoto() throws {
+        let george = try XCTUnwrap(store.currentPerson)
+        let michelle = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" })
+        let visit = store.logVisit(
+            at: store.createLocation(name: "Owned Photos"),
+            reaction: .liked,
+            personID: george.id,
+            companionIDs: [michelle.id]
+        )
+        store.addPhoto(
+            fullData: Data([0x01]), thumbnailData: nil,
+            to: visit, personID: george.id
+        )
+        let photo = try XCTUnwrap(visit.photoArray.first)
+
+        XCTAssertFalse(store.deletePhoto(photo, personID: michelle.id))
+        XCTAssertEqual(visit.photoArray.count, 1)
+        XCTAssertTrue(store.deletePhoto(photo, personID: george.id))
+        XCTAssertTrue(visit.photoArray.isEmpty)
+    }
+
+    func testSharedParticipantCanOnlyEditTheirOwnDinerEntry() throws {
+        let george = try XCTUnwrap(store.currentPerson)
+        let michelle = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" })
+        let originalLocation = store.createLocation(name: "Owned Outing")
+        let otherLocation = store.createLocation(name: "Wrong Restaurant")
+        let visit = store.logVisit(
+            at: originalLocation,
+            reaction: .liked,
+            personID: george.id,
+            companionIDs: [michelle.id]
+        )
+        let georgeDish = try XCTUnwrap(store.addDish(
+            name: "George's Pasta", role: .entree, reaction: .liked,
+            wouldOrderAgain: true, to: visit, personID: george.id
+        ))
+        let michelleDish = try XCTUnwrap(store.addDish(
+            name: "Michelle's Soup", role: .entree, reaction: .loved,
+            wouldOrderAgain: true, to: visit, personID: michelle.id
+        ))
+
+        XCTAssertFalse(store.changeLocation(of: visit, to: otherLocation, editorID: michelle.id))
+        XCTAssertFalse(store.updateVisit(
+            visit, type: .coffee, priceBand: 4, occasion: .dateNight,
+            memory: "Not George's memory", companions: [], editorID: michelle.id
+        ))
+        XCTAssertFalse(store.deleteDishEntry(georgeDish, personID: michelle.id))
+        XCTAssertFalse(store.deleteVisit(visit, personID: michelle.id))
+
+        XCTAssertEqual(visit.location?.id, originalLocation.id)
+        XCTAssertNil(visit.visitType)
+        XCTAssertEqual(visit.priceBand, 0)
+        XCTAssertTrue(store.visits.contains { $0.id == visit.id })
+        XCTAssertTrue(visit.dishEntryArray.contains { $0.id == georgeDish.id })
+        XCTAssertTrue(store.deleteDishEntry(michelleDish, personID: michelle.id))
+    }
+
+    func testOutingCreatorCannotOverrideAnotherMembersAttendanceResponseOrEntry() throws {
+        let george = try XCTUnwrap(store.currentPerson)
+        let michelle = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" })
+        let location = store.createLocation(name: "Authoritative Attendance")
+        let contributed = store.logVisit(
+            at: location, reaction: .liked, personID: george.id, companionIDs: [michelle.id]
+        )
+        _ = store.addRating(to: contributed, personID: michelle.id, reaction: .loved)
+
+        XCTAssertTrue(store.updateVisit(
+            contributed, type: nil, priceBand: 0, occasion: nil,
+            memory: nil, companions: [], editorID: george.id
+        ))
+        XCTAssertEqual(contributed.participant(for: michelle.id)?.status, .attended)
+        XCTAssertNotNil(contributed.rating(for: michelle.id))
+        XCTAssertTrue(store.attendees(for: contributed).contains { $0.id == michelle.id })
+
+        let rejected = store.logVisit(
+            at: location, reaction: .fine, personID: george.id, companionIDs: [michelle.id]
+        )
+        store.markNotPresent(for: rejected, personID: michelle.id)
+        XCTAssertTrue(store.updateVisit(
+            rejected, type: nil, priceBand: 0, occasion: nil,
+            memory: nil, companions: [michelle.id], editorID: george.id
+        ))
+        XCTAssertEqual(rejected.participant(for: michelle.id)?.status, .notThere)
+        XCTAssertFalse(store.attendees(for: rejected).contains { $0.id == michelle.id })
+        XCTAssertTrue(store.pendingVisits(for: michelle.id).isEmpty)
+    }
+
+    func testPersonalMemoryOrPhotoConfirmsAttendanceWithoutRequiringOverallRating() throws {
+        let george = try XCTUnwrap(store.currentPerson)
+        let michelle = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" })
+        let location = store.createLocation(name: "Nonrating Contributions")
+        let memoryVisit = store.logVisit(
+            at: location, reaction: .liked, personID: george.id, companionIDs: [michelle.id]
+        )
+
+        store.updateMemory("Michelle remembered the patio.", for: memoryVisit, personID: michelle.id)
+
+        XCTAssertEqual(memoryVisit.participant(for: michelle.id)?.status, .attended)
+        XCTAssertFalse(store.pendingVisits(for: michelle.id).contains { $0.id == memoryVisit.id })
+
+        let photoVisit = store.logVisit(
+            at: location, reaction: .fine, personID: george.id, companionIDs: [michelle.id]
+        )
+        store.addPhoto(
+            fullData: Data([0x01]), thumbnailData: nil,
+            to: photoVisit, personID: michelle.id
+        )
+
+        XCTAssertEqual(photoVisit.participant(for: michelle.id)?.status, .attended)
+        XCTAssertFalse(store.pendingVisits(for: michelle.id).contains { $0.id == photoVisit.id })
     }
 
     func testCircleRankingIsIndependentOfWhichMemberUsesTheDevice() throws {

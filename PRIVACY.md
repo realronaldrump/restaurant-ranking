@@ -1,12 +1,14 @@
 # Privacy Policy
 
-**Effective July 16, 2026**
+**Effective July 27, 2026**
 
 Big Beautiful Restaurant Log is designed to keep dining history private. The developer does not collect personal data from the app. There is no developer account, developer-operated server, advertising, analytics, data broker, or tracking SDK.
 
 Depending on the features used, the app handles restaurant names and locations, meal dates, ratings, comparisons, dishes, notes, companions, photos, and saved restaurants. Records are stored locally using Apple Core Data and, when iCloud is available, may sync through the user’s private Apple CloudKit database. Records are shared only when the user explicitly invites someone to a CloudKit shared dining circle. The developer does not operate or have access to these databases.
 
 With permission, foreground location suggests nearby establishments. The app does not request Always location access or track location in the background. Search terms and coordinates may be sent to Apple through MapKit. Photo selection is optional; the system picker works without full-library permission. Optional backfill scanning requires read access for a chosen date range. Photo analysis occurs on-device, original photos remain unchanged, and app-stored copies are re-encoded without embedded GPS or EXIF metadata.
+
+If the user imports a Beli data-export ZIP, the archive is parsed on-device. Restaurant names and cities may be sent to Apple through MapKit so the user can review location matches. Photo URLs contained in the export are requested directly from Beli's photo hosting service and the resulting app-stored copies are processed on-device. Account, email, phone, device, follower, and social-profile fields in the export are not retained by the app or sent to the developer.
 
 The app contains no advertising SDK, analytics SDK, third-party tracking SDK, or cross-app tracking. The developer does not sell, rent, or use information for advertising or profiling.
 

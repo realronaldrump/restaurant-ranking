@@ -8,6 +8,7 @@ struct RestaurantLogApp: App {
     @State private var store = AppStore()
     @State private var locationService = LocationService()
     @AppStorage("didCompleteGrandOpening") private var didCompleteGrandOpening = false
+    @AppStorage(AppearancePreference.storageKey) private var appearancePreference = AppearancePreference.system
 
     init() {
         // Navigation titles in the editorial serif, matching the page headings.
@@ -32,7 +33,7 @@ struct RestaurantLogApp: App {
             }
             .environment(store)
             .environment(locationService)
-            .preferredColorScheme(nil)
+            .preferredColorScheme(appearancePreference.colorScheme)
             .fullScreenCover(isPresented: Binding(
                 get: { didCompleteGrandOpening && store.needsDeviceIdentity },
                 set: { _ in }

@@ -8,13 +8,10 @@ final class RestaurantLogUITests: XCTestCase {
         app = XCUIApplication()
         app.launchArguments = ["-disableCloudKit", "-resetForUITests", "-seedSampleData"]
         app.launch()
-        if !app.buttons["log-meal-button"].waitForExistence(timeout: 8) {
-            // A freshly installed simulator build can miss its first launch
-            // readiness window while SpringBoard finishes registration.
-            app.terminate()
-            app.launch()
-        }
-        XCTAssertTrue(app.buttons["log-meal-button"].waitForExistence(timeout: 8))
+        XCTAssertTrue(
+            app.buttons["log-meal-button"].waitForExistence(timeout: 12),
+            "The first launch must reach usable content without terminating and reopening the app."
+        )
     }
 
     func testSeededLogNavigatesPrimaryTabs() {
@@ -56,6 +53,16 @@ final class RestaurantLogUITests: XCTestCase {
         XCTAssertTrue(persistedPicker.waitForExistence(timeout: 3))
         XCTAssertTrue(persistedPicker.buttons["Dark"].isSelected)
         persistedPicker.buttons["System"].tap()
+    }
+
+    func testSettingsFooterShowsVersionAndReleaseDate() {
+        openAppearanceSettings()
+
+        let footer = app.staticTexts["app-version-footer"]
+        for _ in 0..<10 where !footer.exists { app.swipeUp() }
+
+        XCTAssertTrue(footer.waitForExistence(timeout: 3))
+        XCTAssertEqual(footer.label, "Big Beautiful Restaurant Log 2.6 • Released July 28, 2026")
     }
 
     func testDiningAtlasShowsTheFirstVisitTrail() {

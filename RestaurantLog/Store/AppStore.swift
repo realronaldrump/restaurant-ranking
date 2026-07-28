@@ -76,7 +76,7 @@ final class AppStore {
     var needsDeviceIdentity: Bool { activeCircle != nil && currentPerson == nil }
     var otherCircleMembers: [PersonEntity] { circleMembers.filter { $0.id != currentPerson?.id } }
 
-    init(persistence: PersistenceController = .shared) {
+    init(persistence: PersistenceController) {
         self.persistence = persistence
         activeCircleID = UserDefaults.standard.string(forKey: "activeCircleID").flatMap(UUID.init(uuidString:))
         devicePersonID = UserDefaults.standard.string(forKey: "devicePersonID").flatMap(UUID.init(uuidString:))

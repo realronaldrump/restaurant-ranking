@@ -16,4 +16,12 @@ final class CloudSharingLifecycleTests: XCTestCase {
         XCTAssertTrue(delegate.responds(to: #selector(UIWindowSceneDelegate.windowScene(_:userDidAcceptCloudKitShareWith:))))
         XCTAssertTrue(delegate.responds(to: #selector(UISceneDelegate.scene(_:willConnectTo:options:))))
     }
+
+    func testInMemoryPersistenceIsReadyBeforeAppStoreInitialization() {
+        let persistence = PersistenceController(inMemory: true, cloudEnabled: false)
+
+        XCTAssertTrue(persistence.isReady)
+        XCTAssertFalse(persistence.isCloudSyncActive)
+        XCTAssertNil(persistence.loadError)
+    }
 }

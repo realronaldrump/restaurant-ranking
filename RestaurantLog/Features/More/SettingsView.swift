@@ -191,7 +191,13 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Section { LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0") }
+            Section {
+                LabeledContent("Version", value: appVersion)
+                LabeledContent("Release date", value: Self.releaseDateText)
+            } footer: {
+                Text("Big Beautiful Restaurant Log \(appVersion) • Released \(Self.releaseDateText)")
+                    .accessibilityIdentifier("app-version-footer")
+            }
         }
         .editorialForm()
         .scrollDismissesKeyboard(.interactively)
@@ -277,6 +283,12 @@ struct SettingsView: View {
         } message: {
             Text("This permanently deletes all circles, restaurants, visits, photos, rankings, and app setup from this device and iCloud. Shared-circle data may also be removed for other members. iOS permissions will not change. This cannot be undone.")
         }
+    }
+
+    private static let releaseDateText = "July 28, 2026"
+
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
     }
 
     private var photoVisitTimeSuggestion: some View {

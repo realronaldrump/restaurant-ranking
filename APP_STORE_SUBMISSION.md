@@ -5,7 +5,7 @@
 - Product: Big Beautiful Restaurant Log
 - Bundle identifier: `com.davis.bigbeautifulranking`
 - iCloud container: `iCloud.com.davis.bigbeautifulranking`
-- Version: 2.5 (build 7)
+- Version: 2.6 (build 8)
 - Devices: iPhone only
 - Minimum OS: iOS 17.0
 
@@ -34,6 +34,12 @@ The bundled `PrivacyInfo.xcprivacy` declares no collection or tracking and decla
 - Export compliance: the app uses only Apple-provided encryption; `ITSAppUsesNonExemptEncryption` is `NO`.
 - Availability: keep iPad unsupported and disable “Make this app available on Apple silicon Mac” so the iPhone app is not distributed for Mac.
 - License agreement: use Apple’s Standard Licensed Application End User License Agreement; do not enter a custom EULA.
+
+## What’s New in Version 2.6
+
+- Fix a launch crash affecting TestFlight builds by correcting the production CloudKit configuration.
+- Show the app immediately while its private iCloud dining log finishes loading, eliminating the prolonged black screen on first launch.
+- Display the installed version and release date in Settings.
 
 ## What’s New in Version 2.5
 

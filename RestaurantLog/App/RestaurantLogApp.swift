@@ -5,7 +5,7 @@ import SwiftUI
 struct RestaurantLogApp: App {
     private static var hasSeededSampleData = false
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @State private var store = AppStore()
+    @State private var store: AppStore?
     @State private var locationService = LocationService()
     @AppStorage("didCompleteGrandOpening") private var didCompleteGrandOpening = false
     @AppStorage(AppearancePreference.storageKey) private var appearancePreference = AppearancePreference.system
@@ -25,43 +25,98 @@ struct RestaurantLogApp: App {
     var body: some Scene {
         WindowGroup {
             Group {
-                if didCompleteGrandOpening, store.activeCircle != nil {
-                    MainTabView()
+                if let store {
+                    loadedContent(store)
                 } else {
-                    GrandOpeningView(isComplete: $didCompleteGrandOpening)
+                    AppLaunchView()
+                        .task { await prepareApp() }
                 }
             }
-            .environment(store)
-            .environment(locationService)
             .preferredColorScheme(appearancePreference.colorScheme)
-            .fullScreenCover(isPresented: Binding(
-                get: { didCompleteGrandOpening && store.needsDeviceIdentity },
-                set: { _ in }
-            )) {
-                DeviceIdentitySelectionView()
-                    .environment(store)
-                    .interactiveDismissDisabled()
-            }
-            .alert("Couldn’t Save or Sync", isPresented: Binding(
-                get: { store.lastError != nil },
-                set: { if !$0 { store.clearLastError() } }
-            )) {
-                Button("OK") { store.clearLastError() }
-            } message: {
-                Text(store.lastError ?? "Big Beautiful Log encountered an unexpected persistence error.")
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .cloudShareWasAccepted)) { _ in
-                // Accepting an invitation is itself setup; once its records arrive,
-                // the identity gate will ask which circle member uses this device.
-                didCompleteGrandOpening = true
-            }
-            .onAppear {
-                if ProcessInfo.processInfo.arguments.contains("-seedSampleData"), !Self.hasSeededSampleData {
-                    Self.hasSeededSampleData = true
-                    store.seedSampleLog()
-                    didCompleteGrandOpening = true
-                }
+        }
+    }
+
+    @ViewBuilder
+    private func loadedContent(_ store: AppStore) -> some View {
+        Group {
+            if didCompleteGrandOpening, store.activeCircle != nil {
+                MainTabView()
+            } else {
+                GrandOpeningView(isComplete: $didCompleteGrandOpening)
             }
         }
+        .environment(store)
+        .environment(locationService)
+        .fullScreenCover(isPresented: Binding(
+            get: { didCompleteGrandOpening && store.needsDeviceIdentity },
+            set: { _ in }
+        )) {
+            DeviceIdentitySelectionView()
+                .environment(store)
+                .interactiveDismissDisabled()
+        }
+        .alert("Couldn’t Save or Sync", isPresented: Binding(
+            get: { store.lastError != nil },
+            set: { if !$0 { store.clearLastError() } }
+        )) {
+            Button("OK") { store.clearLastError() }
+        } message: {
+            Text(store.lastError ?? "Big Beautiful Log encountered an unexpected persistence error.")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .cloudShareWasAccepted)) { _ in
+            // Accepting an invitation is itself setup; once its records arrive,
+            // the identity gate will ask which circle member uses this device.
+            didCompleteGrandOpening = true
+        }
+        .onAppear {
+            if ProcessInfo.processInfo.arguments.contains("-seedSampleData"), !Self.hasSeededSampleData {
+                Self.hasSeededSampleData = true
+                store.seedSampleLog()
+                didCompleteGrandOpening = true
+            }
+        }
+    }
+
+    @MainActor
+    private func prepareApp() async {
+        guard store == nil else { return }
+        // Let SwiftUI commit the branded launch view before Core Data performs
+        // migrations or reconciles an existing dining history.
+        await Task.yield()
+        let persistence = PersistenceController.shared
+        await persistence.prepare()
+        store = AppStore(persistence: persistence)
+    }
+}
+
+private struct AppLaunchView: View {
+    var body: some View {
+        ZStack {
+            PaperBackground()
+            VStack(spacing: 18) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(BBTheme.oxblood)
+                        .frame(width: 64, height: 64)
+                    Image(systemName: "book.closed.fill")
+                        .font(.title2)
+                        .foregroundStyle(BBTheme.paper)
+                }
+                VStack(spacing: 6) {
+                    Text("Big Beautiful")
+                        .font(BBTheme.display(30))
+                    Text("Opening your restaurant log…")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                ProgressView()
+                    .tint(BBTheme.oxblood)
+            }
+            .padding(28)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Opening Big Beautiful Restaurant Log")
+            .accessibilityIdentifier("app-launch-progress")
+        }
+        .foregroundStyle(BBTheme.ink)
     }
 }

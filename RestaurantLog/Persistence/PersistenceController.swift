@@ -17,7 +17,8 @@ final class PersistenceController {
         let isRunningUnitTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
         return PersistenceController(
             inMemory: isRunningUnitTests || arguments.contains("-resetForUITests"),
-            cloudEnabled: !isRunningUnitTests && !arguments.contains("-disableCloudKit") && !arguments.contains("-resetForUITests")
+            cloudEnabled: !isRunningUnitTests && !arguments.contains("-disableCloudKit") && !arguments.contains("-resetForUITests"),
+            loadImmediately: false
         )
     }()
     static let cloudContainerIdentifier = "iCloud.com.davis.bigbeautifulranking"
@@ -25,36 +26,48 @@ final class PersistenceController {
     let container: NSPersistentCloudKitContainer
     private(set) var loadError: Error?
     private(set) var isCloudSyncActive = false
+    private(set) var isReady = false
 
-    init(inMemory: Bool = false, cloudEnabled: Bool = true) {
+    private let prefersCloudSync: Bool
+    private var preparationTask: Task<Void, Never>?
+
+    init(inMemory: Bool = false, cloudEnabled: Bool = true, loadImmediately: Bool = true) {
+        prefersCloudSync = cloudEnabled
         container = NSPersistentCloudKitContainer(name: "RestaurantLog", managedObjectModel: ManagedObjectModel.make())
 
         if inMemory {
             let description = NSPersistentStoreDescription(url: URL(fileURLWithPath: "/dev/null"))
             description.type = NSInMemoryStoreType
+            description.shouldAddStoreAsynchronously = false
             container.persistentStoreDescriptions = [description]
-            loadStores()
+            loadError = loadStoresSynchronously()
+            isReady = loadError == nil
         } else {
             configureDescriptions(cloudEnabled: cloudEnabled)
-            loadStores()
-            if loadError != nil, cloudEnabled {
-                // Missing entitlements or an unreachable CloudKit container must never
-                // make the log unusable: fall back to purely local stores and keep working.
-                loadError = nil
-                for store in container.persistentStoreCoordinator.persistentStores {
-                    try? container.persistentStoreCoordinator.remove(store)
-                }
-                configureDescriptions(cloudEnabled: false)
-                loadStores()
-            }
-            isCloudSyncActive = cloudEnabled && loadError == nil &&
-                container.persistentStoreDescriptions.contains { $0.cloudKitContainerOptions != nil }
+            if loadImmediately { prepareSynchronously() }
         }
 
         container.viewContext.automaticallyMergesChangesFromParent = true
         container.viewContext.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
         container.viewContext.transactionAuthor = "app"
         container.viewContext.undoManager = UndoManager()
+    }
+
+    /// Opens the live stores without blocking SwiftUI's first frame. Store loading and
+    /// lightweight migration run on Core Data's queues while the app shows a launch view.
+    @MainActor
+    func prepare() async {
+        if isReady { return }
+        if let preparationTask {
+            await preparationTask.value
+            return
+        }
+        let task = Task { @MainActor in
+            await prepareAsynchronously()
+        }
+        preparationTask = task
+        await task.value
+        preparationTask = nil
     }
 
     private func configureDescriptions(cloudEnabled: Bool) {
@@ -74,9 +87,60 @@ final class PersistenceController {
         container.persistentStoreDescriptions = [privateStore, sharedStore]
     }
 
-    private func loadStores() {
-        container.loadPersistentStores { [weak self] _, error in
-            if let error { self?.loadError = error }
+    private func prepareSynchronously() {
+        let cloudError = loadStoresSynchronously()
+        if let cloudError, prefersCloudSync {
+            removeLoadedStores()
+            configureDescriptions(cloudEnabled: false)
+            loadError = loadStoresSynchronously() ?? cloudError
+            isCloudSyncActive = false
+        } else {
+            loadError = cloudError
+            isCloudSyncActive = prefersCloudSync && cloudError == nil
+        }
+        isReady = !container.persistentStoreCoordinator.persistentStores.isEmpty
+    }
+
+    @MainActor
+    private func prepareAsynchronously() async {
+        let cloudError = await loadStoresAsynchronously()
+        if let cloudError, prefersCloudSync {
+            removeLoadedStores()
+            configureDescriptions(cloudEnabled: false)
+            loadError = await loadStoresAsynchronously() ?? cloudError
+            isCloudSyncActive = false
+        } else {
+            loadError = cloudError
+            isCloudSyncActive = prefersCloudSync && cloudError == nil
+        }
+        isReady = !container.persistentStoreCoordinator.persistentStores.isEmpty
+    }
+
+    private func loadStoresSynchronously() -> Error? {
+        let descriptions = container.persistentStoreDescriptions
+        descriptions.forEach { $0.shouldAddStoreAsynchronously = false }
+        let state = PersistentStoreLoadState(expectedCompletions: descriptions.count)
+        container.loadPersistentStores { _, error in
+            _ = state.record(error)
+        }
+        return state.result
+    }
+
+    private func loadStoresAsynchronously() async -> Error? {
+        let descriptions = container.persistentStoreDescriptions
+        descriptions.forEach { $0.shouldAddStoreAsynchronously = true }
+        let state = PersistentStoreLoadState(expectedCompletions: descriptions.count)
+        return await withCheckedContinuation { continuation in
+            container.loadPersistentStores { _, error in
+                let update = state.record(error)
+                if update.completed { continuation.resume(returning: update.error) }
+            }
+        }
+    }
+
+    private func removeLoadedStores() {
+        for store in container.persistentStoreCoordinator.persistentStores {
+            try? container.persistentStoreCoordinator.remove(store)
         }
     }
 
@@ -142,14 +206,21 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         options connectionOptions: UIScene.ConnectionOptions
     ) {
         guard let metadata = connectionOptions.cloudKitShareMetadata else { return }
-        PersistenceController.shared.accept(metadata)
+        accept(metadata)
     }
 
     func windowScene(
         _ windowScene: UIWindowScene,
         userDidAcceptCloudKitShareWith cloudKitShareMetadata: CKShare.Metadata
     ) {
-        PersistenceController.shared.accept(cloudKitShareMetadata)
+        accept(cloudKitShareMetadata)
+    }
+
+    private func accept(_ metadata: CKShare.Metadata) {
+        Task { @MainActor in
+            await PersistenceController.shared.prepare()
+            PersistenceController.shared.accept(metadata)
+        }
     }
 }
 
@@ -166,5 +237,29 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         options: UIScene.ConnectionOptions
     ) -> UISceneConfiguration {
         Self.sceneConfiguration(for: connectingSceneSession.role)
+    }
+}
+
+private final class PersistentStoreLoadState {
+    private let lock = NSLock()
+    private var remainingCompletions: Int
+    private var firstError: Error?
+
+    init(expectedCompletions: Int) {
+        remainingCompletions = expectedCompletions
+    }
+
+    func record(_ error: Error?) -> (completed: Bool, error: Error?) {
+        lock.lock()
+        defer { lock.unlock() }
+        if firstError == nil { firstError = error }
+        remainingCompletions -= 1
+        return (remainingCompletions == 0, firstError)
+    }
+
+    var result: Error? {
+        lock.lock()
+        defer { lock.unlock() }
+        return firstError
     }
 }

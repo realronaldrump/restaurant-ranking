@@ -185,6 +185,31 @@ actor SyncEngine {
         let settled = try await context.perform {
             try SyncSnapshotBuilder.build(circleID: circleID, in: context)
         }
+
+        // Where storing a remote record produced a different value than the one
+        // that arrived, publish the stored version. Without this the two sides
+        // would disagree forever and every pass would re-apply the same record.
+        var reconciliation: [SupabaseClient.OutgoingRecord] = []
+        for syncKey in plan.apply {
+            guard let stored = settled.records[syncKey],
+                  let received = remote[syncKey]?.fingerprint,
+                  stored.fingerprint != received else { continue }
+            let sealed = try CircleCrypto.seal(stored.payload, with: key)
+            reconciliation.append(SupabaseClient.OutgoingRecord(
+                circleID: circleID,
+                kind: syncKey.kind.rawValue,
+                id: syncKey.id,
+                payload: sealed.base64EncodedString(),
+                deleted: false,
+                deviceID: SyncDevice.identifier
+            ))
+        }
+        if !reconciliation.isEmpty {
+            logger.notice("Republished \(reconciliation.count, privacy: .public) record(s) that changed shape on the way in.")
+            try await client.pushRecords(reconciliation)
+            outcome.pushed += reconciliation.count
+        }
+
         baseline.replaceFingerprints(with: settled.records)
         baseline.watermark = max(baseline.watermark, highestSeen)
 

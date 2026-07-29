@@ -156,6 +156,16 @@ the screen sees their own change survive.
 Deletion loses to editing in both directions, for the same reason: restoring a
 record someone deleted is recoverable, losing an edit is not.
 
+Two guards keep a pass from quietly going in circles:
+
+- **Republish after apply.** If storing a remote record produces a different
+  value than the one that arrived — Core Data setters normalise companion lists
+  and tag arrays — the stored version is pushed back. Without that the two sides
+  would disagree forever and every pass would re-apply the same record.
+- **Replay a request that arrived mid-pass.** A pass reads the local graph once,
+  near its start. An edit landing after that read is remembered and the pass runs
+  again rather than waiting for some later trigger.
+
 ## Photos
 
 Photo metadata syncs as an ordinary record with `fullData` and `thumbnailData`

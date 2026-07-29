@@ -18,6 +18,7 @@ final class SyncCoordinator {
     @ObservationIgnored private let container: NSPersistentContainer
     @ObservationIgnored private let engine: SyncEngine?
     @ObservationIgnored private var debounce: Task<Void, Never>?
+    @ObservationIgnored private var pendingCircleID: UUID?
     @ObservationIgnored private let signIn = AppleSignIn()
     @ObservationIgnored private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.davis.bigbeautifulranking",
@@ -207,8 +208,24 @@ final class SyncCoordinator {
     func sync(circleID: UUID) async {
         guard let engine else { return }
         guard isSyncing(circleID: circleID) else { return }
-        guard !status.isBusy else { return }
 
+        // A pass reads the local graph once, near its start. An edit that lands
+        // after that read would otherwise wait for some later trigger, so the
+        // request is remembered and replayed rather than dropped.
+        guard !status.isBusy else {
+            pendingCircleID = circleID
+            return
+        }
+
+        var target: UUID? = circleID
+        while let next = target {
+            await runPass(circleID: next, engine: engine)
+            target = pendingCircleID
+            pendingCircleID = nil
+        }
+    }
+
+    private func runPass(circleID: UUID, engine: SyncEngine) async {
         status = .syncing
         do {
             let outcome = try await engine.synchronize(circleID: circleID)

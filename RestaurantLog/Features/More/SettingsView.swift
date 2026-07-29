@@ -97,7 +97,16 @@ struct SettingsView: View {
                 Text("These names can be reused on visits. Add one to the circle later without losing any linked history.")
             }
             Section("iCloud & permissions") {
-                LabeledContent("iCloud", value: accountStatus)
+                LabeledContent("iCloud account", value: accountStatus)
+                LabeledContent(
+                    "iCloud sync",
+                    value: store.persistence.isCloudSyncActive ? store.cloudSyncStatus.description : "Off"
+                )
+                if store.persistence.isCloudSyncActive, store.cloudSyncStatus == .retrying {
+                    Text("Your latest changes are saved on this iPhone. iCloud is retrying automatically.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 LabeledContent("Foreground location", value: locationDescription)
                 LabeledContent("Photo Library", value: photoDescription)
                 Button("Open iOS Settings") {

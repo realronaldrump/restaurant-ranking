@@ -5,7 +5,7 @@
 - Product: Big Beautiful Restaurant Log
 - Bundle identifier: `com.davis.bigbeautifulranking`
 - iCloud container: `iCloud.com.davis.bigbeautifulranking`
-- Version: 2.6 (build 8)
+- Version: 2.6 (build 9)
 - Devices: iPhone only
 - Minimum OS: iOS 17.0
 
@@ -39,6 +39,7 @@ The bundled `PrivacyInfo.xcprivacy` declares no collection or tracking and decla
 
 - Fix a launch crash affecting TestFlight builds by correcting the production CloudKit configuration.
 - Show the app immediately while its private iCloud dining log finishes loading, eliminating the prolonged black screen on first launch.
+- Keep background iCloud retries non-blocking while preserving every change on the device.
 - Display the installed version and release date in Settings.
 
 ## What’s New in Version 2.5
@@ -65,6 +66,18 @@ The bundled `PrivacyInfo.xcprivacy` declares no collection or tracking and decla
 8. Test CKShare invitation acceptance between two physical devices signed into different iCloud accounts.
 
 For version 2.5, confirm the participant, import-session, import-link, unknown-date, photo-caption, and comparison evidence-fingerprint fields exist in the Development schema before promoting it to Production.
+
+### Production schema deployment record
+
+On July 28, 2026, the pending Development schema was deployed to Production for version 2.6. The deployment:
+
+- Added the two comparison evidence-fingerprint fields.
+- Added the two photo caption/contributor fields.
+- Added the `CD_VisitParticipantEntity` record type and its indexes.
+- Added the `cloudkit.share` record type.
+- Updated the `_world`, `_icloud`, and `_creator` security roles.
+
+Before every future TestFlight or App Store upload that changes `ManagedObjectModel`, the release owner must verify that CloudKit Console no longer shows “Modified” beside Record Types, Indexes, or Security Roles. A production archive must not be distributed until any additive schema changes are deployed.
 
 ## Permission behavior
 

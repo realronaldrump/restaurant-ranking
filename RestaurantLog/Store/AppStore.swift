@@ -2,6 +2,7 @@ import CoreData
 import CryptoKit
 import Foundation
 import Observation
+import OSLog
 import UIKit
 
 struct ComparisonQuestion: Identifiable {
@@ -13,6 +14,20 @@ struct ComparisonQuestion: Identifiable {
 enum SettleScorePrompt {
     case comparison(ComparisonQuestion)
     case anchor(RestaurantLocation)
+}
+
+enum CloudSyncStatus: Equatable {
+    case available
+    case syncing
+    case retrying
+
+    var description: String {
+        switch self {
+        case .available: "Active"
+        case .syncing: "Syncing…"
+        case .retrying: "Retrying…"
+        }
+    }
 }
 
 @MainActor
@@ -32,6 +47,7 @@ final class AppStore {
     private(set) var devicePersonID: UUID?
     private(set) var revision = 0
     var lastError: String?
+    private(set) var cloudSyncStatus: CloudSyncStatus = .available
 
     @ObservationIgnored private var devicePersonIDsByCircle: [String: String] = [:]
     @ObservationIgnored private var isWaitingForAcceptedCircle = false
@@ -44,6 +60,12 @@ final class AppStore {
     @ObservationIgnored private var pendingSorts: Set<CachedCollection> = []
     @ObservationIgnored private var remoteReloadTask: Task<Void, Never>?
     @ObservationIgnored private(set) var diagnosticReloadCount = 0
+    @ObservationIgnored private var syncingCloudStores: Set<String> = []
+    @ObservationIgnored private var retryingCloudStores: Set<String> = []
+    @ObservationIgnored private let cloudSyncLogger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.davis.bigbeautifulranking",
+        category: "CloudSync"
+    )
 
     var context: NSManagedObjectContext { persistence.container.viewContext }
     var activeCircle: CircleEntity? {
@@ -116,12 +138,18 @@ final class AppStore {
             queue: .main
         ) { [weak self] notification in
             guard let event = notification.userInfo?[NSPersistentCloudKitContainer.eventNotificationUserInfoKey]
-                    as? NSPersistentCloudKitContainer.Event,
-                  event.endDate != nil,
-                  !event.succeeded,
-                  let error = event.error else { return }
+                    as? NSPersistentCloudKitContainer.Event else { return }
             Task { @MainActor in
-                self?.reportError("iCloud could not sync the latest changes to your log. They remain on this device and will retry automatically. \(error.localizedDescription)")
+                guard let self else { return }
+                if event.endDate == nil {
+                    self.processCloudSyncStart(storeIdentifier: event.storeIdentifier)
+                } else {
+                    self.processCloudSyncCompletion(
+                        storeIdentifier: event.storeIdentifier,
+                        succeeded: event.succeeded,
+                        error: event.error
+                    )
+                }
             }
         }
     }
@@ -161,6 +189,37 @@ final class AppStore {
 
     func clearLastError() {
         lastError = nil
+    }
+
+    func processCloudSyncStart(storeIdentifier: String) {
+        retryingCloudStores.remove(storeIdentifier)
+        syncingCloudStores.insert(storeIdentifier)
+        updateCloudSyncStatus()
+    }
+
+    func processCloudSyncCompletion(storeIdentifier: String, succeeded: Bool, error: Error?) {
+        syncingCloudStores.remove(storeIdentifier)
+        if succeeded {
+            retryingCloudStores.remove(storeIdentifier)
+        } else {
+            retryingCloudStores.insert(storeIdentifier)
+            if let error {
+                cloudSyncLogger.error(
+                    "Background iCloud sync will retry. \(error.localizedDescription, privacy: .public)"
+                )
+            }
+        }
+        updateCloudSyncStatus()
+    }
+
+    private func updateCloudSyncStatus() {
+        if !retryingCloudStores.isEmpty {
+            cloudSyncStatus = .retrying
+        } else if !syncingCloudStores.isEmpty {
+            cloudSyncStatus = .syncing
+        } else {
+            cloudSyncStatus = .available
+        }
     }
 
     /// Device identity is local-only state, but it belongs in a portable backup

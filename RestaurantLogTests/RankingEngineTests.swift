@@ -1604,6 +1604,43 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertNil(store.lastError)
     }
 
+    func testBackgroundCloudKitFailureDoesNotMasqueradeAsLocalSaveFailure() {
+        let partialFailure = NSError(
+            domain: CKError.errorDomain,
+            code: CKError.Code.partialFailure.rawValue
+        )
+
+        store.processCloudSyncCompletion(
+            storeIdentifier: "private-store",
+            succeeded: false,
+            error: partialFailure
+        )
+
+        XCTAssertNil(store.lastError)
+        XCTAssertEqual(store.cloudSyncStatus, .retrying)
+    }
+
+    func testSuccessfulCloudKitRetryClearsRetryingStatus() {
+        let partialFailure = NSError(
+            domain: CKError.errorDomain,
+            code: CKError.Code.partialFailure.rawValue
+        )
+        store.processCloudSyncCompletion(
+            storeIdentifier: "private-store",
+            succeeded: false,
+            error: partialFailure
+        )
+
+        store.processCloudSyncCompletion(
+            storeIdentifier: "private-store",
+            succeeded: true,
+            error: nil
+        )
+
+        XCTAssertEqual(store.cloudSyncStatus, .available)
+        XCTAssertNil(store.lastError)
+    }
+
     func testBatchKeepsCachesCurrentWithoutFullReloads() throws {
         let personID = try XCTUnwrap(store.currentPerson?.id)
         let reloadsBefore = store.diagnosticReloadCount

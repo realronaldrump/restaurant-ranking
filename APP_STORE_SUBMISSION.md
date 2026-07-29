@@ -5,7 +5,7 @@
 - Product: Big Beautiful Restaurant Log
 - Bundle identifier: `com.davis.bigbeautifulranking`
 - iCloud container: `iCloud.com.davis.bigbeautifulranking`
-- Version: 2.6 (build 10)
+- Version: 2.6.1 (build 10)
 - Devices: iPhone only
 - Minimum OS: iOS 17.0
 
@@ -35,7 +35,7 @@ The bundled `PrivacyInfo.xcprivacy` declares no collection or tracking and decla
 - Availability: keep iPad unsupported and disable “Make this app available on Apple silicon Mac” so the iPhone app is not distributed for Mac.
 - License agreement: use Apple’s Standard Licensed Application End User License Agreement; do not enter a custom EULA.
 
-## What’s New in Version 2.6
+## What’s New in Version 2.6.1
 
 - Fixed a launch crash and a repeated iCloud warning that could make the app unusable.
 - Restored previously accepted circles after a fresh installation instead of opening an empty log.

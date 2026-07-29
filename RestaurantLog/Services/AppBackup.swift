@@ -303,6 +303,197 @@ enum AppBackupCodec {
         }
     }
 
+    /// Builds a standalone copy of one circle with an entirely new identity graph.
+    ///
+    /// CloudKit records can participate in only one share. A fresh set of identifiers
+    /// lets the owner create a new zone when an existing encrypted share is no longer
+    /// readable, while the original local circle remains untouched as a recovery copy.
+    static func makeRecoveryCopy(
+        of circleID: UUID,
+        from archive: AppBackupArchive
+    ) throws -> AppBackupArchive {
+        try validate(archive)
+        guard let sourceCircle = archive.circles.first(where: { $0.id == circleID }) else {
+            throw AppBackupError.missingReference("selected circle is missing")
+        }
+
+        let people = archive.people.filter { $0.circleID == circleID }
+        let locations = archive.locations.filter { $0.circleID == circleID }
+        let visits = archive.visits.filter { $0.circleID == circleID }
+        let comparisons = archive.comparisons.filter { $0.circleID == circleID }
+        let wantEntries = archive.wantEntries.filter { $0.circleID == circleID }
+        let importSessions = (archive.externalImportSessions ?? []).filter { $0.circleID == circleID }
+        let importLinks = (archive.externalImportLinks ?? []).filter { $0.circleID == circleID }
+
+        let visitIDs = Set(visits.map(\.id))
+        let locationIDs = Set(locations.map(\.id))
+        let participants = (archive.participants ?? []).filter { $0.visitID.map(visitIDs.contains) == true }
+        let ratings = archive.ratings.filter { $0.visitID.map(visitIDs.contains) == true }
+        let dishes = archive.dishes.filter { $0.locationID.map(locationIDs.contains) == true }
+        let dishIDs = Set(dishes.map(\.id))
+        let dishEntries = archive.dishEntries.filter {
+            $0.visitID.map(visitIDs.contains) == true && $0.dishID.map(dishIDs.contains) == true
+        }
+        let photos = archive.photos.filter { $0.visitID.map(visitIDs.contains) == true }
+        let brandIDs = Set(locations.compactMap(\.brandID))
+        let brands = archive.brands.filter { brandIDs.contains($0.id) }
+
+        func freshIDs(_ ids: [UUID]) -> [UUID: UUID] {
+            Dictionary(uniqueKeysWithValues: ids.map { ($0, UUID()) })
+        }
+
+        let newCircleID = UUID()
+        let personIDs = freshIDs(people.map(\.id))
+        let brandMap = freshIDs(brands.map(\.id))
+        let locationMap = freshIDs(locations.map(\.id))
+        let visitMap = freshIDs(visits.map(\.id))
+        let participantMap = freshIDs(participants.map(\.id))
+        let ratingMap = freshIDs(ratings.map(\.id))
+        let dishMap = freshIDs(dishes.map(\.id))
+        let dishEntryMap = freshIDs(dishEntries.map(\.id))
+        let photoMap = freshIDs(photos.map(\.id))
+        let comparisonMap = freshIDs(comparisons.map(\.id))
+        let wantMap = freshIDs(wantEntries.map(\.id))
+        let sessionMap = freshIDs(importSessions.map(\.id))
+        let linkMap = freshIDs(importLinks.map(\.id))
+
+        var targetMap: [UUID: UUID] = [:]
+        for map in [
+            personIDs, brandMap, locationMap, visitMap, participantMap, ratingMap,
+            dishMap, dishEntryMap, photoMap, comparisonMap, wantMap, sessionMap, linkMap
+        ] {
+            targetMap.merge(map, uniquingKeysWith: { existing, _ in existing })
+        }
+
+        let copy = AppBackupArchive(
+            signature: AppBackupArchive.signature,
+            formatVersion: AppBackupArchive.currentFormatVersion,
+            exportedAt: .now,
+            appVersion: archive.appVersion,
+            preferences: archive.preferences,
+            activeCircleID: newCircleID,
+            deviceSelections: archive.deviceSelections.compactMap { selection in
+                guard selection.circleID == circleID, let personID = personIDs[selection.personID] else { return nil }
+                return .init(circleID: newCircleID, personID: personID)
+            },
+            circles: [
+                .init(id: newCircleID, name: sourceCircle.name, createdAt: .now)
+            ],
+            people: people.map {
+                .init(
+                    id: personIDs[$0.id]!, name: $0.name, isMe: $0.isMe,
+                    isCircleMember: $0.isCircleMember, colorHex: $0.colorHex,
+                    createdAt: $0.createdAt, circleID: newCircleID
+                )
+            },
+            brands: brands.map {
+                .init(id: brandMap[$0.id]!, name: $0.name, createdAt: $0.createdAt)
+            },
+            locations: locations.map {
+                .init(
+                    id: locationMap[$0.id]!, name: $0.name, category: $0.category,
+                    address: $0.address, city: $0.city, phone: $0.phone,
+                    urlString: $0.urlString, hoursText: $0.hoursText,
+                    latitude: $0.latitude, longitude: $0.longitude,
+                    hasCoordinates: $0.hasCoordinates, isClosed: $0.isClosed,
+                    sourceIdentifier: $0.sourceIdentifier, cuisines: $0.cuisines,
+                    tags: $0.tags, createdAt: $0.createdAt, updatedAt: $0.updatedAt,
+                    circleID: newCircleID, brandID: $0.brandID.flatMap { brandMap[$0] }
+                )
+            },
+            visits: visits.map {
+                .init(
+                    id: visitMap[$0.id]!, date: $0.date, dateKnowledge: $0.dateKnowledge,
+                    visitType: $0.visitType, priceBand: $0.priceBand, occasion: $0.occasion,
+                    memory: $0.memory, latitude: $0.latitude, longitude: $0.longitude,
+                    hasCoordinates: $0.hasCoordinates, createdAt: $0.createdAt,
+                    isShared: $0.isShared, createdByID: personIDs[$0.createdByID]!,
+                    companionIDs: $0.companionIDs.compactMap { personIDs[$0] },
+                    circleID: newCircleID, locationID: $0.locationID.flatMap { locationMap[$0] }
+                )
+            },
+            participants: archive.participants == nil ? nil : participants.map {
+                .init(
+                    id: participantMap[$0.id]!, personID: personIDs[$0.personID]!,
+                    status: $0.status, memory: $0.memory, createdAt: $0.createdAt,
+                    updatedAt: $0.updatedAt, visitID: $0.visitID.flatMap { visitMap[$0] }
+                )
+            },
+            ratings: ratings.map {
+                .init(
+                    id: ratingMap[$0.id]!, personID: personIDs[$0.personID]!,
+                    reaction: $0.reaction, service: $0.service, atmosphere: $0.atmosphere,
+                    value: $0.value, hazyMemory: $0.hazyMemory,
+                    wouldOrderAgain: $0.wouldOrderAgain,
+                    hasWouldOrderAgain: $0.hasWouldOrderAgain, createdAt: $0.createdAt,
+                    visitID: $0.visitID.flatMap { visitMap[$0] }
+                )
+            },
+            dishes: dishes.map {
+                .init(
+                    id: dishMap[$0.id]!, name: $0.name, role: $0.role,
+                    createdAt: $0.createdAt, isArchived: $0.isArchived,
+                    locationID: $0.locationID.flatMap { locationMap[$0] }
+                )
+            },
+            dishEntries: dishEntries.map {
+                .init(
+                    id: dishEntryMap[$0.id]!, personID: personIDs[$0.personID]!,
+                    reaction: $0.reaction, wouldOrderAgain: $0.wouldOrderAgain,
+                    createdAt: $0.createdAt, dishID: $0.dishID.flatMap { dishMap[$0] },
+                    visitID: $0.visitID.flatMap { visitMap[$0] }
+                )
+            },
+            photos: photos.map {
+                .init(
+                    id: photoMap[$0.id]!, personID: $0.personID.flatMap { personIDs[$0] },
+                    thumbnailData: $0.thumbnailData, fullData: $0.fullData,
+                    createdAt: $0.createdAt, captureDate: $0.captureDate, caption: $0.caption,
+                    visitID: $0.visitID.flatMap { visitMap[$0] }
+                )
+            },
+            comparisons: comparisons.map {
+                .init(
+                    id: comparisonMap[$0.id]!, personID: personIDs[$0.personID]!,
+                    locationAID: locationMap[$0.locationAID]!,
+                    locationBID: locationMap[$0.locationBID]!, outcome: $0.outcome,
+                    date: $0.date, isAnchor: $0.isAnchor, anchorValue: $0.anchorValue,
+                    locationAEvidenceFingerprint: nil, locationBEvidenceFingerprint: nil,
+                    circleID: newCircleID
+                )
+            },
+            wantEntries: wantEntries.map {
+                .init(
+                    id: wantMap[$0.id]!, addedByID: personIDs[$0.addedByID]!,
+                    addedAt: $0.addedAt, circleID: newCircleID,
+                    locationID: $0.locationID.flatMap { locationMap[$0] }
+                )
+            },
+            externalImportSessions: archive.externalImportSessions == nil ? nil : importSessions.map {
+                .init(
+                    id: sessionMap[$0.id]!, provider: $0.provider,
+                    sourceNamespace: $0.sourceNamespace, importedAt: $0.importedAt,
+                    exportDate: $0.exportDate, restaurantsCreated: $0.restaurantsCreated,
+                    outingsCreated: $0.outingsCreated, photosAdded: $0.photosAdded,
+                    dishesAdded: $0.dishesAdded, rankingsSeeded: $0.rankingsSeeded,
+                    circleID: newCircleID
+                )
+            },
+            externalImportLinks: archive.externalImportLinks == nil ? nil : importLinks.compactMap {
+                guard let targetID = targetMap[$0.targetID] else { return nil }
+                return .init(
+                    id: linkMap[$0.id]!, provider: $0.provider, recordType: $0.recordType,
+                    externalKey: $0.externalKey, contentHash: $0.contentHash,
+                    targetID: targetID, createdByImport: $0.createdByImport,
+                    createdAt: $0.createdAt, updatedAt: $0.updatedAt,
+                    circleID: newCircleID, sessionID: $0.sessionID.flatMap { sessionMap[$0] }
+                )
+            }
+        )
+        try validate(copy)
+        return copy
+    }
+
     static func validate(_ archive: AppBackupArchive) throws {
         guard archive.signature == AppBackupArchive.signature else { throw AppBackupError.invalidFormat }
         guard archive.formatVersion == AppBackupArchive.currentFormatVersion else {
@@ -594,123 +785,11 @@ enum AppBackupService {
             }) else { throw AppBackupError.noDestinationStore }
 
             do {
-            for entity in ManagedObjectModel.make().entities.compactMap(\.name) {
-                let request = NSFetchRequest<NSManagedObject>(entityName: entity)
-                for object in try context.fetch(request) { context.delete(object) }
-            }
-
-            var circles: [UUID: CircleEntity] = [:]
-            for record in archive.circles {
-                let object = CircleEntity(context: context); context.assign(object, to: destinationStore)
-                object.id = record.id; object.name = record.name; object.createdAt = record.createdAt
-                circles[record.id] = object
-            }
-            var brands: [UUID: BrandEntity] = [:]
-            for record in archive.brands {
-                let object = BrandEntity(context: context); context.assign(object, to: destinationStore)
-                object.id = record.id; object.name = record.name; object.createdAt = record.createdAt
-                brands[record.id] = object
-            }
-            for record in archive.people {
-                let object = PersonEntity(context: context); context.assign(object, to: destinationStore)
-                object.id = record.id; object.name = record.name; object.isMe = record.isMe
-                object.isCircleMember = record.isCircleMember; object.colorHex = record.colorHex
-                object.createdAt = record.createdAt; object.circle = record.circleID.flatMap { circles[$0] }
-            }
-            var locations: [UUID: RestaurantLocation] = [:]
-            for record in archive.locations {
-                let object = RestaurantLocation(context: context); context.assign(object, to: destinationStore)
-                object.id = record.id; object.name = record.name; object.category = record.category
-                object.address = record.address; object.city = record.city; object.phone = record.phone
-                object.urlString = record.urlString; object.hoursText = record.hoursText
-                object.latitude = record.latitude; object.longitude = record.longitude
-                object.hasCoordinates = record.hasCoordinates; object.isClosed = record.isClosed
-                object.sourceIdentifier = record.sourceIdentifier; object.cuisines = record.cuisines; object.tags = record.tags
-                object.createdAt = record.createdAt; object.updatedAt = record.updatedAt
-                object.circle = record.circleID.flatMap { circles[$0] }; object.brand = record.brandID.flatMap { brands[$0] }
-                locations[record.id] = object
-            }
-            var dishes: [UUID: DishEntity] = [:]
-            for record in archive.dishes {
-                let object = DishEntity(context: context); context.assign(object, to: destinationStore)
-                object.id = record.id; object.name = record.name; object.role = record.role
-                object.createdAt = record.createdAt; object.isArchived = record.isArchived
-                object.location = record.locationID.flatMap { locations[$0] }
-                dishes[record.id] = object
-            }
-            var visits: [UUID: VisitEntity] = [:]
-            for record in archive.visits {
-                let object = VisitEntity(context: context); context.assign(object, to: destinationStore)
-                object.id = record.id; object.date = record.date; object.visitType = record.visitType
-                object.dateKnowledge = record.dateKnowledge ?? .known
-                object.priceBand = record.priceBand; object.occasion = record.occasion; object.memory = record.memory
-                object.latitude = record.latitude; object.longitude = record.longitude; object.hasCoordinates = record.hasCoordinates
-                object.createdAt = record.createdAt; object.isShared = record.isShared; object.createdByID = record.createdByID
-                object.companionIDs = record.companionIDs; object.circle = record.circleID.flatMap { circles[$0] }
-                object.location = record.locationID.flatMap { locations[$0] }
-                visits[record.id] = object
-            }
-            for record in archive.participants ?? [] {
-                let object = VisitParticipantEntity(context: context); context.assign(object, to: destinationStore)
-                object.id = record.id; object.personID = record.personID; object.status = record.status
-                object.memory = record.memory; object.createdAt = record.createdAt; object.updatedAt = record.updatedAt
-                object.visit = record.visitID.flatMap { visits[$0] }
-            }
-            for record in archive.ratings {
-                let object = RatingEntity(context: context); context.assign(object, to: destinationStore)
-                object.id = record.id; object.personID = record.personID; object.reaction = record.reaction
-                object.service = record.service; object.atmosphere = record.atmosphere; object.value = record.value
-                object.hazyMemory = record.hazyMemory; object.wouldOrderAgain = record.wouldOrderAgain
-                object.hasWouldOrderAgain = record.hasWouldOrderAgain; object.createdAt = record.createdAt
-                object.visit = record.visitID.flatMap { visits[$0] }
-            }
-            for record in archive.dishEntries {
-                let object = DishEntryEntity(context: context); context.assign(object, to: destinationStore)
-                object.id = record.id; object.personID = record.personID; object.reaction = record.reaction
-                object.wouldOrderAgain = record.wouldOrderAgain; object.createdAt = record.createdAt
-                object.dish = record.dishID.flatMap { dishes[$0] }; object.visit = record.visitID.flatMap { visits[$0] }
-            }
-            for record in archive.photos {
-                let object = PhotoEntity(context: context); context.assign(object, to: destinationStore)
-                object.id = record.id; object.personID = record.personID
-                object.thumbnailData = record.thumbnailData; object.fullData = record.fullData
-                object.createdAt = record.createdAt; object.captureDate = record.captureDate; object.caption = record.caption
-                object.visit = record.visitID.flatMap { visits[$0] }
-            }
-            for record in archive.comparisons {
-                let object = ComparisonEntity(context: context); context.assign(object, to: destinationStore)
-                object.id = record.id; object.personID = record.personID; object.locationAID = record.locationAID
-                object.locationBID = record.locationBID; object.outcome = record.outcome; object.date = record.date
-                object.isAnchor = record.isAnchor; object.anchorValue = record.anchorValue
-                object.locationAEvidenceFingerprint = record.locationAEvidenceFingerprint ?? ""
-                object.locationBEvidenceFingerprint = record.locationBEvidenceFingerprint ?? ""
-                object.circle = record.circleID.flatMap { circles[$0] }
-            }
-            for record in archive.wantEntries {
-                let object = WantEntryEntity(context: context); context.assign(object, to: destinationStore)
-                object.id = record.id; object.addedByID = record.addedByID; object.addedAt = record.addedAt
-                object.circle = record.circleID.flatMap { circles[$0] }; object.location = record.locationID.flatMap { locations[$0] }
-            }
-            var importSessions: [UUID: ExternalImportSessionEntity] = [:]
-            for record in archive.externalImportSessions ?? [] {
-                let object = ExternalImportSessionEntity(context: context); context.assign(object, to: destinationStore)
-                object.id = record.id; object.provider = record.provider; object.sourceNamespace = record.sourceNamespace
-                object.importedAt = record.importedAt; object.exportDate = record.exportDate
-                object.restaurantsCreated = record.restaurantsCreated; object.outingsCreated = record.outingsCreated
-                object.photosAdded = record.photosAdded; object.dishesAdded = record.dishesAdded
-                object.rankingsSeeded = record.rankingsSeeded; object.circle = record.circleID.flatMap { circles[$0] }
-                importSessions[record.id] = object
-            }
-            for record in archive.externalImportLinks ?? [] {
-                let object = ExternalImportLinkEntity(context: context); context.assign(object, to: destinationStore)
-                object.id = record.id; object.provider = record.provider; object.recordType = record.recordType
-                object.externalKey = record.externalKey; object.contentHash = record.contentHash; object.targetID = record.targetID
-                object.createdByImport = record.createdByImport ?? false
-                object.createdAt = record.createdAt; object.updatedAt = record.updatedAt
-                object.circle = record.circleID.flatMap { circles[$0] }
-                object.session = record.sessionID.flatMap { importSessions[$0] }
-            }
-
+                for entity in ManagedObjectModel.make().entities.compactMap(\.name) {
+                    let request = NSFetchRequest<NSManagedObject>(entityName: entity)
+                    for object in try context.fetch(request) { context.delete(object) }
+                }
+                try insert(archive, into: context, destinationStore: destinationStore)
                 try context.save()
             } catch {
                 context.rollback()
@@ -724,6 +803,161 @@ enum AppBackupService {
             selections: Dictionary(uniqueKeysWithValues: archive.deviceSelections.map { ($0.circleID, $0.personID) })
         )
         return archive.summary
+    }
+
+    /// Adds a newly-identified recovery graph beside the original circle.
+    /// The source objects are never deleted or reassigned to another CloudKit zone.
+    @discardableResult
+    @MainActor
+    static func appendRecoveryCopy(
+        _ archive: AppBackupArchive,
+        into store: AppStore
+    ) async throws -> AppBackupSummary {
+        try await Task.detached(priority: .userInitiated) {
+            try AppBackupCodec.validate(archive)
+        }.value
+        let context = store.persistence.container.newBackgroundContext()
+        context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+
+        try await context.perform {
+            guard let destinationStore = context.persistentStoreCoordinator?.persistentStores.first(where: {
+                $0.url?.lastPathComponent.contains("-shared") != true
+            }) else { throw AppBackupError.noDestinationStore }
+            do {
+                try insert(archive, into: context, destinationStore: destinationStore)
+                try context.save()
+            } catch {
+                context.rollback()
+                throw error
+            }
+        }
+
+        let selections = Dictionary(
+            uniqueKeysWithValues: archive.deviceSelections.map { ($0.circleID, $0.personID) }
+        )
+        store.completeRecoveryCopy(
+            activeCircleID: archive.activeCircleID,
+            selections: selections
+        )
+        return archive.summary
+    }
+
+    private static func insert(
+        _ archive: AppBackupArchive,
+        into context: NSManagedObjectContext,
+        destinationStore: NSPersistentStore
+    ) throws {
+        var circles: [UUID: CircleEntity] = [:]
+        for record in archive.circles {
+            let object = CircleEntity(context: context); context.assign(object, to: destinationStore)
+            object.id = record.id; object.name = record.name; object.createdAt = record.createdAt
+            circles[record.id] = object
+        }
+        var brands: [UUID: BrandEntity] = [:]
+        for record in archive.brands {
+            let object = BrandEntity(context: context); context.assign(object, to: destinationStore)
+            object.id = record.id; object.name = record.name; object.createdAt = record.createdAt
+            brands[record.id] = object
+        }
+        for record in archive.people {
+            let object = PersonEntity(context: context); context.assign(object, to: destinationStore)
+            object.id = record.id; object.name = record.name; object.isMe = record.isMe
+            object.isCircleMember = record.isCircleMember; object.colorHex = record.colorHex
+            object.createdAt = record.createdAt; object.circle = record.circleID.flatMap { circles[$0] }
+        }
+        var locations: [UUID: RestaurantLocation] = [:]
+        for record in archive.locations {
+            let object = RestaurantLocation(context: context); context.assign(object, to: destinationStore)
+            object.id = record.id; object.name = record.name; object.category = record.category
+            object.address = record.address; object.city = record.city; object.phone = record.phone
+            object.urlString = record.urlString; object.hoursText = record.hoursText
+            object.latitude = record.latitude; object.longitude = record.longitude
+            object.hasCoordinates = record.hasCoordinates; object.isClosed = record.isClosed
+            object.sourceIdentifier = record.sourceIdentifier; object.cuisines = record.cuisines; object.tags = record.tags
+            object.createdAt = record.createdAt; object.updatedAt = record.updatedAt
+            object.circle = record.circleID.flatMap { circles[$0] }; object.brand = record.brandID.flatMap { brands[$0] }
+            locations[record.id] = object
+        }
+        var dishes: [UUID: DishEntity] = [:]
+        for record in archive.dishes {
+            let object = DishEntity(context: context); context.assign(object, to: destinationStore)
+            object.id = record.id; object.name = record.name; object.role = record.role
+            object.createdAt = record.createdAt; object.isArchived = record.isArchived
+            object.location = record.locationID.flatMap { locations[$0] }
+            dishes[record.id] = object
+        }
+        var visits: [UUID: VisitEntity] = [:]
+        for record in archive.visits {
+            let object = VisitEntity(context: context); context.assign(object, to: destinationStore)
+            object.id = record.id; object.date = record.date; object.visitType = record.visitType
+            object.dateKnowledge = record.dateKnowledge ?? .known
+            object.priceBand = record.priceBand; object.occasion = record.occasion; object.memory = record.memory
+            object.latitude = record.latitude; object.longitude = record.longitude; object.hasCoordinates = record.hasCoordinates
+            object.createdAt = record.createdAt; object.isShared = record.isShared; object.createdByID = record.createdByID
+            object.companionIDs = record.companionIDs; object.circle = record.circleID.flatMap { circles[$0] }
+            object.location = record.locationID.flatMap { locations[$0] }
+            visits[record.id] = object
+        }
+        for record in archive.participants ?? [] {
+            let object = VisitParticipantEntity(context: context); context.assign(object, to: destinationStore)
+            object.id = record.id; object.personID = record.personID; object.status = record.status
+            object.memory = record.memory; object.createdAt = record.createdAt; object.updatedAt = record.updatedAt
+            object.visit = record.visitID.flatMap { visits[$0] }
+        }
+        for record in archive.ratings {
+            let object = RatingEntity(context: context); context.assign(object, to: destinationStore)
+            object.id = record.id; object.personID = record.personID; object.reaction = record.reaction
+            object.service = record.service; object.atmosphere = record.atmosphere; object.value = record.value
+            object.hazyMemory = record.hazyMemory; object.wouldOrderAgain = record.wouldOrderAgain
+            object.hasWouldOrderAgain = record.hasWouldOrderAgain; object.createdAt = record.createdAt
+            object.visit = record.visitID.flatMap { visits[$0] }
+        }
+        for record in archive.dishEntries {
+            let object = DishEntryEntity(context: context); context.assign(object, to: destinationStore)
+            object.id = record.id; object.personID = record.personID; object.reaction = record.reaction
+            object.wouldOrderAgain = record.wouldOrderAgain; object.createdAt = record.createdAt
+            object.dish = record.dishID.flatMap { dishes[$0] }; object.visit = record.visitID.flatMap { visits[$0] }
+        }
+        for record in archive.photos {
+            let object = PhotoEntity(context: context); context.assign(object, to: destinationStore)
+            object.id = record.id; object.personID = record.personID
+            object.thumbnailData = record.thumbnailData; object.fullData = record.fullData
+            object.createdAt = record.createdAt; object.captureDate = record.captureDate; object.caption = record.caption
+            object.visit = record.visitID.flatMap { visits[$0] }
+        }
+        for record in archive.comparisons {
+            let object = ComparisonEntity(context: context); context.assign(object, to: destinationStore)
+            object.id = record.id; object.personID = record.personID; object.locationAID = record.locationAID
+            object.locationBID = record.locationBID; object.outcome = record.outcome; object.date = record.date
+            object.isAnchor = record.isAnchor; object.anchorValue = record.anchorValue
+            object.locationAEvidenceFingerprint = record.locationAEvidenceFingerprint ?? ""
+            object.locationBEvidenceFingerprint = record.locationBEvidenceFingerprint ?? ""
+            object.circle = record.circleID.flatMap { circles[$0] }
+        }
+        for record in archive.wantEntries {
+            let object = WantEntryEntity(context: context); context.assign(object, to: destinationStore)
+            object.id = record.id; object.addedByID = record.addedByID; object.addedAt = record.addedAt
+            object.circle = record.circleID.flatMap { circles[$0] }; object.location = record.locationID.flatMap { locations[$0] }
+        }
+        var importSessions: [UUID: ExternalImportSessionEntity] = [:]
+        for record in archive.externalImportSessions ?? [] {
+            let object = ExternalImportSessionEntity(context: context); context.assign(object, to: destinationStore)
+            object.id = record.id; object.provider = record.provider; object.sourceNamespace = record.sourceNamespace
+            object.importedAt = record.importedAt; object.exportDate = record.exportDate
+            object.restaurantsCreated = record.restaurantsCreated; object.outingsCreated = record.outingsCreated
+            object.photosAdded = record.photosAdded; object.dishesAdded = record.dishesAdded
+            object.rankingsSeeded = record.rankingsSeeded; object.circle = record.circleID.flatMap { circles[$0] }
+            importSessions[record.id] = object
+        }
+        for record in archive.externalImportLinks ?? [] {
+            let object = ExternalImportLinkEntity(context: context); context.assign(object, to: destinationStore)
+            object.id = record.id; object.provider = record.provider; object.recordType = record.recordType
+            object.externalKey = record.externalKey; object.contentHash = record.contentHash; object.targetID = record.targetID
+            object.createdByImport = record.createdByImport ?? false
+            object.createdAt = record.createdAt; object.updatedAt = record.updatedAt
+            object.circle = record.circleID.flatMap { circles[$0] }
+            object.session = record.sessionID.flatMap { importSessions[$0] }
+        }
     }
 
     private static func fetch<T: NSManagedObject>(in context: NSManagedObjectContext) throws -> [T] {

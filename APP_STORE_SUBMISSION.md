@@ -5,7 +5,7 @@
 - Product: Big Beautiful Restaurant Log
 - Bundle identifier: `com.davis.bigbeautifulranking`
 - iCloud container: `iCloud.com.davis.bigbeautifulranking`
-- Version: 2.6 (build 9)
+- Version: 2.6 (build 10)
 - Devices: iPhone only
 - Minimum OS: iOS 17.0
 
@@ -37,10 +37,11 @@ The bundled `PrivacyInfo.xcprivacy` declares no collection or tracking and decla
 
 ## What’s New in Version 2.6
 
-- Fix a launch crash affecting TestFlight builds by correcting the production CloudKit configuration.
-- Show the app immediately while its private iCloud dining log finishes loading, eliminating the prolonged black screen on first launch.
-- Keep background iCloud retries non-blocking while preserving every change on the device.
-- Display the installed version and release date in Settings.
+- Fixed a launch crash and a repeated iCloud warning that could make the app unusable.
+- Restored previously accepted circles after a fresh installation instead of opening an empty log.
+- Added a safe sharing-recovery tool that keeps the original log while creating a fresh iCloud invitation.
+- Improved first-launch feedback while the app looks for an existing iCloud restaurant log.
+- Added the installed app version and release date to Settings.
 
 ## What’s New in Version 2.5
 

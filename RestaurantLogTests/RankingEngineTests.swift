@@ -1591,6 +1591,76 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertEqual(payload.share.recordID, existingShare.recordID)
     }
 
+    func testCloudSharingRecoveryCreatesFreshCompleteCircleAndKeepsSource() async throws {
+        let sourceCircle = try XCTUnwrap(store.activeCircle)
+        let sourceCircleID = sourceCircle.id
+        let location = store.createLocation(name: "Still Here", category: .fullService)
+        _ = store.logVisit(at: location, reaction: .loved)
+
+        let oldZoneID = CKRecordZone.ID(zoneName: "BrokenShare", ownerName: CKCurrentUserDefaultName)
+        let oldPayload = SharePayload(
+            share: CKShare(recordZoneID: oldZoneID),
+            container: CKContainer.default()
+        )
+        let newZoneID = CKRecordZone.ID(zoneName: "HealthyShare", ownerName: CKCurrentUserDefaultName)
+        let newPayload = SharePayload(
+            share: CKShare(recordZoneID: newZoneID),
+            container: CKContainer.default()
+        )
+        var createdCircleID: UUID?
+        let service = CloudSharingService(
+            existingPayload: { circle, _ in
+                circle.id == sourceCircleID ? oldPayload : nil
+            },
+            newPayload: { circle, _ in
+                createdCircleID = circle.id
+                return newPayload
+            }
+        )
+
+        let result = try await service.recoveryPayload(for: sourceCircle, store: store)
+
+        XCTAssertEqual(result.share.recordID, newPayload.share.recordID)
+        XCTAssertEqual(store.circles.count, 2)
+        XCTAssertNotEqual(createdCircleID, sourceCircleID)
+        XCTAssertEqual(store.activeCircleID, createdCircleID)
+        XCTAssertEqual(store.locations.map(\.name), ["Still Here"])
+        XCTAssertEqual(store.visits.count, 1)
+        store.activateCircle(sourceCircleID)
+        XCTAssertEqual(store.locations.map(\.name), ["Still Here"])
+        XCTAssertEqual(store.visits.count, 1)
+    }
+
+    func testCloudSharingRecoveryKeepsTheCopyWhenInvitationCreationFails() async throws {
+        struct InvitationFailure: LocalizedError {
+            var errorDescription: String? { "Test invitation failure." }
+        }
+
+        let sourceCircle = try XCTUnwrap(store.activeCircle)
+        let sourceCircleID = sourceCircle.id
+        let location = store.createLocation(name: "Preserved Place", category: .counterService)
+        _ = store.logVisit(at: location, reaction: .liked)
+        let service = CloudSharingService(
+            existingPayload: { _, _ in nil },
+            newPayload: { _, _ in throw InvitationFailure() }
+        )
+
+        do {
+            _ = try await service.recoveryPayload(for: sourceCircle, store: store)
+            XCTFail("Invitation creation should fail in this test")
+        } catch let error as CloudSharingError {
+            XCTAssertTrue(error.localizedDescription.contains("saved and active"))
+        }
+
+        XCTAssertEqual(store.circles.count, 2)
+        XCTAssertNotEqual(store.activeCircleID, sourceCircleID)
+        XCTAssertEqual(store.locations.map(\.name), ["Preserved Place"])
+        XCTAssertEqual(store.visits.count, 1)
+        store.activateCircle(sourceCircleID)
+        XCTAssertEqual(store.locations.map(\.name), ["Preserved Place"])
+        XCTAssertEqual(store.visits.count, 1)
+    }
+
     func testPersistenceFailuresBecomeUserVisible() async {
         NotificationCenter.default.post(
             name: .persistenceDidFail,
@@ -1674,6 +1744,51 @@ final class RankingEngineTests: XCTestCase {
         try await Task.sleep(nanoseconds: 500_000_000)
 
         XCTAssertEqual(store.diagnosticReloadCount - reloadsBefore, 1)
+    }
+
+    func testRemoteCircleArrivalAnnouncesThatAnExistingLogWasRestored() async throws {
+        let emptyPersistence = PersistenceController(inMemory: true, cloudEnabled: false)
+        let emptyStore = AppStore(persistence: emptyPersistence)
+        XCTAssertTrue(emptyStore.circles.isEmpty)
+        let restored = expectation(
+            forNotification: .cloudCircleWasRestored,
+            object: emptyStore
+        )
+
+        let circle = CircleEntity(context: emptyStore.context)
+        circle.id = UUID()
+        circle.name = "Restored Circle"
+        circle.createdAt = .now
+        try emptyPersistence.save()
+        NotificationCenter.default.post(
+            name: .NSPersistentStoreRemoteChange,
+            object: emptyPersistence.container.persistentStoreCoordinator
+        )
+
+        await fulfillment(of: [restored], timeout: 1)
+        XCTAssertEqual(emptyStore.activeCircle?.name, "Restored Circle")
+    }
+
+    func testRemoteCircleArrivalBecomesActiveEvenAfterABlankLocalCircleExists() async throws {
+        let localCircleID = try XCTUnwrap(store.activeCircleID)
+        let restored = expectation(
+            forNotification: .cloudCircleWasRestored,
+            object: store
+        )
+
+        let circle = CircleEntity(context: store.context)
+        circle.id = UUID()
+        circle.name = "Imported Shared Circle"
+        circle.createdAt = .now
+        try persistence.save()
+        NotificationCenter.default.post(
+            name: .NSPersistentStoreRemoteChange,
+            object: persistence.container.persistentStoreCoordinator
+        )
+
+        await fulfillment(of: [restored], timeout: 1)
+        XCTAssertNotEqual(store.activeCircleID, localCircleID)
+        XCTAssertEqual(store.activeCircle?.name, "Imported Shared Circle")
     }
 
     func testEraseAllDataRemovesEveryEntityAndDeviceIdentity() throws {

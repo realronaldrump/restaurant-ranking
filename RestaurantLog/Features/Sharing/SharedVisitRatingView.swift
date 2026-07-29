@@ -156,6 +156,8 @@ struct CircleSharingView: View {
     @Environment(AppStore.self) private var store
     @State private var payload: SharePayload?
     @State private var isPreparing = false
+    @State private var isRebuildingShare = false
+    @State private var confirmsShareRebuild = false
     @State private var error: String?
     @State private var newPerson = ""
 
@@ -170,12 +172,72 @@ struct CircleSharingView: View {
                         Button { prepare() } label: { if isPreparing { ProgressView().frame(maxWidth: .infinity) } else { Label("Create or Manage iCloud Invitation", systemImage: "person.badge.plus").frame(maxWidth: .infinity) } }.buttonStyle(PrimaryButtonStyle()).disabled(isPreparing || store.activeCircle == nil)
                         if let error { Text(error).font(.caption).foregroundStyle(BBTheme.oxblood) }
                         Text("Apple iCloud handles invitations and shared records. The developer does not receive them.").font(.footnote).foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 10) {
+                            Eyebrow("Sharing recovery")
+                            Text("Missing on another phone?").font(.headline)
+                            Text("Create a complete copy in a fresh iCloud share, then send a new invitation. The current circle stays untouched as a safety copy.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                            Text("Use this only on the device where the complete history is visible. This circle currently has \(store.locations.count) places and \(store.visits.count) visits.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Button {
+                                confirmsShareRebuild = true
+                            } label: {
+                                if isRebuildingShare {
+                                    ProgressView().frame(maxWidth: .infinity)
+                                } else {
+                                    Label("Rebuild iCloud Share", systemImage: "arrow.triangle.2.circlepath.icloud")
+                                        .frame(maxWidth: .infinity)
+                                }
+                            }
+                            .buttonStyle(SecondaryButtonStyle())
+                            .disabled(isPreparing || store.activeCircle == nil)
+                        }
+                        .editorialCard()
                     }.padding(20).readablePageWidth() }.editorialPage()
                 }
-            }.navigationTitle("Your Circle").navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
+            }
+            .navigationTitle("Your Circle")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
+            .alert("Rebuild iCloud sharing?", isPresented: $confirmsShareRebuild) {
+                Button("Cancel", role: .cancel) {}
+                Button("Create New Share") { rebuildShare() }
+            } message: {
+                Text("Continue only if this device shows the complete history. A full recovery copy will become the active circle and use a brand-new iCloud share. The original circle and all of its data will remain on this device. Everyone else must accept the new invitation.")
+            }
         }
     }
-    private func prepare() { guard let circle = store.activeCircle else { return }; isPreparing = true; Task { do { payload = try await CloudSharingService.shared.payload(for: circle, persistence: store.persistence) } catch { self.error = error.localizedDescription }; isPreparing = false } }
+    private func prepare() {
+        guard let circle = store.activeCircle else { return }
+        error = nil
+        isPreparing = true
+        Task {
+            do {
+                payload = try await CloudSharingService.shared.payload(for: circle, persistence: store.persistence)
+            } catch {
+                self.error = error.localizedDescription
+            }
+            isPreparing = false
+        }
+    }
+
+    private func rebuildShare() {
+        guard let circle = store.activeCircle else { return }
+        error = nil
+        isPreparing = true
+        isRebuildingShare = true
+        Task {
+            do {
+                payload = try await CloudSharingService.shared.recoveryPayload(for: circle, store: store)
+            } catch {
+                self.error = error.localizedDescription
+            }
+            isRebuildingShare = false
+            isPreparing = false
+        }
+    }
 }
 
 @MainActor

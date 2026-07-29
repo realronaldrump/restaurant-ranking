@@ -4,6 +4,7 @@ import UIKit
 
 extension Notification.Name {
     static let cloudShareWasAccepted = Notification.Name("RestaurantLog.cloudShareWasAccepted")
+    static let cloudCircleWasRestored = Notification.Name("RestaurantLog.cloudCircleWasRestored")
     static let persistenceDidFail = Notification.Name("RestaurantLog.persistenceDidFail")
 }
 

@@ -304,6 +304,134 @@ final class AppBackupTests: XCTestCase {
         XCTAssertEqual(reloaded.activeCircleID, expectedCircleID)
     }
 
+    func testRecoveryCopyPreservesTheCircleWithFreshIdentifiersAndLeavesTheOriginalUntouched() async throws {
+        let store = makeStore()
+        store.bootstrap(myName: "Owner", circleName: "Our Table")
+        let owner = try XCTUnwrap(store.currentPerson)
+        let partner = try XCTUnwrap(store.addCircleMember(name: "Partner"))
+        let first = store.createLocation(name: "First Place", category: .fullService)
+        let second = store.createLocation(name: "Second Place", category: .counterService)
+        let visit = store.logVisit(
+            at: first,
+            reaction: .loved,
+            personID: owner.id,
+            companionIDs: [partner.id]
+        )
+        _ = store.addRating(to: visit, personID: partner.id, reaction: .liked)
+        _ = store.addDish(
+            name: "Recovery Dish",
+            role: .entree,
+            reaction: .loved,
+            wouldOrderAgain: true,
+            to: visit,
+            personID: partner.id
+        )
+        store.addPhoto(fullData: Data([1, 2, 3]), thumbnailData: Data([4]), to: visit)
+        store.recordComparison(a: first, b: second, outcome: .a, personID: partner.id)
+        store.toggleWant(second, by: partner.id)
+        let brand = BrandEntity(context: store.context)
+        brand.id = UUID()
+        brand.name = "Recovery Group"
+        brand.createdAt = .now
+        first.brand = brand
+        let session = ExternalImportSessionEntity(context: store.context)
+        session.id = UUID()
+        session.provider = "beli"
+        session.sourceNamespace = "recovery-test"
+        session.importedAt = .now
+        session.restaurantsCreated = 1
+        session.circle = try XCTUnwrap(store.activeCircle)
+        let link = ExternalImportLinkEntity(context: store.context)
+        link.id = UUID()
+        link.provider = "beli"
+        link.recordType = "restaurant"
+        link.externalKey = "recovery-test:first"
+        link.targetID = first.id
+        link.createdAt = .now
+        link.updatedAt = .now
+        link.circle = try XCTUnwrap(store.activeCircle)
+        link.session = session
+        try store.persistence.save()
+
+        let originalCircleID = try XCTUnwrap(store.activeCircleID)
+        let originalArchive = try await AppBackupService.makeArchive(from: store)
+        let recoveryArchive = try AppBackupCodec.makeRecoveryCopy(
+            of: originalCircleID,
+            from: originalArchive
+        )
+
+        XCTAssertEqual(recoveryArchive.circles.count, 1)
+        XCTAssertEqual(recoveryArchive.circles.first?.name, "Our Table")
+        XCTAssertNotEqual(recoveryArchive.activeCircleID, originalCircleID)
+        XCTAssertEqual(recoveryArchive.people.count, originalArchive.people.count)
+        XCTAssertEqual(recoveryArchive.brands.count, originalArchive.brands.count)
+        XCTAssertEqual(recoveryArchive.locations.count, originalArchive.locations.count)
+        XCTAssertEqual(recoveryArchive.visits.count, originalArchive.visits.count)
+        XCTAssertEqual(recoveryArchive.participants?.count, originalArchive.participants?.count)
+        XCTAssertEqual(recoveryArchive.ratings.count, originalArchive.ratings.count)
+        XCTAssertEqual(recoveryArchive.dishes.count, originalArchive.dishes.count)
+        XCTAssertEqual(recoveryArchive.dishEntries.count, originalArchive.dishEntries.count)
+        XCTAssertEqual(recoveryArchive.photos.count, originalArchive.photos.count)
+        XCTAssertEqual(recoveryArchive.comparisons.count, originalArchive.comparisons.count)
+        XCTAssertEqual(recoveryArchive.wantEntries.count, originalArchive.wantEntries.count)
+        XCTAssertEqual(recoveryArchive.externalImportSessions?.count, originalArchive.externalImportSessions?.count)
+        XCTAssertEqual(recoveryArchive.externalImportLinks?.count, originalArchive.externalImportLinks?.count)
+
+        let originalIDs = Set(
+            originalArchive.circles.map(\.id)
+            + originalArchive.people.map(\.id)
+            + originalArchive.brands.map(\.id)
+            + originalArchive.locations.map(\.id)
+            + originalArchive.visits.map(\.id)
+            + (originalArchive.participants ?? []).map(\.id)
+            + originalArchive.ratings.map(\.id)
+            + originalArchive.dishes.map(\.id)
+            + originalArchive.dishEntries.map(\.id)
+            + originalArchive.photos.map(\.id)
+            + originalArchive.comparisons.map(\.id)
+            + originalArchive.wantEntries.map(\.id)
+            + (originalArchive.externalImportSessions ?? []).map(\.id)
+            + (originalArchive.externalImportLinks ?? []).map(\.id)
+        )
+        let recoveryIDs = Set(
+            recoveryArchive.circles.map(\.id)
+            + recoveryArchive.people.map(\.id)
+            + recoveryArchive.brands.map(\.id)
+            + recoveryArchive.locations.map(\.id)
+            + recoveryArchive.visits.map(\.id)
+            + (recoveryArchive.participants ?? []).map(\.id)
+            + recoveryArchive.ratings.map(\.id)
+            + recoveryArchive.dishes.map(\.id)
+            + recoveryArchive.dishEntries.map(\.id)
+            + recoveryArchive.photos.map(\.id)
+            + recoveryArchive.comparisons.map(\.id)
+            + recoveryArchive.wantEntries.map(\.id)
+            + (recoveryArchive.externalImportSessions ?? []).map(\.id)
+            + (recoveryArchive.externalImportLinks ?? []).map(\.id)
+        )
+        XCTAssertTrue(originalIDs.isDisjoint(with: recoveryIDs))
+        XCTAssertTrue(recoveryArchive.comparisons.allSatisfy {
+            $0.locationAEvidenceFingerprint == nil && $0.locationBEvidenceFingerprint == nil
+        })
+
+        let summary = try await AppBackupService.appendRecoveryCopy(recoveryArchive, into: store)
+
+        XCTAssertEqual(summary.circles, 1)
+        XCTAssertEqual(store.circles.count, 2)
+        XCTAssertEqual(store.activeCircleID, recoveryArchive.activeCircleID)
+        XCTAssertEqual(store.locations.count, 2)
+        XCTAssertEqual(store.visits.count, 1)
+        XCTAssertEqual(store.currentPerson?.name, "Owner")
+        XCTAssertEqual(store.beliImportSessions.count, 1)
+        XCTAssertEqual(store.locations.first(where: { $0.name == "First Place" })?.brand?.name, "Recovery Group")
+        let copiedLinks = try XCTUnwrap(store.activeCircle?.externalImportLinks?.allObjects as? [ExternalImportLinkEntity])
+        XCTAssertEqual(copiedLinks.first?.targetID, store.locations.first(where: { $0.name == "First Place" })?.id)
+        store.activateCircle(originalCircleID)
+        XCTAssertEqual(store.locations.count, 2)
+        XCTAssertEqual(store.visits.count, 1)
+        XCTAssertEqual(store.currentPerson?.id, owner.id)
+    }
+
     private func makeStore() -> AppStore {
         AppStore(persistence: PersistenceController(inMemory: true, cloudEnabled: false))
     }

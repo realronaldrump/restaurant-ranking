@@ -9,6 +9,20 @@ struct SharePayload: Identifiable {
     let container: CKContainer
 }
 
+enum CloudSharingError: LocalizedError {
+    case recoveryCircleMissing
+    case recoveryInvitationFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .recoveryCircleMissing:
+            "The recovered circle was saved, but the app could not open it to create a new invitation."
+        case let .recoveryInvitationFailed(detail):
+            "The complete recovery copy is saved and active, but iCloud could not create its invitation. Tap Create or Manage iCloud Invitation to retry. \(detail)"
+        }
+    }
+}
+
 @MainActor
 final class CloudSharingService {
     static let shared = CloudSharingService()
@@ -46,6 +60,29 @@ final class CloudSharingService {
         payload.share[CKShare.SystemFieldKey.title] = "\(circle.name): Big Beautiful Restaurant Log" as CKRecordValue
         payload.share.publicPermission = .none
         return payload
+    }
+
+    /// Recreates a broken share without deleting or moving its source records.
+    ///
+    /// A complete copy receives fresh identifiers in the private store, then
+    /// NSPersistentCloudKitContainer places that copy in a newly-created share
+    /// zone. The original circle remains available as a local safety copy.
+    func recoveryPayload(for circle: CircleEntity, store: AppStore) async throws -> SharePayload {
+        let sourceArchive = try await AppBackupService.makeArchive(from: store)
+        let recoveryArchive = try AppBackupCodec.makeRecoveryCopy(of: circle.id, from: sourceArchive)
+        try await AppBackupService.appendRecoveryCopy(recoveryArchive, into: store)
+
+        guard
+            let recoveryCircleID = recoveryArchive.activeCircleID,
+            let recoveryCircle = store.circles.first(where: { $0.id == recoveryCircleID })
+        else {
+            throw CloudSharingError.recoveryCircleMissing
+        }
+        do {
+            return try await payload(for: recoveryCircle, persistence: store.persistence)
+        } catch {
+            throw CloudSharingError.recoveryInvitationFailed(error.localizedDescription)
+        }
     }
 }
 

@@ -238,15 +238,33 @@ final class AppStore {
             ($0.key.uuidString, $0.value.uuidString)
         })
         devicePersonID = restoredCircleID.flatMap { selections[$0] }
+        resetAfterExternalStoreWrite()
+        persistDeviceSelection()
+        reload()
+    }
+
+    /// Makes an appended recovery circle active while retaining both the original
+    /// circle and every existing per-circle device identity.
+    func completeRecoveryCopy(activeCircleID restoredCircleID: UUID?, selections: [UUID: UUID]) {
+        for (circleID, personID) in selections {
+            devicePersonIDsByCircle[circleID.uuidString] = personID.uuidString
+        }
+        activeCircleID = restoredCircleID
+        devicePersonID = restoredCircleID.flatMap { selections[$0] }
+        resetAfterExternalStoreWrite()
+        persistDeviceSelection()
+        reload()
+    }
+
+    private func resetAfterExternalStoreWrite() {
         isWaitingForAcceptedCircle = false
         remoteReloadTask?.cancel()
         remoteReloadTask = nil
         context.reset()
         scoreCache.removeAll()
         circleScoreCache.removeAll()
-        // The previous cache objects were deleted by the replacement save. Do
-        // not read required attributes from those invalidated instances while
-        // reload establishes the restored object graph.
+        // Do not read required attributes from invalidated cache objects while
+        // reload establishes the newly saved object graph.
         circles.removeAll()
         allPeople.removeAll()
         allLocations.removeAll()
@@ -260,8 +278,6 @@ final class AppStore {
         pendingSorts.removeAll()
         lastError = nil
         context.undoManager?.removeAllActions()
-        persistDeviceSelection()
-        reload()
     }
 
     /// Permanently removes every dining circle from every configured persistent store.
@@ -1440,7 +1456,18 @@ final class AppStore {
             do { try await Task.sleep(nanoseconds: 250_000_000) }
             catch { return }
             guard !Task.isCancelled else { return }
-            self?.reload()
+            guard let self else { return }
+            let previousCircleIDs = Set(circles.map(\.id))
+            reload()
+            let arrivedCircles = circles.filter { !previousCircleIDs.contains($0.id) }
+            let restoredCircle = arrivedCircles
+                .filter(isStoredInSharedDatabase)
+                .max(by: { $0.createdAt < $1.createdAt })
+                ?? arrivedCircles.max(by: { $0.createdAt < $1.createdAt })
+            if let restoredCircle {
+                activateCircle(restoredCircle.id)
+                NotificationCenter.default.post(name: .cloudCircleWasRestored, object: self)
+            }
         }
     }
 

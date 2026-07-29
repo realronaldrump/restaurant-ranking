@@ -7,6 +7,7 @@ struct RestaurantLogApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var store: AppStore?
     @State private var locationService = LocationService()
+    @State private var launchMessage = "Opening your restaurant log…"
     @AppStorage("didCompleteGrandOpening") private var didCompleteGrandOpening = false
     @AppStorage(AppearancePreference.storageKey) private var appearancePreference = AppearancePreference.system
 
@@ -28,7 +29,7 @@ struct RestaurantLogApp: App {
                 if let store {
                     loadedContent(store)
                 } else {
-                    AppLaunchView()
+                    AppLaunchView(message: launchMessage)
                         .task { await prepareApp() }
                 }
             }
@@ -68,6 +69,12 @@ struct RestaurantLogApp: App {
             // the identity gate will ask which circle member uses this device.
             didCompleteGrandOpening = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: .cloudCircleWasRestored)) { _ in
+            // A previously accepted share may import after the first local fetch.
+            // Treat its first circle as restored setup instead of leaving the
+            // device in empty-log onboarding.
+            didCompleteGrandOpening = true
+        }
         .onAppear {
             if ProcessInfo.processInfo.arguments.contains("-seedSampleData"), !Self.hasSeededSampleData {
                 Self.hasSeededSampleData = true
@@ -85,11 +92,28 @@ struct RestaurantLogApp: App {
         await Task.yield()
         let persistence = PersistenceController.shared
         await persistence.prepare()
-        store = AppStore(persistence: persistence)
+        let preparedStore = AppStore(persistence: persistence)
+
+        // CloudKit imports accepted shares asynchronously after the stores open.
+        // Give a fresh installation a short, visible restore window before empty
+        // onboarding. Later arrivals are still handled by cloudCircleWasRestored.
+        if preparedStore.circles.isEmpty, persistence.isCloudSyncActive {
+            launchMessage = "Looking for your iCloud restaurant log…"
+            for _ in 0..<10 where preparedStore.circles.isEmpty {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                preparedStore.reload()
+            }
+        }
+        if !preparedStore.circles.isEmpty {
+            didCompleteGrandOpening = true
+        }
+        store = preparedStore
     }
 }
 
 private struct AppLaunchView: View {
+    let message: String
+
     var body: some View {
         ZStack {
             PaperBackground()
@@ -105,7 +129,7 @@ private struct AppLaunchView: View {
                 VStack(spacing: 6) {
                     Text("Big Beautiful")
                         .font(BBTheme.display(30))
-                    Text("Opening your restaurant log…")
+                    Text(message)
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -114,7 +138,7 @@ private struct AppLaunchView: View {
             }
             .padding(28)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("Opening Big Beautiful Restaurant Log")
+            .accessibilityLabel(message)
             .accessibilityIdentifier("app-launch-progress")
         }
         .foregroundStyle(BBTheme.ink)

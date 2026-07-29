@@ -76,7 +76,7 @@ struct GrandOpeningView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The selected backup will replace every current dining log, including records already restored from iCloud. Export anything you may need before continuing.")
+            Text("The selected backup will replace every current dining log on this iPhone. Export anything you may need before continuing.")
         }
     }
 
@@ -127,12 +127,12 @@ struct GrandOpeningView: View {
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 18) {
                         principle("bolt.fill", "Fast logging", "Place and reaction")
-                        principle("lock.fill", "Private by default", "Stored in iCloud")
+                        principle("lock.fill", "Private by default", "Stored on this iPhone")
                         principle("list.number", "Personal rankings", "Built from your choices")
                     }
                     VStack(alignment: .leading, spacing: 12) {
                         principle("bolt.fill", "Fast logging", "Place and reaction")
-                        principle("lock.fill", "Private by default", "Stored in iCloud")
+                        principle("lock.fill", "Private by default", "Optional encrypted sync")
                         principle("list.number", "Personal rankings", "Built from your choices")
                     }
                 }
@@ -213,7 +213,7 @@ struct GrandOpeningView: View {
                 }
                 VStack(alignment: .leading, spacing: 10) {
                     Label("Files are processed on this device", systemImage: "lock.shield")
-                    Text("The selected file is left unchanged. Restored records return to your private iCloud database when sync is available. Sharing invitations can be recreated afterward.")
+                    Text("The selected file is left unchanged. Restored records stay on this iPhone and are published through encrypted circle syncing only for circles where syncing is enabled.")
                         .font(.callout).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

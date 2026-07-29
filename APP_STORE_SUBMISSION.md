@@ -5,7 +5,7 @@
 - Product: Big Beautiful Restaurant Log
 - Bundle identifier: `com.davis.bigbeautifulranking`
 - Sync service: Supabase project (host and anon key supplied through `Config/Supabase.local.xcconfig`)
-- Version: 2.6.1 (build 10)
+- Version: 3.0 (build 10)
 - Devices: iPhone only
 - Minimum OS: iOS 17.0
 
@@ -22,12 +22,20 @@ device with a key the service never receives. Apple's App Privacy questions are
 about what leaves the device and is linked to identity, not about whether it is
 readable, so the honest answers are:
 
+- **Contact Info → Name:** Collected, linked to identity, used for App
+  Functionality. Circle-member names are part of encrypted synced content.
+- **Contact Info → Email Address:** Collected, linked to identity, used for App
+  Functionality. Supabase Auth retains the address Apple provides, including a
+  private relay address when the person chooses Hide My Email.
 - **Identifiers → User ID:** Collected, linked to identity, used for App
   Functionality. Sign in with Apple establishes a user ID so the service can
   authorize which circle a device may reach.
-- **Contact Info → Email Address:** Collected, linked to identity, used for App
-  Functionality — whatever Apple returns for the account, including a private
-  relay address.
+- **Identifiers → Device ID:** Collected, linked to identity, used for App
+  Functionality. A random per-installation UUID labels writes for idempotent
+  delta sync; it is not an advertising identifier.
+- **Location → Precise Location:** Collected, linked to identity, used for App
+  Functionality. A meal or restaurant can include coordinates in its encrypted
+  synced record when the person grants foreground location access.
 - **User Content → Photos, Other User Content:** Collected, linked to identity,
   used for App Functionality. Declare this even though it is stored as
   ciphertext; it is uploaded and associated with an account.
@@ -36,10 +44,11 @@ readable, so the honest answers are:
 Nothing is used for advertising, marketing, or analytics, and none of it is
 shared with third parties beyond the hosting provider acting as a processor.
 
-Also confirm before upload:
+`PrivacyInfo.xcprivacy` declares Name, Email Address, Photos or Videos, Other
+User Content, User ID, Device ID, and Precise Location as linked to identity,
+used only for App Functionality, and not used for tracking.
 
-- `PrivacyInfo.xcprivacy` still matches these answers. It currently declares no
-  collection; it needs updating alongside this section.
+Also confirm before upload:
 - `ITSAppUsesNonExemptEncryption` is currently `false`. The app encrypts user
   content with AES-GCM through Apple's CryptoKit. Apps using only encryption
   provided by the operating system are generally exempt, which is why the value
@@ -53,7 +62,11 @@ Also confirm before upload:
 - Data brokers: No
 - Third-party SDKs: ZIPFoundation, used only to read user-selected Beli ZIP exports. It contains no advertising, analytics, tracking, accounts, or network service. The sync client is hand-written over `URLSession`; no networking or backend SDK is linked.
 
-The bundled `PrivacyInfo.xcprivacy` declares no collection or tracking and declares `CA92.1` for app-scoped `UserDefaults`, which stores only device-local circle identity, selected circle, onboarding completion, and haptic preference.
+The bundled privacy manifest declares no tracking and declares `CA92.1` for
+app-scoped `UserDefaults`, which stores only device-local circle identity,
+selected circle, onboarding completion, haptic preference, appearance, and the
+sync watermark/baseline. It also declares `DDA9.1` for file timestamps used when
+reading user-selected imports and backups.
 
 ## Required App Store Connect fields
 
@@ -68,37 +81,30 @@ The bundled `PrivacyInfo.xcprivacy` declares no collection or tracking and decla
 - Availability: keep iPad unsupported and disable “Make this app available on Apple silicon Mac” so the iPhone app is not distributed for Mac.
 - License agreement: use Apple’s Standard Licensed Application End User License Agreement; do not enter a custom EULA.
 
-## What’s New in Version 2.6.1
+## What’s New in Version 3.0
 
-- Fixed a launch crash and a repeated iCloud warning that could make the app unusable.
-- Restored previously accepted circles after a fresh installation instead of opening an empty log.
-- Added a safe sharing-recovery tool that keeps the original log while creating a fresh iCloud invitation.
-- Improved first-launch feedback while the app looks for an existing iCloud restaurant log.
-- Added the installed app version and release date to Settings.
-
-## What’s New in Version 2.5
-
-- Import your complete Beli data-export ZIP with guided Apple Maps matching, original visit dates, ranking order, favorite dishes, captions, and photos.
-- Review ambiguous restaurant matches before importing, safely retry an import without creating duplicates, and delete an import later from Settings while preserving pre-existing dining records.
-- Keep restaurants with missing Beli visit dates in a dedicated “Date unknown” history section, and mark dates as unknown when logging or editing future outings.
-- Combine duplicate shared logs into one outing while preserving every diner’s independent reaction, dishes, memory, and photos.
-- Add your own entry to a shared outing, copy only dishes you actually tried, or say that you were not there or do not want to add an entry.
-- See who contributed each photo and memory, and keep editing permissions safely scoped to the appropriate diner or outing creator.
-- Choose System, Light, or Dark appearance from Settings.
-- Preserve shared-outing participation, Beli import history, unknown dates, photo captions, and import undo information in full backups.
-- Enjoy clearer outing language, improved history filters, safer duplicate reconciliation, and expanded reliability coverage throughout the app.
+- Added optional end-to-end encrypted circle syncing so shared dining logs stay current across devices.
+- Added Sign in with Apple and single-use invitations for securely joining a dining circle.
+- Improved reliability when edits arrive during a sync and when shared records need to be reconciled.
+- Kept encrypted photos on a separate transfer path so everyday ratings and visit updates stay lightweight.
+- Preserved dining history from previously accepted iCloud circles when upgrading to the new sync system.
 
 ## Capabilities to configure in the Apple Developer portal
 
 1. Create or select App ID `com.davis.bigbeautifulranking`.
-2. Enable **Sign in with Apple**. iCloud, CloudKit, and Push Notifications are no
-   longer used and can be removed from the App ID.
-3. Create a Sign in with Apple key (`.p8`) and note the Key ID and Team ID for
-   the sync service's Apple auth provider.
-4. Set the Xcode project's Development Team.
-5. Apply both files in `supabase/migrations/` to the project, following
+2. Enable **Sign in with Apple** and **Associated Domains**. The associated
+   domain is `applinks:realronaldrump.github.io`.
+3. Confirm iCloud, CloudKit, and Push Notifications are absent from the App ID
+   and the generated provisioning profile.
+4. In Supabase's Apple provider, add `com.davis.bigbeautifulranking` as a client
+   ID. This native-only flow does not require a Services ID, OAuth secret, Key
+   ID, or `.p8` key.
+5. Confirm the Xcode project's Development Team is `CZ3N26YJ75`.
+6. Apply every file in `supabase/migrations/` in numerical order, following
    `supabase/README.md`.
-6. Test an invitation between two physical devices signed into different Apple
+7. Verify `https://realronaldrump.github.io/.well-known/apple-app-site-association`
+   serves JSON without a redirect and contains the production Team ID and bundle ID.
+8. Test an invitation between two physical devices signed into different Apple
    Accounts: create, send, join, edit on both, delete on one, and confirm photos
    arrive on the second device.
 
@@ -106,16 +112,9 @@ There is no longer a schema to promote between environments. Adding an entity
 means adding a `SyncKind` case; the `records` table is unchanged, so no
 migration accompanies it.
 
-### Retired: CloudKit production schema record
-
-Version 2.6 and earlier mirrored Core Data into CloudKit and required schema
-promotion in CloudKit Console before every release that changed
-`ManagedObjectModel`. That step no longer exists. The historical deployment
-record is in this file's git history.
-
 ## Permission behavior
 
-- Location: When In Use only. There is no Always authorization or background visit detection in 1.0.
+- Location: When In Use only. There is no Always authorization or background visit detection in 3.0.
 - Photos: the primary Backfill path uses PhotosPicker without library permission. The optional date-range scan requests read access.
 - Notifications: no user-visible notifications are requested.
 

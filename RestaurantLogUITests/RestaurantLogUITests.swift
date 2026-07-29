@@ -1,9 +1,11 @@
 import XCTest
 
+@MainActor
 final class RestaurantLogUITests: XCTestCase {
     private var app: XCUIApplication!
 
-    override func setUpWithError() throws {
+    override func setUp() async throws {
+        try await super.setUp()
         continueAfterFailure = false
         app = XCUIApplication()
         app.launchArguments = ["-resetForUITests", "-seedSampleData"]
@@ -62,7 +64,7 @@ final class RestaurantLogUITests: XCTestCase {
         for _ in 0..<10 where !footer.exists { app.swipeUp() }
 
         XCTAssertTrue(footer.waitForExistence(timeout: 3))
-        XCTAssertEqual(footer.label, "Big Beautiful Restaurant Log 2.6 • Released July 28, 2026")
+        XCTAssertEqual(footer.label, "Big Beautiful Restaurant Log 3.0 • Released July 28, 2026")
     }
 
     func testDiningAtlasShowsTheFirstVisitTrail() {
@@ -118,7 +120,7 @@ final class RestaurantLogUITests: XCTestCase {
     }
 
     func testVisibleHomeButtonsMeetMinimumHitTarget() {
-        let buttons = app.buttons.allElementsBoundByIndex.filter(\.isHittable)
+        let buttons = app.buttons.allElementsBoundByIndex.filter { $0.isHittable }
         XCTAssertFalse(buttons.isEmpty)
         let undersized = buttons.compactMap { button -> String? in
             guard button.frame.width < 44 || button.frame.height < 44 else { return nil }

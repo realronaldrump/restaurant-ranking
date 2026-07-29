@@ -26,6 +26,8 @@ struct SettingsView: View {
     @State private var importToDelete: ExternalImportSessionEntity?
     @State private var backupDocument: AppBackupDocument?
     @State private var backupMessage: String?
+    @State private var isConfirmingSyncAccountDeletion = false
+    @State private var isDeletingSyncAccount = false
 
     var body: some View {
         Form {
@@ -107,6 +109,22 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(BBTheme.oxblood)
                 }
+                if sync.isConfigured {
+                    if sync.isSignedIn {
+                        if let circleID = store.activeCircleID, sync.isSyncing(circleID: circleID) {
+                            Button("Turn Off Syncing for This Circle") {
+                                sync.disableSync(circleID: circleID)
+                            }
+                        }
+                        Button("Sign Out") { Task { await sync.signOut() } }
+                        Button("Delete Sync Account and Service Data", role: .destructive) {
+                            isConfirmingSyncAccountDeletion = true
+                        }
+                        .disabled(isDeletingSyncAccount)
+                    } else {
+                        Button("Sign in with Apple") { Task { await sync.signInWithApple() } }
+                    }
+                }
                 LabeledContent("Foreground location", value: locationDescription)
                 LabeledContent("Photo Library", value: photoDescription)
                 Button("Open iOS Settings") {
@@ -182,7 +200,7 @@ struct SettingsView: View {
                 }
             }
             Section("Privacy") {
-                Text("Records stay on this iPhone. With circle syncing on, they are encrypted here before upload and the service cannot read them. Map search uses Apple Maps, and photos are processed on device. The app has no ads or analytics.")
+                Text("The app works locally without an account. With circle syncing on, Sign in with Apple identifiers and encrypted content are stored by the sync service; the circle key never leaves member devices, so the service cannot read dining records or photos. Map search uses Apple Maps. There are no ads, analytics, or tracking.")
                 NavigationLink("Read the full privacy policy") { PrivacyPolicyView() }
                 if let privacyURL = URL(string: "https://realronaldrump.github.io/restaurant-ranking/privacy.html") {
                     Link("Privacy policy on the web", destination: privacyURL)
@@ -278,6 +296,25 @@ struct SettingsView: View {
             }
         } message: {
             Text("This permanently deletes all circles, restaurants, visits, photos, rankings, and app setup from this iPhone. If the circle is synced, the deletions are published to the other members as well. iOS permissions will not change. This cannot be undone.")
+        }
+        .confirmationDialog(
+            "Delete your sync account and service data?",
+            isPresented: $isConfirmingSyncAccountDeletion,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Sync Account", role: .destructive) {
+                isDeletingSyncAccount = true
+                Task {
+                    let deleted = await sync.deleteSyncAccount()
+                    backupMessage = deleted
+                        ? "Your sync account and its service data were deleted. Your on-device dining logs were preserved."
+                        : sync.lastError
+                    isDeletingSyncAccount = false
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Owned circles, encrypted records, stored photo objects, invitations, memberships, and the service account are permanently deleted. Circles owned by someone else are left for their remaining members. Dining logs already on this iPhone stay here with syncing off.")
         }
     }
 
@@ -481,12 +518,14 @@ struct PrivacyPolicyView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Eyebrow("Effective July 27, 2026")
+                Eyebrow("Effective July 29, 2026")
                 Text("Private by design.").font(BBTheme.display(37))
-                Text("Big Beautiful Restaurant Log does not collect, sell, or transmit personal data to the developer. There are no developer-operated servers, advertising SDKs, analytics SDKs, or third-party tracking systems.")
-                Text("Dining records are stored on this iPhone. When circle syncing is on, they are encrypted on device and uploaded to the sync service, which holds them in a form it cannot read. Map coordinates are sent to Apple only for ordinary MapKit searches. Photos are processed on-device; app-stored copies have embedded location metadata removed.")
+                Text("Big Beautiful Restaurant Log has no advertising, analytics, data broker, or tracking SDK. The app works locally without an account. Optional circle syncing uses a developer-operated Supabase service and Sign in with Apple.")
+                Text("When syncing is on, member names, dining records, notes, and photos are encrypted on this iPhone before upload. The service stores ciphertext linked to a Sign in with Apple account and an app-generated device identifier, but never receives the circle key and cannot read the dining content. The service retains the account email Apple provides for authentication.")
+                Text("Map searches are sent to Apple through MapKit. Coordinates saved in the dining log may be included in encrypted sync records; the sync service cannot read them. Photos are processed on-device, and app-stored copies have embedded location metadata removed before encrypted upload.")
                 Text("If you import a Beli export, the ZIP is read on-device. The app contacts Apple Maps to help match restaurants and downloads only the Beli photo links included in that export when you explicitly start the import. Beli profile, social, device, follow, and comment data is not retained.")
                 Text("Location is foreground-only and optional. Photo Library access is optional; the standard picker works without full-library permission. Permissions can be revoked at any time in iOS Settings.")
+                Text("Settings lets you turn syncing off, sign out, remove a member, delete an owned circle’s encrypted service copy and photos, or delete the sync account and all service data it owns. These actions do not silently delete the on-device dining log.")
                 if let privacyURL = URL(string: "https://realronaldrump.github.io/restaurant-ranking/privacy.html") {
                     Link("Read the complete policy and privacy choices", destination: privacyURL)
                         .font(.headline)

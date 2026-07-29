@@ -21,9 +21,9 @@
 
   <main id="content" class="legal-page">
     <article class="legal-copy">
-      <p class="eyebrow">Effective July 16, 2026</p>
+      <p class="eyebrow">Effective July 29, 2026</p>
       <h1>Privacy Policy</h1>
-      <p class="lede">Big Beautiful Restaurant Log (“the app,” “we,” or “us”) is designed to keep your dining history private. The developer does not collect personal data from the app.</p>
+      <p class="lede">Big Beautiful Restaurant Log (“the app,” “we,” or “us”) is designed to keep dining history private. The app works locally without an account; optional circle syncing uses a developer-operated service described below.</p>
 
       <div class="callout"><strong>In plain language:</strong> there is no advertising, analytics, data broker, or tracking SDK. Your Big Beautiful Log lives on your iPhone. If you choose to share it with a circle, it is encrypted on your device before it is uploaded, and the sync service cannot read it.</div>
 
@@ -35,17 +35,18 @@
       <p>Your dining log is stored locally using Apple’s Core Data framework. Small preferences such as onboarding completion, haptic settings, and the selected circle are stored in app-scoped system preferences.</p>
       <h3>On the sync service</h3>
       <p>Circle syncing is optional and off until you turn it on. When it is on, every record and every photo is encrypted on your iPhone using AES-GCM before it is uploaded to the sync service, which is hosted on Supabase. The encryption key is created on your device, kept in the iOS Keychain, and reaches other members only inside an invitation you send them directly. It is never transmitted to or stored by the service, so the developer cannot read restaurant names, dates, ratings, dishes, notes, companions, photos, or the name of your circle.</p>
-      <p>The service does see the structure around that content: how many records a circle holds and of which kinds, when they changed, which device wrote them, the size of each photo, and which accounts belong to which circle. Access to a circle&rsquo;s rows is restricted by database row-level security to the accounts that belong to it. Signing in uses Sign in with Apple and stores nothing beyond the session token.</p>
+      <p>The service does see the structure around that content: how many records a circle holds and of which kinds, when they changed, an app-generated device identifier, the size of each photo, and which accounts belong to which circle. Access to a circle&rsquo;s rows is restricted by database row-level security to its members.</p>
+      <p>Circle syncing uses Sign in with Apple. Supabase Auth stores the Apple-derived account identifier and the email address Apple provides (which may be a private relay address) so it can authenticate the account. The refresh token is stored in the iOS Keychain. Supabase may process ordinary network metadata, such as IP address and user agent, to operate and secure the service. We do not use this information for advertising, profiling, or analytics.</p>
 
       <h2>Location</h2>
-      <p>With your permission, the app uses approximate or precise foreground location to suggest nearby restaurants while you log a meal. The app does not request “Always” location access and does not track location in the background. Search terms and map coordinates may be sent to Apple through MapKit to return place results.</p>
+      <p>With your permission, the app uses approximate or precise foreground location to suggest nearby restaurants while you log a meal. The app does not request “Always” location access and does not track location in the background. Search terms and map coordinates may be sent to Apple through MapKit to return place results. Coordinates saved with a restaurant or meal may also be included in encrypted sync records when circle syncing is on; the sync service cannot decrypt them.</p>
 
       <h2>Photos</h2>
       <p>You may select meal photos using Apple’s system photo picker without granting the app access to your full photo library. An optional backfill scan can request read access to photos for a date range you choose. Photo analysis and grouping occur on-device. Copies stored by the app are re-encoded without embedded GPS or EXIF metadata; the original photos are not modified.</p>
       <p>If you import a Beli data-export ZIP, the archive is parsed on-device. Restaurant names and cities may be sent to Apple through MapKit so you can review location matches. Photo URLs in the export are requested directly from Beli’s photo hosting service and processed on-device. Account, email, phone, device, follower, and social-profile fields in the export are not retained by the app or sent to the developer.</p>
 
       <h2>Sharing</h2>
-      <p>Sharing is optional and initiated by you. An invited participant can see and edit records in the shared dining circle after opening your invitation. An invitation contains your circle&rsquo;s encryption key, so send it directly to the person you mean to invite and never post it publicly. Do not add information about another person unless you have permission to share it with the circle. You can turn syncing off on a device, or remove a member, at any time.</p>
+      <p>Sharing is optional and initiated by you. An invited participant can see and edit records in the shared dining circle after opening your invitation. An invitation contains your circle&rsquo;s encryption key after the <code>#</code> fragment of an HTTPS universal link; browsers do not send that fragment to this website. Send it directly to the intended person and never post it publicly. Do not add information about another person unless you have permission to share it with the circle. You can turn syncing off on a device, sign out, or remove a member at any time.</p>
 
       <h2>Analytics, advertising, and tracking</h2>
       <p>The app contains no advertising SDK, analytics SDK, third-party tracking SDK, or cross-app tracking. The developer does not sell, rent, or use your information for advertising or profiling.</p>
@@ -54,16 +55,18 @@
       <ul>
         <li>You can decline or revoke location and photo permissions in iOS Settings.</li>
         <li>You can delete individual visits from their visit-detail screens.</li>
-        <li>You can turn circle syncing off on a device, or remove a member from a circle, in the app.</li>
-        <li>You can export a full backup, or erase every record from the device and the sync service, in Settings.</li>
+        <li>You can turn circle syncing off on a device, sign out, or remove a member in the app.</li>
+        <li>An owner can permanently delete a circle&rsquo;s encrypted records, photos, invitations, and memberships from the service while preserving the local log.</li>
+        <li>You can delete your sync account and its owned service data in Settings. Memberships in circles owned by someone else are removed, while those circles remain for their other members.</li>
+        <li>You can export a full local backup or erase every on-device record in Settings.</li>
       </ul>
-      <p>Because the developer does not receive or control your dining records, we cannot retrieve, export, or delete them on your behalf. See the <a href="support.html#privacy-choices">privacy choices guide</a> for help.</p>
+      <p>The developer cannot decrypt, retrieve in readable form, or export synced dining content because the service never receives the circle key. The in-app controls can permanently delete the stored ciphertext and photo objects. See the <a href="support.html#privacy-choices">privacy choices guide</a> for help.</p>
 
       <h2>Data retention</h2>
-      <p>Your records remain until you delete them. Because the developer never holds your circle&rsquo;s encryption key, the developer cannot read, retrieve, or export your dining records, and can only delete the encrypted rows themselves.</p>
+      <p>Local records remain until you delete them or erase the app. Synced ciphertext and photos remain until the circle owner deletes the synced copy or deletes the owning sync account. Removing a member removes access but preserves the shared circle for its remaining members. Expired and redeemed invitation records are removed with their circle.</p>
 
       <h2>Children’s privacy</h2>
-      <p>Big Beautiful Restaurant Log is a general-audience dining utility and is not directed to children under 13. The developer does not knowingly collect personal information from children or anyone else through the app.</p>
+      <p>Big Beautiful Restaurant Log is a general-audience dining utility and is not directed to children under 13. We do not knowingly create sync accounts for children under 13.</p>
 
       <h2>Security</h2>
       <p>The app relies on iOS application isolation, Apple&rsquo;s Core Data and Keychain, AES-GCM encryption applied on your device, and database row-level security on the sync service. No system can guarantee absolute security, so protect your iPhone and Apple Account with a strong passcode and current security settings, and treat circle invitations as sensitive.</p>
@@ -77,7 +80,7 @@
 
     <aside class="meta-card" aria-label="Policy summary">
       <strong>Policy summary</strong>
-      <p>Applies to Big Beautiful Restaurant Log version 1.0 and later unless replaced by a newer policy.</p>
+      <p>Applies to Big Beautiful Restaurant Log version 3.0 and later unless replaced by a newer policy.</p>
       <a href="#choices">Privacy choices</a>
       <a href="support.html">Contact support</a>
       <a href="index.html">Product home</a>
@@ -85,7 +88,7 @@
   </main>
 
   <footer class="site-footer">
-    <p>© 2026 Davis. Last updated July 16, 2026.</p>
+    <p>© 2026 Davis. Last updated July 29, 2026.</p>
     <p><a href="index.html">Home</a> · <a href="support.html">Support</a></p>
   </footer>
 </body>

@@ -24,6 +24,21 @@ final class CircleCryptoTests: XCTestCase {
         }
     }
 
+    func testCiphertextIsBoundToItsRecordIdentity() throws {
+        let key = CircleCrypto.makeKey()
+        let payload = Data("private".utf8)
+        let firstIdentity = Data("circle|rating|first".utf8)
+        let secondIdentity = Data("circle|rating|second".utf8)
+
+        let sealed = try CircleCrypto.seal(payload, with: key, authenticating: firstIdentity)
+
+        XCTAssertEqual(
+            try CircleCrypto.open(sealed, with: key, authenticating: firstIdentity),
+            payload
+        )
+        XCTAssertThrowsError(try CircleCrypto.open(sealed, with: key, authenticating: secondIdentity))
+    }
+
     /// AES-GCM uses a fresh nonce per seal, which is why the sync plan compares
     /// plaintext fingerprints rather than ciphertext.
     func testSealingTheSameValueTwiceProducesDifferentCiphertext() throws {
@@ -55,18 +70,25 @@ final class CircleCryptoTests: XCTestCase {
     func testInvitationSurvivesAURLRoundTrip() throws {
         let invitation = CircleInvitation(
             circleID: UUID(),
+            personID: UUID(),
             circleName: "Our Table",
             code: CircleCrypto.makeInviteCode(),
             key: CircleCrypto.encode(CircleCrypto.makeKey())
         )
 
         let url = try XCTUnwrap(invitation.url)
+        XCTAssertEqual(url.scheme, "https")
+        XCTAssertEqual(url.host, "realronaldrump.github.io")
+        XCTAssertEqual(url.path, "/restaurant-ranking/join")
+        XCTAssertNil(URLComponents(url: url, resolvingAgainstBaseURL: false)?.query)
+        XCTAssertNotNil(url.fragment)
         XCTAssertEqual(CircleInvitation(url: url), invitation)
     }
 
     func testUnrelatedURLsAreNotTreatedAsInvitations() {
         XCTAssertNil(CircleInvitation(url: URL(string: "https://example.com/join?code=abc&key=def")!))
         XCTAssertNil(CircleInvitation(url: URL(string: "bigbeautifullog://join")!))
+        XCTAssertNil(CircleInvitation(url: URL(string: "https://realronaldrump.github.io/restaurant-ranking/join#not-an-invite")!))
     }
 }
 
@@ -244,12 +266,11 @@ final class SyncPlannerTests: XCTestCase {
         XCTAssertTrue(plan.tombstone.isEmpty)
     }
 
-    func testRecordsGoneFromBothSidesAreForgotten() {
+    func testLocalDeletionOutsideThePullWindowBecomesATombstone() {
         let plan = SyncPlanner.plan(local: [:], remote: [:], baseline: [key: "a"])
 
-        XCTAssertEqual(plan.forget, [key])
+        XCTAssertEqual(plan.tombstone, [key])
         XCTAssertTrue(plan.push.isEmpty)
-        XCTAssertTrue(plan.tombstone.isEmpty)
     }
 
     /// A visit must never be written before the restaurant it points at.
@@ -327,7 +348,7 @@ final class SyncBaselineTests: XCTestCase {
 // MARK: - Configuration
 
 final class SyncConfigurationTests: XCTestCase {
-    private final class StubBundle: Bundle {
+    private final class StubBundle: Bundle, @unchecked Sendable {
         var values: [String: String] = [:]
         override func object(forInfoDictionaryKey key: String) -> Any? { values[key] }
     }
@@ -355,6 +376,45 @@ final class SyncConfigurationTests: XCTestCase {
         XCTAssertNil(configuration(url: "https://", key: "anon"))
         XCTAssertNil(configuration(url: "https://abc.supabase.co", key: ""))
         XCTAssertNil(configuration(url: "http://abc.supabase.co", key: "anon"))
+    }
+}
+
+// MARK: - Pull pagination
+
+final class SyncPaginationTests: XCTestCase {
+    func testCursorBuildsAStableThreeColumnKeysetFilter() {
+        let id = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let cursor = SupabaseClient.PullCursor(updatedMS: 1_234, kind: "rating", id: id)
+
+        XCTAssertEqual(
+            cursor.postgrestFilter,
+            "(updated_ms.gt.1234,and(updated_ms.eq.1234,kind.gt.rating),and(updated_ms.eq.1234,kind.eq.rating,id.gt.11111111-2222-3333-4444-555555555555))"
+        )
+    }
+
+    func testSkippedRowsPreventTheWatermarkFromAdvancingPastThem() {
+        var tracker = SyncWatermarkTracker(startingAt: 10_000)
+        tracker.processed(12_000)
+        tracker.skipped(11_000)
+        tracker.processed(13_000)
+
+        XCTAssertEqual(tracker.value, 11_000)
+    }
+}
+
+final class CircleSyncQueueTests: XCTestCase {
+    func testQueueCoalescesDuplicatesWithoutDroppingDifferentCircles() {
+        let first = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+        let second = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+        var queue = CircleSyncQueue()
+
+        queue.enqueue(first)
+        queue.enqueue(second)
+        queue.enqueue(first)
+
+        XCTAssertEqual(queue.takeNext(), first)
+        XCTAssertEqual(queue.takeNext(), second)
+        XCTAssertNil(queue.takeNext())
     }
 }
 
@@ -480,6 +540,75 @@ final class SyncSnapshotTests: XCTestCase {
         XCTAssertFalse(rebuilt.records.keys.contains(wantKey))
     }
 
+    func testTombstoneCannotDeleteAnObjectBelongingToAnotherCircle() throws {
+        let activeCircleID = try XCTUnwrap(store.activeCircleID)
+        let otherCircle = CircleEntity(context: store.context)
+        otherCircle.id = UUID()
+        otherCircle.name = "Other Circle"
+        otherCircle.createdAt = .now
+
+        let otherLocation = RestaurantLocation(context: store.context)
+        otherLocation.id = UUID()
+        otherLocation.name = "Other Circle Cafe"
+        otherLocation.category = .fullService
+        otherLocation.createdAt = .now
+        otherLocation.updatedAt = .now
+        otherLocation.circle = otherCircle
+        try store.context.save()
+
+        let key = SyncKey(kind: .location, id: otherLocation.id)
+        _ = try SyncApplier.apply(
+            records: [key: DecodedSyncRecord(
+                key: key, payload: nil, fingerprint: nil,
+                deleted: true, updatedMS: 2, deviceID: nil
+            )],
+            applying: [],
+            deleting: [key],
+            circleID: activeCircleID,
+            in: store.context
+        )
+
+        XCTAssertFalse(otherLocation.isDeleted)
+    }
+
+    func testBrandTombstonePreservesABrandStillUsedByAnotherCircle() throws {
+        let activeCircleID = try XCTUnwrap(store.activeCircleID)
+        let otherCircle = CircleEntity(context: store.context)
+        otherCircle.id = UUID()
+        otherCircle.name = "Other Circle"
+        otherCircle.createdAt = .now
+
+        let brand = BrandEntity(context: store.context)
+        brand.id = UUID()
+        brand.name = "Shared Brand"
+        brand.createdAt = .now
+
+        let otherLocation = RestaurantLocation(context: store.context)
+        otherLocation.id = UUID()
+        otherLocation.name = "Other Branch"
+        otherLocation.category = .fullService
+        otherLocation.createdAt = .now
+        otherLocation.updatedAt = .now
+        otherLocation.circle = otherCircle
+        otherLocation.brand = brand
+        try store.context.save()
+
+        let key = SyncKey(kind: .brand, id: brand.id)
+        _ = try SyncApplier.apply(
+            records: [key: DecodedSyncRecord(
+                key: key, payload: nil, fingerprint: nil,
+                deleted: true, updatedMS: 2, deviceID: nil
+            )],
+            applying: [],
+            deleting: [key],
+            circleID: activeCircleID,
+            in: store.context
+        )
+
+        XCTAssertFalse(brand.isDeleted)
+        XCTAssertEqual(otherLocation.brand, brand)
+    }
+
     func testApplyingTheSameRecordsTwiceIsIdempotent() throws {
         let circleID = try seedLog()
         let source = try SyncSnapshotBuilder.build(circleID: circleID, in: store.context)
@@ -509,5 +638,199 @@ final class SyncSnapshotTests: XCTestCase {
 
         let visits = try context.fetch(NSFetchRequest<VisitEntity>(entityName: "VisitEntity"))
         XCTAssertEqual(visits.count, 1, "Replaying a pull must not duplicate rows")
+    }
+
+    func testPayloadUUIDMustMatchTheAuthenticatedServerRow() throws {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let payloadID = UUID()
+        let rowKey = SyncKey(kind: .circle, id: UUID())
+        let payload = try SyncPayloadCodec.encode(AppBackupArchive.CircleRecord(
+            id: payloadID,
+            name: "Swapped payload",
+            createdAt: .now
+        ))
+        let record = DecodedSyncRecord(
+            key: rowKey,
+            payload: payload,
+            fingerprint: SyncPayloadCodec.fingerprint(payload),
+            deleted: false,
+            updatedMS: 1,
+            deviceID: nil
+        )
+
+        XCTAssertThrowsError(try SyncApplier.apply(
+            records: [rowKey: record],
+            applying: [rowKey],
+            deleting: [],
+            circleID: rowKey.id,
+            in: context
+        )) { error in
+            XCTAssertEqual(error as? SyncError, .entityMismatch("circle identity"))
+        }
+
+        XCTAssertEqual(try context.count(for: NSFetchRequest<CircleEntity>(entityName: "CircleEntity")), 0)
+    }
+
+    func testRecordWithMissingParentsIsDeferredWithoutCreatingAPartialObject() throws {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let circleID = UUID()
+        let visitID = UUID()
+        let key = SyncKey(kind: .visit, id: visitID)
+        let payload = try SyncPayloadCodec.encode(AppBackupArchive.VisitRecord(
+            id: visitID,
+            date: .now,
+            dateKnowledge: .known,
+            visitType: .meal,
+            priceBand: 2,
+            occasion: nil,
+            memory: "Must not be saved without its parents",
+            latitude: 0,
+            longitude: 0,
+            hasCoordinates: false,
+            createdAt: .now,
+            isShared: true,
+            createdByID: UUID(),
+            companionIDs: [],
+            circleID: circleID,
+            locationID: UUID()
+        ))
+        let record = DecodedSyncRecord(
+            key: key,
+            payload: payload,
+            fingerprint: SyncPayloadCodec.fingerprint(payload),
+            deleted: false,
+            updatedMS: 1,
+            deviceID: nil
+        )
+
+        let result = try SyncApplier.apply(
+            records: [key: record],
+            applying: [key],
+            deleting: [],
+            circleID: circleID,
+            in: context
+        )
+
+        XCTAssertEqual(result.applied, 0)
+        XCTAssertEqual(result.unresolvedReferences, 1)
+        XCTAssertEqual(result.deferredKeys, [key])
+        XCTAssertEqual(try context.count(for: NSFetchRequest<VisitEntity>(entityName: "VisitEntity")), 0)
+    }
+
+    func testRecordWithANilRequiredRelationshipIsDeferred() throws {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let circleID = UUID()
+        let circle = CircleEntity(context: context)
+        circle.id = circleID
+        circle.name = "Receiving Circle"
+        circle.createdAt = .now
+        try context.save()
+
+        let visitID = UUID()
+        let key = SyncKey(kind: .visit, id: visitID)
+        let payload = try SyncPayloadCodec.encode(AppBackupArchive.VisitRecord(
+            id: visitID,
+            date: .now,
+            dateKnowledge: .known,
+            visitType: .meal,
+            priceBand: 2,
+            occasion: nil,
+            memory: "A visit cannot exist without a restaurant",
+            latitude: 0,
+            longitude: 0,
+            hasCoordinates: false,
+            createdAt: .now,
+            isShared: true,
+            createdByID: UUID(),
+            companionIDs: [],
+            circleID: circleID,
+            locationID: nil
+        ))
+        let record = DecodedSyncRecord(
+            key: key,
+            payload: payload,
+            fingerprint: SyncPayloadCodec.fingerprint(payload),
+            deleted: false,
+            updatedMS: 1,
+            deviceID: nil
+        )
+
+        let result = try SyncApplier.apply(
+            records: [key: record],
+            applying: [key],
+            deleting: [],
+            circleID: circleID,
+            in: context
+        )
+
+        XCTAssertEqual(result.deferredKeys, [key])
+        XCTAssertEqual(try context.count(for: NSFetchRequest<VisitEntity>(entityName: "VisitEntity")), 0)
+    }
+
+    func testRecordCannotLinkToAParentFromAnotherCircle() throws {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let receivingCircleID = UUID()
+        let otherCircle = CircleEntity(context: context)
+        otherCircle.id = UUID()
+        otherCircle.name = "Other Circle"
+        otherCircle.createdAt = .now
+
+        let otherLocation = RestaurantLocation(context: context)
+        otherLocation.id = UUID()
+        otherLocation.name = "Private to Other Circle"
+        otherLocation.category = .fullService
+        otherLocation.createdAt = .now
+        otherLocation.updatedAt = .now
+        otherLocation.circle = otherCircle
+
+        let receivingCircle = CircleEntity(context: context)
+        receivingCircle.id = receivingCircleID
+        receivingCircle.name = "Receiving Circle"
+        receivingCircle.createdAt = .now
+        try context.save()
+
+        let visitID = UUID()
+        let key = SyncKey(kind: .visit, id: visitID)
+        let payload = try SyncPayloadCodec.encode(AppBackupArchive.VisitRecord(
+            id: visitID,
+            date: .now,
+            dateKnowledge: .known,
+            visitType: .meal,
+            priceBand: 2,
+            occasion: nil,
+            memory: "Must not cross circle boundaries",
+            latitude: 0,
+            longitude: 0,
+            hasCoordinates: false,
+            createdAt: .now,
+            isShared: true,
+            createdByID: UUID(),
+            companionIDs: [],
+            circleID: receivingCircleID,
+            locationID: otherLocation.id
+        ))
+        let record = DecodedSyncRecord(
+            key: key,
+            payload: payload,
+            fingerprint: SyncPayloadCodec.fingerprint(payload),
+            deleted: false,
+            updatedMS: 1,
+            deviceID: nil
+        )
+
+        XCTAssertThrowsError(try SyncApplier.apply(
+            records: [key: record],
+            applying: [key],
+            deleting: [],
+            circleID: receivingCircleID,
+            in: context
+        )) { error in
+            XCTAssertEqual(error as? SyncError, .entityMismatch("visit relationship"))
+        }
+        XCTAssertEqual(try context.count(for: NSFetchRequest<VisitEntity>(entityName: "VisitEntity")), 0)
     }
 }

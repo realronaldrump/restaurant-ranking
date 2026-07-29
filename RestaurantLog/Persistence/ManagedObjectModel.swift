@@ -2,7 +2,11 @@ import CoreData
 import Foundation
 
 enum ManagedObjectModel {
-    private static let shared = build()
+    // The programmatic model is completely constructed before publication and
+    // never mutated afterward. Reusing one instance also lets Core Data map the
+    // generated NSManagedObject subclasses unambiguously when multiple stacks
+    // (the live store and one-time importer) coexist briefly.
+    nonisolated(unsafe) private static let shared = build()
 
     static func make() -> NSManagedObjectModel {
         shared
@@ -134,14 +138,13 @@ enum ManagedObjectModel {
         result.name = name
         result.attributeType = type
         result.isOptional = optional
-        result.defaultValue = defaultValue ?? (optional ? nil : cloudKitDefaultValue(for: type))
+        result.defaultValue = defaultValue ?? (optional ? nil : requiredAttributeDefault(for: type))
         return result
     }
 
-    /// CloudKit requires every required attribute to declare a model-level default.
-    /// Insert paths still assign their real values explicitly; these sentinels make
-    /// the schema valid and keep partially recovered records readable.
-    private static func cloudKitDefaultValue(for type: NSAttributeType) -> Any? {
+    /// Defensive defaults keep partially recovered local records readable. All
+    /// normal insert paths still assign their real values explicitly.
+    private static func requiredAttributeDefault(for type: NSAttributeType) -> Any? {
         switch type {
         case .stringAttributeType: ""
         case .UUIDAttributeType: UUID(uuidString: "00000000-0000-0000-0000-000000000000")

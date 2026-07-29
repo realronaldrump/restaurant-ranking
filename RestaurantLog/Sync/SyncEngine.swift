@@ -25,20 +25,17 @@ enum SyncStatus: Equatable {
 
     var description: String {
         switch self {
-        case .idle: "Waiting"
-        case .syncing: "Syncing…"
-        case let .upToDate(date): "Updated \(Self.formatter.localizedString(for: date, relativeTo: .now))"
-        case .offline: "Offline — saved on this iPhone"
-        case .failed: "Needs attention"
-        case .disabled: "Off"
+        case .idle: return "Waiting"
+        case .syncing: return "Syncing…"
+        case let .upToDate(date):
+            let formatter = RelativeDateTimeFormatter()
+            formatter.unitsStyle = .short
+            return "Updated \(formatter.localizedString(for: date, relativeTo: .now))"
+        case .offline: return "Offline — saved on this iPhone"
+        case .failed: return "Needs attention"
+        case .disabled: return "Off"
         }
     }
-
-    private static let formatter: RelativeDateTimeFormatter = {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .short
-        return formatter
-    }()
 }
 
 struct SyncOutcome: Equatable {
@@ -49,8 +46,35 @@ struct SyncOutcome: Equatable {
     var conflicts = 0
     var photosUploaded = 0
     var photosDownloaded = 0
+    var photosDeleted = 0
 
     var madeLocalChanges: Bool { applied > 0 || deletedLocally > 0 || photosDownloaded > 0 }
+}
+
+/// Advances only through rows this build understood. An unknown or unreadable
+/// row remains inside future overlap windows so an app update or repaired key
+/// can recover it instead of silently moving the watermark beyond it.
+struct SyncWatermarkTracker {
+    private let startingValue: Int64
+    private var highestProcessed: Int64
+    private var earliestSkipped: Int64?
+
+    init(startingAt value: Int64) {
+        startingValue = value
+        highestProcessed = value
+    }
+
+    mutating func processed(_ value: Int64) {
+        highestProcessed = max(highestProcessed, value)
+    }
+
+    mutating func skipped(_ value: Int64) {
+        earliestSkipped = min(earliestSkipped ?? value, value)
+    }
+
+    var value: Int64 {
+        max(startingValue, min(highestProcessed, earliestSkipped ?? highestProcessed))
+    }
 }
 
 /// Drives one sync pass: pull, merge, apply, push, then photo blobs.
@@ -113,7 +137,7 @@ actor SyncEngine {
 
         // 2. Read the local graph.
         let context = container.newBackgroundContext()
-        context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+        context.mergePolicy = NSMergePolicy(merge: .mergeByPropertyObjectTrumpMergePolicyType)
         context.transactionAuthor = "sync"
 
         let snapshot = try await context.perform {
@@ -127,6 +151,7 @@ actor SyncEngine {
             baseline: baseline.keyedFingerprints
         )
         outcome.conflicts = plan.conflicts.count
+        var deferredReferences = false
         if !plan.conflicts.isEmpty {
             logger.notice("Sync resolved \(plan.conflicts.count, privacy: .public) record conflict(s).")
         }
@@ -146,13 +171,18 @@ actor SyncEngine {
             }
             outcome.applied = applyResult.applied
             outcome.deletedLocally = applyResult.deleted
+            deferredReferences = !applyResult.deferredKeys.isEmpty
         }
 
         // 5. Publish local changes.
         var outgoing: [SupabaseClient.OutgoingRecord] = []
         for syncKey in plan.push {
             guard let record = snapshot.records[syncKey] else { continue }
-            let sealed = try CircleCrypto.seal(record.payload, with: key)
+            let sealed = try CircleCrypto.seal(
+                record.payload,
+                with: key,
+                authenticating: CircleCrypto.recordIdentity(circleID: circleID, kind: syncKey.kind, id: syncKey.id)
+            )
             outgoing.append(SupabaseClient.OutgoingRecord(
                 circleID: circleID,
                 kind: syncKey.kind.rawValue,
@@ -178,6 +208,26 @@ actor SyncEngine {
             outcome.tombstoned = plan.tombstone.count
         }
 
+        // Photo bytes are separate Storage objects, so tombstoning their
+        // metadata is not enough. Remove both variants before accepting the new
+        // baseline; a failure leaves this pass retryable and the operation is
+        // idempotent if another device already completed it.
+        var deletedPhotoIDs = Set(
+            (plan.tombstone + plan.deleteLocally)
+                .filter { $0.kind == .photo }
+                .map(\.id)
+        )
+        deletedPhotoIDs.formUnion(remote.values.compactMap { record in
+            record.key.kind == .photo && record.deleted ? record.key.id : nil
+        })
+        for photoID in deletedPhotoIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+            try await client.deletePhoto(circleID: circleID, objectKey: "\(photoID.uuidString).full")
+            try await client.deletePhoto(circleID: circleID, objectKey: "\(photoID.uuidString).thumb")
+            baseline.uploadedPhotoIDs.remove(photoID)
+            baseline.downloadedPhotoIDs.remove(photoID)
+            outcome.photosDeleted += 1
+        }
+
         // 6. Rebuild the baseline from what the store actually holds now.
         //    Setters normalise some values (companion lists and tag arrays are
         //    sorted and de-duplicated), so trusting the payload we sent would
@@ -194,7 +244,11 @@ actor SyncEngine {
             guard let stored = settled.records[syncKey],
                   let received = remote[syncKey]?.fingerprint,
                   stored.fingerprint != received else { continue }
-            let sealed = try CircleCrypto.seal(stored.payload, with: key)
+            let sealed = try CircleCrypto.seal(
+                stored.payload,
+                with: key,
+                authenticating: CircleCrypto.recordIdentity(circleID: circleID, kind: syncKey.kind, id: syncKey.id)
+            )
             reconciliation.append(SupabaseClient.OutgoingRecord(
                 circleID: circleID,
                 kind: syncKey.kind.rawValue,
@@ -211,7 +265,10 @@ actor SyncEngine {
         }
 
         baseline.replaceFingerprints(with: settled.records)
-        baseline.watermark = max(baseline.watermark, highestSeen)
+        // A missing parent may have fallen outside the current delta window.
+        // Force the next pass to pull the complete circle rather than accepting
+        // a child with a broken relationship or moving beyond it forever.
+        baseline.watermark = deferredReferences ? 0 : max(baseline.watermark, highestSeen)
 
         // 7. Photo bytes, which never travel with the record stream.
         let photoResult = try await synchronizePhotos(
@@ -242,19 +299,19 @@ actor SyncEngine {
         key: SymmetricKey
     ) async throws -> ([SyncKey: DecodedSyncRecord], Int64) {
         var decoded: [SyncKey: DecodedSyncRecord] = [:]
-        var highest = since
-        var offset = 0
+        var watermark = SyncWatermarkTracker(startingAt: since)
+        var cursor: SupabaseClient.PullCursor?
 
         while true {
-            let page = try await client.pullRecords(circleID: circleID, since: since, offset: offset)
+            let page = try await client.pullRecords(circleID: circleID, since: since, after: cursor)
             if page.isEmpty { break }
 
             for row in page {
-                highest = max(highest, row.updatedMS)
                 guard let kind = SyncKind(rawValue: row.kind) else {
                     // A newer build of the app added a record type this one does
                     // not know. Skipping keeps the rest of the sync working.
                     logger.notice("Skipping unknown record kind \(row.kind, privacy: .public).")
+                    watermark.skipped(row.updatedMS)
                     continue
                 }
                 let syncKey = SyncKey(kind: kind, id: row.id)
@@ -264,13 +321,23 @@ actor SyncEngine {
                         key: syncKey, payload: nil, fingerprint: nil, deleted: true,
                         updatedMS: row.updatedMS, deviceID: row.deviceID
                     )
+                    watermark.processed(row.updatedMS)
                     continue
                 }
-                guard let encoded = row.payload, let sealed = Data(base64Encoded: encoded) else { continue }
-                guard let plaintext = try? CircleCrypto.open(sealed, with: key) else {
+                guard let encoded = row.payload, let sealed = Data(base64Encoded: encoded) else {
+                    logger.error("Malformed encrypted payload for \(row.kind, privacy: .public); skipping it.")
+                    watermark.skipped(row.updatedMS)
+                    continue
+                }
+                guard let plaintext = try? CircleCrypto.open(
+                    sealed,
+                    with: key,
+                    authenticating: CircleCrypto.recordIdentity(circleID: circleID, kind: kind, id: row.id)
+                ) else {
                     // Wrong key for this circle, or a corrupted row. Neither is
                     // fixable by retrying, and neither should stop the pass.
                     logger.error("Could not decrypt \(row.kind, privacy: .public) record; skipping it.")
+                    watermark.skipped(row.updatedMS)
                     continue
                 }
                 decoded[syncKey] = DecodedSyncRecord(
@@ -281,12 +348,18 @@ actor SyncEngine {
                     updatedMS: row.updatedMS,
                     deviceID: row.deviceID
                 )
+                watermark.processed(row.updatedMS)
             }
 
             if page.count < SupabaseClient.pullPageSize { break }
-            offset += page.count
+            guard let last = page.last else { break }
+            cursor = SupabaseClient.PullCursor(
+                updatedMS: last.updatedMS,
+                kind: last.kind,
+                id: last.id
+            )
         }
-        return (decoded, highest)
+        return (decoded, watermark.value)
     }
 
     // MARK: - Photos
@@ -326,13 +399,21 @@ actor SyncEngine {
                 try await client.uploadPhoto(
                     circleID: circleID,
                     objectKey: "\(photoID.uuidString).full",
-                    sealed: try CircleCrypto.seal(full, with: key)
+                    sealed: try CircleCrypto.seal(
+                        full,
+                        with: key,
+                        authenticating: CircleCrypto.photoIdentity(circleID: circleID, photoID: photoID, variant: "full")
+                    )
                 )
                 if let thumbnail = blobs.thumbnail {
                     try await client.uploadPhoto(
                         circleID: circleID,
                         objectKey: "\(photoID.uuidString).thumb",
-                        sealed: try CircleCrypto.seal(thumbnail, with: key)
+                        sealed: try CircleCrypto.seal(
+                            thumbnail,
+                            with: key,
+                            authenticating: CircleCrypto.photoIdentity(circleID: circleID, photoID: photoID, variant: "thumb")
+                        )
                     )
                 }
                 baseline.uploadedPhotoIDs.insert(photoID)
@@ -358,14 +439,23 @@ actor SyncEngine {
                     circleID: circleID,
                     objectKey: "\(photoID.uuidString).full"
                 ) else { continue }
-                let full = try CircleCrypto.open(sealedFull, with: key)
+                let full = try CircleCrypto.open(
+                    sealedFull,
+                    with: key,
+                    authenticating: CircleCrypto.photoIdentity(circleID: circleID, photoID: photoID, variant: "full")
+                )
 
-                var thumbnail: Data?
-                if let sealedThumb = try await client.downloadPhoto(
+                let thumbnail: Data? = if let sealedThumb = try await client.downloadPhoto(
                     circleID: circleID,
                     objectKey: "\(photoID.uuidString).thumb"
                 ) {
-                    thumbnail = try? CircleCrypto.open(sealedThumb, with: key)
+                    try? CircleCrypto.open(
+                        sealedThumb,
+                        with: key,
+                        authenticating: CircleCrypto.photoIdentity(circleID: circleID, photoID: photoID, variant: "thumb")
+                    )
+                } else {
+                    nil
                 }
 
                 try await context.perform {

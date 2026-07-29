@@ -16,11 +16,16 @@ with a per-circle key this project never holds.
 
 ## 2. Apply the migrations
 
-In order, from the SQL editor or the CLI:
+Apply every file in `supabase/migrations/` in numerical order. At the time of
+the 3.0 release that is:
 
 ```
 supabase/migrations/0001_circles_and_records.sql
 supabase/migrations/0002_photo_storage.sql
+supabase/migrations/0003_security_hardening.sql
+supabase/migrations/0004_private_rls_helpers.sql
+supabase/migrations/0005_secure_default_privileges.sql
+supabase/migrations/0006_transactional_deletion_guards.sql
 ```
 
 With the CLI:
@@ -30,19 +35,26 @@ supabase link --project-ref <ref>
 supabase db push
 ```
 
+Create future schema objects only through these migrations. Dashboard-created
+objects can be owned by Supabase's platform administrator role and inherit
+platform-managed grants that an application migration is not permitted to
+change. Migration 0005 makes every object created by the app's migration role
+fail closed by default.
+
 ## 3. Enable Sign in with Apple
 
-**Authentication → Providers → Apple.** You need, from the Apple Developer
-portal:
+The app uses Apple's native Authentication Services flow, not browser OAuth.
 
-- Services ID (or the app's bundle ID, `com.davis.bigbeautifulranking`, for
-  native sign-in)
-- Team ID
-- Key ID and the `.p8` signing key
+1. In the Apple Developer portal, enable **Sign in with Apple** for App ID
+   `com.davis.bigbeautifulranking`.
+2. In **Supabase → Authentication → Providers → Apple**, enable the provider and
+   add `com.davis.bigbeautifulranking` under **Client IDs**.
 
 Native Sign in with Apple sends an identity token straight to the token
-endpoint, so no redirect URL is involved. Add `com.davis.bigbeautifulranking` to
-the provider's authorized client IDs.
+endpoint, so no redirect URL, Services ID, OAuth secret, Key ID, or `.p8` key is
+required. Those credentials are required only if a web/OAuth Apple flow is
+added later. See Supabase's current
+[native Swift configuration](https://supabase.com/docs/guides/auth/social-login/auth-apple#configuration-swift-native).
 
 ## 4. Point the app at it
 
@@ -57,8 +69,8 @@ SUPABASE_ANON_KEY = <anon key>
 The host is stored without its scheme because xcconfig treats `//` as the start
 of a comment; Info.plist rebuilds the URL as `https://$(SUPABASE_HOST)`.
 
-Leaving the placeholders in place builds a device-only app with syncing off,
-which is how the simulator and the test suite run.
+Leaving the placeholders in place builds an app with syncing off. CI and clean
+simulator checkouts intentionally use that local-only configuration.
 
 ## 5. Confirm the security boundary
 
@@ -76,16 +88,18 @@ select count(*) from records where circle_id = '<circle>';
 select payload from records limit 1;
 ```
 
-## 6. Keep the project awake
+## 6. Optional keepalive
 
-Free projects pause after seven days without a request.
-`.github/workflows/supabase-keepalive.yml` sends one request a day. Add two
-repository secrets so it can run:
+Supabase plan limits and inactivity behavior can change. Check the project's
+current billing page. If the selected plan can pause inactive projects,
+`.github/workflows/supabase-keepalive.yml` can send one authenticated request a
+day. Add two repository secrets so it can run:
 
 - `SUPABASE_URL` — `https://<ref>.supabase.co`
 - `SUPABASE_ANON_KEY`
 
-A paid project does not pause; the workflow is harmless either way.
+The request is read-only and RLS-protected. Do not enable the workflow merely to
+work around a plan whose current terms do not require it.
 
 ## Operating notes
 
@@ -112,8 +126,16 @@ where circle_id = '<circle>';
 **Invitations.** Single use, expiring in seven days, stored only as a SHA-256
 hash. The plaintext code and the circle key exist only inside the invitation
 link, so it must be delivered the way you would deliver a house key — directly,
-in a conversation you trust. Anyone who opens the link joins the circle. To
-revoke one before it is used, delete its row.
+in a conversation you trust. An invitation is bound to the intended circle and
+person record; the service permits only one account to redeem it. To revoke one
+before it is used, delete its row.
+
+**Security boundary.** The authenticated role receives only the minimum table
+privileges needed by the app; the anonymous role receives none. RLS is enabled
+on every public table. Membership predicates deliberately use `SECURITY
+DEFINER` helpers in the unexposed `private` schema because a policy on
+`circle_members` cannot safely query the same RLS-protected table. Do not move
+those helpers back to `public` or replace them with a recursive policy.
 
 **Losing every device that holds a circle key means losing the ability to read
 that circle's uploaded records.** That is what end-to-end encryption costs, and

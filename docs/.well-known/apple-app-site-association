@@ -1,0 +1,17 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": [
+          "CZ3N26YJ75.com.davis.bigbeautifulranking"
+        ],
+        "components": [
+          {
+            "/": "/restaurant-ranking/join",
+            "comment": "Encrypted circle invitations"
+          }
+        ]
+      }
+    ]
+  }
+}

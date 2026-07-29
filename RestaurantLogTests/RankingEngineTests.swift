@@ -1653,14 +1653,18 @@ final class RankingEngineTests: XCTestCase {
     }
 
     func testEraseAllDataRemovesEveryEntityAndDeviceIdentity() throws {
+        let circleID = try XCTUnwrap(store.activeCircleID)
         let location = store.createLocation(name: "Reset Test", category: .fullService)
         let visit = store.logVisit(at: location, reaction: .loved)
         store.addPhoto(fullData: Data([0x01]), thumbnailData: Data([0x02]), to: visit)
         store.toggleWant(location)
         store.recordAnchor(for: location, value: 85)
         _ = store.addNamedCompanion(name: "Guest")
+        var scheduledCircleIDs: [UUID] = []
+        store.didCommit = { scheduledCircleIDs.append($0) }
 
         XCTAssertTrue(store.eraseAllData())
+        XCTAssertEqual(scheduledCircleIDs, [circleID])
         XCTAssertNil(store.activeCircle)
         XCTAssertNil(store.currentPerson)
         XCTAssertNil(UserDefaults.standard.string(forKey: "activeCircleID"))

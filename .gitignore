@@ -9,3 +9,9 @@ xcuserdata/
 
 # Local sync-service overrides (never committed).
 Config/Supabase.local.xcconfig
+
+# Optional local-only integration fixture copied from a real device. The test
+# target bundles it when present, but the user's dining history never enters git.
+RestaurantLogTests/LocalDeviceFixture/*
+!RestaurantLogTests/LocalDeviceFixture/.gitkeep
+!RestaurantLogTests/LocalDeviceFixture/README.txt

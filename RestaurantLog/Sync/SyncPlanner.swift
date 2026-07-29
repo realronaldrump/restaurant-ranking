@@ -17,11 +17,8 @@ struct SyncPlan: Equatable {
     var deleteLocally: [SyncKey] = []
     /// Records that changed on both sides since the last agreement.
     var conflicts: [SyncKey] = []
-    /// Baseline entries to drop because the record is gone from both sides.
-    var forget: [SyncKey] = []
-
     var isEmpty: Bool {
-        apply.isEmpty && push.isEmpty && tombstone.isEmpty && deleteLocally.isEmpty && forget.isEmpty
+        apply.isEmpty && push.isEmpty && tombstone.isEmpty && deleteLocally.isEmpty
     }
 }
 
@@ -60,8 +57,8 @@ enum SyncPlanner {
 
             case let (.none, .some(theirs)):
                 if theirs.deleted {
-                    // Gone on both sides.
-                    if agreed != nil { plan.forget.append(key) }
+                    // Gone on both sides. Rebuilding the baseline from the
+                    // settled local snapshot drops the old fingerprint.
                 } else if agreed == nil {
                     plan.apply.append(key)
                 } else if theirs.fingerprint == agreed {
@@ -75,7 +72,12 @@ enum SyncPlanner {
                 }
 
             case (.none, .none):
-                if agreed != nil { plan.forget.append(key) }
+                // `remote` contains only the current delta window. If this key
+                // was in the baseline but is absent locally, the local copy was
+                // deleted while the unchanged server row fell outside that
+                // window. Publish a tombstone; treating absence as "gone on both
+                // sides" silently abandons nearly every ordinary deletion.
+                if agreed != nil { plan.tombstone.append(key) }
 
             case let (.some(mine), .some(theirs)):
                 if theirs.deleted {

@@ -11,9 +11,9 @@ options:
   generateEmptyDirectories: true
 settings:
   base:
-    SWIFT_VERSION: "5.9"
-    SWIFT_STRICT_CONCURRENCY: minimal
-    MARKETING_VERSION: "2.6.1"
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    MARKETING_VERSION: "3.0"
     CURRENT_PROJECT_VERSION: 10
     DEVELOPMENT_TEAM: CZ3N26YJ75
     CODE_SIGN_STYLE: Automatic
@@ -43,11 +43,6 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         SupabaseURL: https://$(SUPABASE_HOST)
         SupabaseAnonKey: $(SUPABASE_ANON_KEY)
-        CFBundleURLTypes:
-          - CFBundleURLName: com.davis.bigbeautifulranking.invite
-            CFBundleTypeRole: Editor
-            CFBundleURLSchemes:
-              - bigbeautifullog
         UTExportedTypeDeclarations:
           - UTTypeIdentifier: com.davis.bigbeautiful.backup
             UTTypeDescription: Big Beautiful Restaurant Log Backup
@@ -74,6 +69,8 @@ targets:
       properties:
         com.apple.developer.applesignin:
           - Default
+        com.apple.developer.associated-domains:
+          - applinks:realronaldrump.github.io
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.davis.bigbeautifulranking
@@ -98,6 +95,11 @@ targets:
     platform: iOS
     sources:
       - path: RestaurantLogTests
+        excludes:
+          - LocalDeviceFixture
+      - path: RestaurantLogTests/LocalDeviceFixture
+        type: folder
+        buildPhase: resources
     dependencies:
       - target: Big Beautiful Restaurant Log
     settings:

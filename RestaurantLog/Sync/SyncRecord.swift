@@ -26,10 +26,6 @@ enum SyncKind: String, CaseIterable, Codable, Sendable {
         .participant, .rating, .dishEntry, .photo,
         .comparison, .want, .importSession, .importLink
     ]
-
-    /// Deletion runs the other way so a parent is never removed while a child
-    /// still references it.
-    static var deleteOrder: [SyncKind] { applyOrder.reversed() }
 }
 
 struct SyncKey: Hashable, Sendable {

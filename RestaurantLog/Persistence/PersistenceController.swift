@@ -1,4 +1,4 @@
-import CoreData
+@preconcurrency import CoreData
 import Foundation
 import OSLog
 
@@ -17,13 +17,13 @@ enum PersistenceNotificationKey {
 /// sync in `RestaurantLog/Sync`. That split is the point: the database on this
 /// iPhone is the source of truth and is always writable, and network trouble
 /// can delay a sync but can never prevent a meal from being logged.
+@MainActor
 final class PersistenceController {
     static let shared: PersistenceController = {
         let arguments = ProcessInfo.processInfo.arguments
         let isRunningUnitTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
         return PersistenceController(
-            inMemory: isRunningUnitTests || arguments.contains("-resetForUITests"),
-            loadImmediately: false
+            inMemory: isRunningUnitTests || arguments.contains("-resetForUITests")
         )
     }()
 
@@ -43,7 +43,7 @@ final class PersistenceController {
         category: "Persistence"
     )
 
-    init(inMemory: Bool = false, loadImmediately: Bool = true) {
+    init(inMemory: Bool = false) {
         container = NSPersistentContainer(name: "RestaurantLog", managedObjectModel: ManagedObjectModel.make())
 
         if inMemory {
@@ -55,11 +55,10 @@ final class PersistenceController {
             isReady = loadError == nil
         } else {
             configureDescriptions()
-            if loadImmediately { prepareSynchronously() }
         }
 
         container.viewContext.automaticallyMergesChangesFromParent = true
-        container.viewContext.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+        container.viewContext.mergePolicy = NSMergePolicy(merge: .mergeByPropertyObjectTrumpMergePolicyType)
         container.viewContext.transactionAuthor = "app"
         container.viewContext.undoManager = UndoManager()
     }
@@ -107,17 +106,11 @@ final class PersistenceController {
         return description
     }
 
-    private func prepareSynchronously() {
-        loadError = loadStoresSynchronously()
-        isReady = !container.persistentStoreCoordinator.persistentStores.isEmpty
-        if isReady { adoptLegacySharedStoreIfPresent() }
-    }
-
     @MainActor
     private func prepareAsynchronously() async {
         loadError = await loadStoresAsynchronously()
         isReady = !container.persistentStoreCoordinator.persistentStores.isEmpty
-        if isReady { adoptLegacySharedStoreIfPresent() }
+        if isReady { await importPreviousVersionSharedStoreIfPresent() }
     }
 
     private func loadStoresSynchronously() -> Error? {
@@ -156,7 +149,7 @@ final class PersistenceController {
         )
     }
 
-    // MARK: - Legacy shared store
+    // MARK: - One-time previous-version data import
 
     /// Folds anything that was living in the old CloudKit `.shared` store into
     /// the main store, once.
@@ -166,44 +159,24 @@ final class PersistenceController {
     /// history on disk but invisible. Everything is merged by UUID, so a record
     /// present in both stores keeps a single identity, and the old file is moved
     /// aside rather than deleted.
-    private func adoptLegacySharedStoreIfPresent() {
+    private func importPreviousVersionSharedStoreIfPresent() async {
         let legacyURL = Self.storeDirectory.appendingPathComponent(Self.legacySharedStoreFileName)
         guard FileManager.default.fileExists(atPath: legacyURL.path) else { return }
-        guard let destination = container.persistentStoreCoordinator.persistentStores.first else { return }
-
-        let coordinator = container.persistentStoreCoordinator
-        var legacyStore: NSPersistentStore?
-        do {
-            legacyStore = try coordinator.addPersistentStore(
-                ofType: NSSQLiteStoreType,
-                configurationName: nil,
-                at: legacyURL,
-                options: [
-                    NSReadOnlyPersistentStoreOption: true as NSNumber,
-                    NSMigratePersistentStoresAutomaticallyOption: true as NSNumber,
-                    NSInferMappingModelAutomaticallyOption: true as NSNumber
-                ]
-            )
-        } catch {
-            logger.error("Legacy shared store could not be opened: \(error.localizedDescription, privacy: .public)")
-            notifyFailure("Records from the old iCloud shared log could not be opened. The file was left untouched at \(legacyURL.lastPathComponent).")
-            return
-        }
-        guard let legacyStore else { return }
+        let destinationURL = Self.storeDirectory.appendingPathComponent(Self.storeFileName)
 
         do {
-            legacyRecordsAdopted = try LegacyStoreConsolidator.merge(
-                from: legacyStore,
-                into: destination,
-                container: container
+            legacyRecordsAdopted = try await LegacyStoreConsolidator.consolidate(
+                from: legacyURL,
+                into: destinationURL
             )
-            try coordinator.remove(legacyStore)
-            try LegacyStoreConsolidator.archiveFiles(at: legacyURL)
+            // The import uses an independent private-queue stack. No app data
+            // has been fetched yet, but resetting makes the visibility boundary
+            // explicit before AppStore performs its first fetch.
+            container.viewContext.reset()
             logger.notice("Adopted \(self.legacyRecordsAdopted, privacy: .public) record(s) from the old shared store.")
         } catch {
-            try? coordinator.remove(legacyStore)
             logger.error("Legacy shared store merge failed: \(error.localizedDescription, privacy: .public)")
-            notifyFailure("Records from the old iCloud shared log could not be merged automatically. Nothing was deleted; export a backup from the previous version if anything is missing.")
+            notifyFailure("Records from the previous shared log could not be imported automatically. The original store and a recovery copy were left intact.")
         }
     }
 }
@@ -214,21 +187,85 @@ final class PersistenceController {
 /// means a future entity is carried across without anyone remembering to update
 /// this file.
 enum LegacyStoreConsolidator {
-    static func merge(
-        from source: NSPersistentStore,
-        into destination: NSPersistentStore,
-        container: NSPersistentContainer
-    ) throws -> Int {
-        let context = container.newBackgroundContext()
-        context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
-        context.transactionAuthor = "legacy-adoption"
+    enum ConsolidationError: LocalizedError {
+        case missingRelationship(entity: String, id: UUID, relationship: String)
 
-        var copied = 0
-        var thrown: Error?
+        var errorDescription: String? {
+            switch self {
+            case let .missingRelationship(entity, id, relationship):
+                "Could not resolve \(entity) \(id) relationship \(relationship)."
+            }
+        }
+    }
 
-        context.performAndWait {
+    /// Creates a transactionally consistent Core Data copy, including WAL and
+    /// externally stored photo blobs, in a unique retirement directory. The
+    /// source is never modified by this operation.
+    static func makeRecoveryCopy(of sourceURL: URL) throws -> URL {
+        let manager = FileManager.default
+        let folder = sourceURL.deletingLastPathComponent()
+            .appendingPathComponent("RetiredCloudKitStore", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try manager.createDirectory(at: folder, withIntermediateDirectories: true)
+        let destinationURL = folder.appendingPathComponent(sourceURL.lastPathComponent)
+
+        do {
+            let coordinator = NSPersistentStoreCoordinator(managedObjectModel: ManagedObjectModel.make())
+            try coordinator.replacePersistentStore(
+                at: destinationURL,
+                destinationOptions: nil,
+                withPersistentStoreFrom: sourceURL,
+                sourceOptions: storeOptions(readOnly: true, historyTracking: false),
+                ofType: NSSQLiteStoreType
+            )
+            return destinationURL
+        } catch {
+            try? manager.removeItem(at: folder)
+            throw error
+        }
+    }
+
+    /// Copies, verifies, and merges on a utility task. The old store is retired
+    /// only after the destination save commits successfully.
+    static func consolidate(from sourceURL: URL, into destinationURL: URL) async throws -> Int {
+        try await Task.detached(priority: .utility) {
+            let recoveryURL = try makeRecoveryCopy(of: sourceURL)
+            let copied = try mergeSynchronously(from: recoveryURL, into: destinationURL)
+            try destroyStore(at: sourceURL)
+            return copied
+        }.value
+    }
+
+    static func merge(from sourceURL: URL, into destinationURL: URL) async throws -> Int {
+        try await Task.detached(priority: .utility) {
+            try mergeSynchronously(from: sourceURL, into: destinationURL)
+        }.value
+    }
+
+    private static func mergeSynchronously(from sourceURL: URL, into destinationURL: URL) throws -> Int {
+        let model = ManagedObjectModel.make()
+        let coordinator = NSPersistentStoreCoordinator(managedObjectModel: model)
+        let destination = try coordinator.addPersistentStore(
+            ofType: NSSQLiteStoreType,
+            configurationName: nil,
+            at: destinationURL,
+            options: storeOptions(readOnly: false, historyTracking: true)
+        )
+        let source = try coordinator.addPersistentStore(
+            ofType: NSSQLiteStoreType,
+            configurationName: nil,
+            at: sourceURL,
+            options: storeOptions(readOnly: true, historyTracking: false)
+        )
+        let context = NSManagedObjectContext(concurrencyType: .privateQueueConcurrencyType)
+        context.persistentStoreCoordinator = coordinator
+        context.mergePolicy = NSMergePolicy(merge: .mergeByPropertyObjectTrumpMergePolicyType)
+        context.transactionAuthor = "previous-version-import"
+
+        return try context.performAndWait {
+            var copied = 0
             do {
-                let entities = container.managedObjectModel.entities.compactMap(\.name)
+                let entities = model.entities.compactMap(\.name)
                 // Pass one: attributes only, so every object exists before any
                 // relationship is pointed at it.
                 var destinationsByEntity: [String: [UUID: NSManagedObject]] = [:]
@@ -247,8 +284,14 @@ enum LegacyStoreConsolidator {
                                 in: destination,
                                 context: context
                             )
-                            for name in object.entity.attributesByName.keys {
-                                target.setValue(object.value(forKey: name), forKey: name)
+                            for (name, attribute) in object.entity.attributesByName {
+                                target.setValue(
+                                    ownedAttributeValue(
+                                        object.value(forKey: name),
+                                        attribute: attribute
+                                    ),
+                                    forKey: name
+                                )
                             }
                             mapped[id] = target
                             copied += 1
@@ -268,44 +311,78 @@ enum LegacyStoreConsolidator {
                               let target = destinationsByEntity[entityName]?[id] else { continue }
 
                         for (name, relationship) in object.entity.relationshipsByName where !relationship.isToMany {
-                            guard
-                                let related = object.value(forKey: name) as? NSManagedObject,
-                                let relatedName = related.entity.name,
-                                let relatedID = related.value(forKey: "id") as? UUID
-                            else { continue }
+                            guard let related = object.value(forKey: name) as? NSManagedObject else {
+                                target.setValue(nil, forKey: name)
+                                continue
+                            }
+                            guard let relatedName = related.entity.name,
+                                  let relatedID = related.value(forKey: "id") as? UUID else {
+                                throw ConsolidationError.missingRelationship(
+                                    entity: entityName,
+                                    id: id,
+                                    relationship: name
+                                )
+                            }
                             let resolved = destinationsByEntity[relatedName]?[relatedID]
                                 ?? (try? existing(relatedName, id: relatedID, in: destination, context: context))
-                            if let resolved { target.setValue(resolved, forKey: name) }
+                            guard let resolved else {
+                                throw ConsolidationError.missingRelationship(
+                                    entity: entityName,
+                                    id: id,
+                                    relationship: name
+                                )
+                            }
+                            target.setValue(resolved, forKey: name)
                         }
                     }
                 }
 
                 if context.hasChanges { try context.save() }
+                return copied
             } catch {
                 context.rollback()
-                thrown = error
+                throw error
             }
         }
-
-        if let thrown { throw thrown }
-        return copied
     }
 
-    /// Moves the retired store beside the live one instead of deleting it, so a
-    /// merge that went wrong is still recoverable from the device.
-    static func archiveFiles(at url: URL) throws {
-        let manager = FileManager.default
-        let folder = url.deletingLastPathComponent().appendingPathComponent("RetiredCloudKitStore", isDirectory: true)
-        try manager.createDirectory(at: folder, withIntermediateDirectories: true)
-
-        let base = url.lastPathComponent
-        for suffix in ["", "-wal", "-shm"] {
-            let candidate = url.deletingLastPathComponent().appendingPathComponent(base + suffix)
-            guard manager.fileExists(atPath: candidate.path) else { continue }
-            let target = folder.appendingPathComponent(base + suffix)
-            if manager.fileExists(atPath: target.path) { try manager.removeItem(at: target) }
-            try manager.moveItem(at: candidate, to: target)
+    private static func destroyStore(at url: URL) throws {
+        let coordinator = NSPersistentStoreCoordinator(managedObjectModel: ManagedObjectModel.make())
+        try coordinator.destroyPersistentStore(at: url, ofType: NSSQLiteStoreType, options: nil)
+        // `destroyPersistentStore` can leave the main SQLite marker behind even
+        // after removing its contents. Its presence is our one-time import
+        // trigger, so remove that harmless remnant explicitly. The consistent
+        // recovery store already lives under RetiredCloudKitStore.
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
         }
+    }
+
+    /// Core Data may vend externally stored binary attributes as file-backed
+    /// `NSData` instances. Assigning one directly to another store can preserve
+    /// a reference to a transient clone file instead of preserving the bytes.
+    /// Materialize an independently owned buffer before the source stack goes
+    /// away. Non-binary attributes remain model-driven and pass through.
+    private static func ownedAttributeValue(
+        _ value: Any?,
+        attribute: NSAttributeDescription
+    ) -> Any? {
+        guard attribute.attributeType == .binaryDataAttributeType,
+              let data = value as? Data else { return value }
+        return data.withUnsafeBytes { Data($0) }
+    }
+
+    private static func storeOptions(readOnly: Bool, historyTracking: Bool) -> [AnyHashable: Any] {
+        var options: [AnyHashable: Any] = [
+            NSReadOnlyPersistentStoreOption: readOnly as NSNumber,
+            NSMigratePersistentStoresAutomaticallyOption: true as NSNumber,
+            NSInferMappingModelAutomaticallyOption: true as NSNumber
+        ]
+        if historyTracking {
+            options[NSPersistentHistoryTrackingKey] = true as NSNumber
+            options[NSPersistentStoreRemoteChangeNotificationPostOptionKey] = true as NSNumber
+        }
+        return options
     }
 
     private static func fetch(

@@ -4,6 +4,31 @@ import Observation
 import OSLog
 import UIKit
 
+/// Coalesces repeat requests while retaining every distinct circle. A single
+/// optional UUID can silently lose work when edits in two circles arrive while
+/// a pass is running or while the debounce timer is being restarted.
+struct CircleSyncQueue {
+    private var circleIDs: Set<UUID> = []
+
+    mutating func enqueue(_ circleID: UUID) {
+        circleIDs.insert(circleID)
+    }
+
+    mutating func takeNext() -> UUID? {
+        guard let next = circleIDs.min(by: { $0.uuidString < $1.uuidString }) else { return nil }
+        circleIDs.remove(next)
+        return next
+    }
+
+    mutating func remove(_ circleID: UUID) {
+        circleIDs.remove(circleID)
+    }
+
+    mutating func removeAll() {
+        circleIDs.removeAll()
+    }
+}
+
 /// The app-facing face of sync: status for the UI, and the handful of actions a
 /// person can take (sign in, turn a circle on, invite someone, join, sync now).
 @MainActor
@@ -11,14 +36,16 @@ import UIKit
 final class SyncCoordinator {
     private(set) var status: SyncStatus = .disabled
     private(set) var isSignedIn = false
+    private(set) var accountUserID: UUID?
     private(set) var lastOutcome: SyncOutcome?
+    private(set) var circleMemberships: [SupabaseClient.MembershipRow] = []
     var lastError: String?
 
     @ObservationIgnored private let configuration: SyncConfiguration?
-    @ObservationIgnored private let container: NSPersistentContainer
     @ObservationIgnored private let engine: SyncEngine?
     @ObservationIgnored private var debounce: Task<Void, Never>?
-    @ObservationIgnored private var pendingCircleID: UUID?
+    @ObservationIgnored private var scheduledCircles = CircleSyncQueue()
+    @ObservationIgnored private var pendingCircles = CircleSyncQueue()
     @ObservationIgnored private let signIn = AppleSignIn()
     @ObservationIgnored private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.davis.bigbeautifulranking",
@@ -33,7 +60,6 @@ final class SyncCoordinator {
     var isConfigured: Bool { configuration != nil }
 
     init(container: NSPersistentContainer, configuration: SyncConfiguration? = SyncConfiguration.fromBundle()) {
-        self.container = container
         self.configuration = configuration
         if let configuration {
             engine = SyncEngine(configuration: configuration, container: container)
@@ -49,9 +75,12 @@ final class SyncCoordinator {
     func restoreSession() async {
         guard let engine else { return }
         do {
-            isSignedIn = try await engine.supabase.restore() != nil
+            let session = try await engine.supabase.restore()
+            isSignedIn = session != nil
+            accountUserID = session?.userID
         } catch {
             isSignedIn = false
+            accountUserID = nil
         }
     }
 
@@ -62,24 +91,32 @@ final class SyncCoordinator {
         }
         do {
             let credential = try await signIn.requestCredential()
-            _ = try await engine.supabase.signInWithApple(
+            let session = try await engine.supabase.signInWithApple(
                 idToken: credential.identityToken,
                 nonce: credential.rawNonce
             )
             isSignedIn = true
+            accountUserID = session.userID
             lastError = nil
         } catch AppleSignInError.cancelled {
             // Not a failure worth surfacing.
         } catch {
             isSignedIn = false
+            accountUserID = nil
             lastError = error.localizedDescription
         }
     }
 
     func signOut() async {
         guard let engine else { return }
+        debounce?.cancel()
+        debounce = nil
+        scheduledCircles.removeAll()
+        pendingCircles.removeAll()
         await engine.supabase.signOut()
         isSignedIn = false
+        accountUserID = nil
+        circleMemberships = []
         status = .idle
     }
 
@@ -92,7 +129,7 @@ final class SyncCoordinator {
     /// Turns sync on for a circle this device already owns. Generates the key,
     /// stores it locally, and registers the circle server side. The key itself
     /// is never part of that request.
-    func enableSync(circleID: UUID, circleName: String) async {
+    func enableSync(circleID: UUID, circleName: String, personID: UUID) async {
         guard let engine else {
             lastError = SyncError.notConfigured.localizedDescription
             return
@@ -103,11 +140,19 @@ final class SyncCoordinator {
         }
         do {
             let key = CircleKeychain.key(for: circleID) ?? CircleCrypto.makeKey()
+            let sealedName = try CircleCrypto.seal(
+                Data(circleName.utf8),
+                with: key,
+                authenticating: CircleCrypto.circleNameIdentity(circleID: circleID)
+            ).base64EncodedString()
+            // The RPC creates both server rows transactionally. Persisting the
+            // key afterward means a failed request never makes the UI claim
+            // that this circle is enrolled; a retry is idempotent either way.
+            try await engine.supabase.createCircle(id: circleID, nameCipher: sealedName, personID: personID)
             try CircleKeychain.storeKey(key, for: circleID)
-            let sealedName = try CircleCrypto.seal(Data(circleName.utf8), with: key).base64EncodedString()
-            try await engine.supabase.createCircle(id: circleID, nameCipher: sealedName)
             lastError = nil
-            await sync(circleID: circleID)
+            _ = await sync(circleID: circleID)
+            await refreshMembers(circleID: circleID)
         } catch {
             lastError = error.localizedDescription
         }
@@ -116,7 +161,7 @@ final class SyncCoordinator {
     /// Builds a single-use invitation. The code is registered server side as a
     /// hash; the code and the circle key exist in clear text only inside the
     /// returned value, which the owner hands over out of band.
-    func makeInvitation(circleID: UUID, circleName: String) async -> CircleInvitation? {
+    func makeInvitation(circleID: UUID, personID: UUID, circleName: String) async -> CircleInvitation? {
         guard let engine else {
             lastError = SyncError.notConfigured.localizedDescription
             return nil
@@ -127,10 +172,11 @@ final class SyncCoordinator {
         }
         do {
             let code = CircleCrypto.makeInviteCode()
-            try await engine.supabase.createInvite(circleID: circleID, code: code)
+            try await engine.supabase.createInvite(circleID: circleID, personID: personID, code: code)
             lastError = nil
             return CircleInvitation(
                 circleID: circleID,
+                personID: personID,
                 circleName: circleName,
                 code: code,
                 key: CircleCrypto.encode(key)
@@ -155,14 +201,22 @@ final class SyncCoordinator {
         }
         do {
             let key = try CircleCrypto.decodeKey(invitation.key)
-            let circleID = try await engine.supabase.redeemInvite(code: invitation.code)
+            let circleID = try await engine.supabase.redeemInvite(
+                code: invitation.code,
+                expectedCircleID: invitation.circleID,
+                expectedPersonID: invitation.personID
+            )
             guard circleID == invitation.circleID else {
                 lastError = "That invitation points at a different circle than its link claims."
                 return false
             }
             try CircleKeychain.storeKey(key, for: circleID)
             lastError = nil
-            await sync(circleID: circleID)
+            guard await sync(circleID: circleID) else {
+                if lastError == nil { lastError = "Membership is saved. Try syncing again to finish downloading this circle." }
+                return false
+            }
+            await refreshMembers(circleID: circleID)
             return true
         } catch {
             lastError = error.localizedDescription
@@ -173,9 +227,100 @@ final class SyncCoordinator {
     /// Stops syncing a circle on this device and forgets its key. Records
     /// already on the server stay there for the other members.
     func disableSync(circleID: UUID) {
+        scheduledCircles.remove(circleID)
+        pendingCircles.remove(circleID)
         CircleKeychain.removeKey(for: circleID)
         SyncBaselineStore.reset(circleID: circleID)
         status = .idle
+    }
+
+    func refreshMembers(circleID: UUID) async {
+        guard let engine, isSignedIn else {
+            circleMemberships = []
+            return
+        }
+        do {
+            circleMemberships = try await engine.supabase.members(circleID: circleID)
+                .sorted { lhs, rhs in
+                    if lhs.role != rhs.role { return lhs.role == "owner" }
+                    return lhs.personID.uuidString < rhs.personID.uuidString
+                }
+        } catch {
+            circleMemberships = []
+            lastError = error.localizedDescription
+        }
+    }
+
+    func removeMember(circleID: UUID, userID: UUID) async -> Bool {
+        guard let engine else { return false }
+        do {
+            try await engine.supabase.removeMember(circleID: circleID, userID: userID)
+            await refreshMembers(circleID: circleID)
+            lastError = nil
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    /// Deletes the server copy and Storage blobs while preserving the on-device
+    /// dining log. Failure is recoverable: the owner can press the same button
+    /// again and the deletion protocol resumes where it stopped.
+    func deleteSyncedCircle(circleID: UUID) async -> Bool {
+        guard let engine else { return false }
+        do {
+            try await engine.supabase.deleteCircleData(circleID: circleID)
+            disableSync(circleID: circleID)
+            circleMemberships = []
+            lastError = nil
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func leaveSyncedCircle(circleID: UUID) async -> Bool {
+        guard let engine else { return false }
+        do {
+            try await engine.supabase.leaveCircle(circleID: circleID)
+            disableSync(circleID: circleID)
+            circleMemberships = []
+            lastError = nil
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    /// Removes memberships, fully deletes every owned circle (including photo
+    /// objects), and finally deletes the Supabase Auth account itself.
+    func deleteSyncAccount() async -> Bool {
+        guard let engine else { return false }
+        do {
+            let memberships = try await engine.supabase.memberships()
+            for membership in memberships {
+                if membership.role == "owner" {
+                    try await engine.supabase.deleteCircleData(circleID: membership.circleID)
+                } else {
+                    try await engine.supabase.leaveCircle(circleID: membership.circleID)
+                }
+                CircleKeychain.removeKey(for: membership.circleID)
+                SyncBaselineStore.reset(circleID: membership.circleID)
+            }
+            try await engine.supabase.deleteAccount()
+            isSignedIn = false
+            accountUserID = nil
+            circleMemberships = []
+            status = .idle
+            lastError = nil
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
     }
 
     // MARK: - Running a pass
@@ -183,11 +328,19 @@ final class SyncCoordinator {
     /// Coalesces a burst of edits into one pass.
     func scheduleSync(circleID: UUID) {
         guard engine != nil, isSyncing(circleID: circleID) else { return }
+        scheduledCircles.enqueue(circleID)
         debounce?.cancel()
         debounce = Task { [weak self] in
             try? await Task.sleep(for: Self.debounceInterval)
             guard !Task.isCancelled else { return }
-            await self?.sync(circleID: circleID)
+            await self?.flushScheduledSyncs()
+        }
+    }
+
+    private func flushScheduledSyncs() async {
+        debounce = nil
+        while let circleID = scheduledCircles.takeNext() {
+            await sync(circleID: circleID)
         }
     }
 
@@ -205,27 +358,31 @@ final class SyncCoordinator {
         }
     }
 
-    func sync(circleID: UUID) async {
-        guard let engine else { return }
-        guard isSyncing(circleID: circleID) else { return }
+    @discardableResult
+    func sync(circleID: UUID) async -> Bool {
+        guard let engine else { return false }
+        guard isSyncing(circleID: circleID) else { return false }
 
         // A pass reads the local graph once, near its start. An edit that lands
         // after that read would otherwise wait for some later trigger, so the
         // request is remembered and replayed rather than dropped.
         guard !status.isBusy else {
-            pendingCircleID = circleID
-            return
+            pendingCircles.enqueue(circleID)
+            return false
         }
 
         var target: UUID? = circleID
+        var requestedResult = false
+        var isFirst = true
         while let next = target {
-            await runPass(circleID: next, engine: engine)
-            target = pendingCircleID
-            pendingCircleID = nil
+            let succeeded = await runPass(circleID: next, engine: engine)
+            if isFirst { requestedResult = succeeded; isFirst = false }
+            target = pendingCircles.takeNext()
         }
+        return requestedResult
     }
 
-    private func runPass(circleID: UUID, engine: SyncEngine) async {
+    private func runPass(circleID: UUID, engine: SyncEngine) async -> Bool {
         status = .syncing
         do {
             let outcome = try await engine.synchronize(circleID: circleID)
@@ -235,14 +392,19 @@ final class SyncCoordinator {
             if outcome.conflicts > 0 {
                 logger.notice("Sync kept this device's version of \(outcome.conflicts, privacy: .public) record(s).")
             }
+            return true
         } catch let error as SyncTransportError where error.isTransient {
             status = .offline(error.localizedDescription)
+            lastError = error.localizedDescription
+            return false
         } catch let error as SyncError {
             status = .failed(error.localizedDescription)
             lastError = error.localizedDescription
+            return false
         } catch {
             status = .failed(error.localizedDescription)
             lastError = error.localizedDescription
+            return false
         }
     }
 }

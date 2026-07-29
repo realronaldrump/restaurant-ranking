@@ -654,7 +654,7 @@ enum AppBackupService {
     static func makeArchive(from store: AppStore) async throws -> AppBackupArchive {
         try store.persistence.save()
         let context = store.persistence.container.newBackgroundContext()
-        context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+        context.mergePolicy = NSMergePolicy(merge: .mergeByPropertyObjectTrumpMergePolicyType)
         let exportedAt = Date.now
         let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
         let hapticsEnabled = UserDefaults.standard.object(forKey: "hapticsEnabled") as? Bool ?? true
@@ -777,7 +777,7 @@ enum AppBackupService {
             try AppBackupCodec.validate(archive)
         }.value
         let context = store.persistence.container.newBackgroundContext()
-        context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+        context.mergePolicy = NSMergePolicy(merge: .mergeByPropertyObjectTrumpMergePolicyType)
 
         try await context.perform {
             guard let destinationStore = context.persistentStoreCoordinator?.persistentStores.first
@@ -816,7 +816,7 @@ enum AppBackupService {
             try AppBackupCodec.validate(archive)
         }.value
         let context = store.persistence.container.newBackgroundContext()
-        context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+        context.mergePolicy = NSMergePolicy(merge: .mergeByPropertyObjectTrumpMergePolicyType)
 
         try await context.perform {
             guard let destinationStore = context.persistentStoreCoordinator?.persistentStores.first

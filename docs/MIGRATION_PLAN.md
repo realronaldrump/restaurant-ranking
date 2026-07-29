@@ -1,8 +1,11 @@
 # Replacing iCloud sharing with an encrypted sync service
 
-Status: implemented on `main`, not yet built or run against a live project.
-See [What is left](#what-is-left) for the remaining steps, all of which need
-Xcode or a Supabase account.
+Status: implemented and compiled under Swift 6. The unit suite passes, and all
+six migrations have been applied to the production Supabase project. Live RLS
+checks with three isolated accounts verified member access, non-member
+invisibility, rejected writes, invitation expiry, single redemption, idempotent
+retry, and member removal. See [What is left](#what-is-left) for release-device
+validation that cannot be simulated faithfully.
 
 ## Why the old design failed
 
@@ -119,9 +122,11 @@ Two details that matter more than they look:
   transaction start, so two rows written in one transaction would share a
   watermark and a client resuming mid-transaction could step over the second.
 
-`is_circle_member()` is `SECURITY DEFINER` deliberately: a policy on
+`private.is_circle_member()` is `SECURITY DEFINER` deliberately: a policy on
 `circle_members` that queried `circle_members` through RLS would recurse. It is
-the single predicate every policy is built from.
+the single predicate every policy is built from. The `private` schema is not
+exposed through the Data API, and migration 0004 grants only the authenticated
+role permission to invoke the authorization helpers.
 
 Deletes are not policied on `records`. A removal is an update that sets the
 tombstone, so one client cannot erase history a peer has not seen yet.
@@ -129,6 +134,18 @@ tombstone, so one client cannot erase history a peer has not seen yet.
 `supabase/migrations/0002_photo_storage.sql` adds the private `circle-photos`
 bucket, keyed `<circle_id>/<photo_id>.full` and `.thumb`, authorized on the
 first path segment.
+
+`supabase/migrations/0003_security_hardening.sql` removes broad default table
+grants (including `TRUNCATE`, which bypasses RLS), grants only the operations the
+app needs, indexes foreign-key and pull paths, and hardens helper search paths.
+`supabase/migrations/0004_private_rls_helpers.sql` moves the deliberate
+`SECURITY DEFINER` membership helpers out of the exposed `public` schema.
+`supabase/migrations/0005_secure_default_privileges.sql` removes broad inherited
+privileges from future tables, sequences, and functions so later migrations
+remain fail-closed even when the project was created with automatic exposure.
+`supabase/migrations/0006_transactional_deletion_guards.sql` makes circle
+creation safe under simultaneous UUID collisions and refuses to finalize a
+circle deletion while any encrypted photo objects remain in Storage.
 
 ## Conflict rules
 
@@ -201,8 +218,8 @@ sync sees an empty baseline and pushes the whole circle.
 
 ## Rollout
 
-1. Create the Supabase project, apply both migrations, enable Apple as an auth
-   provider. `supabase/README.md` is the runbook.
+1. Create the Supabase project, apply every migration in numerical order, and
+   enable Apple as an auth provider. `supabase/README.md` is the runbook.
 2. Put the project host and anon key in `Config/Supabase.local.xcconfig`
    (untracked). A build without them runs entirely on device with syncing off —
    which is also how tests and the simulator run.
@@ -221,11 +238,10 @@ is still on disk.
 
 ## Cost and upkeep
 
-The free tier covers 50 users permanently. Its one real edge is that free
-projects pause after seven days without a request;
-`.github/workflows/supabase-keepalive.yml` pings a health endpoint daily, which
-resets the timer. The paid tier removes the pause entirely if the cron ever feels
-like one thing too many to think about.
+Plan limits and inactivity behavior are operational settings rather than part
+of the architecture and may change. Check the Supabase billing page for the
+current project. An optional read-only, RLS-protected keepalive workflow is
+included for plans that pause inactive projects.
 
 ## Privacy and App Store consequences
 
@@ -258,16 +274,15 @@ photos, or any circle's name.
 
 ## What is left
 
-Everything below needs Xcode or a Supabase account and could not be done here:
-
-- **Build it.** No Swift toolchain was available in this environment, so nothing
-  in this branch has been compiled. Expect to fix compile errors on the first
-  `xcodegen generate && xcodebuild` run.
-- **Run the test suite**, including the new `SyncTests.swift`.
-- **Apply the migrations** to a real project and confirm the RLS policies with a
-  second account — the policies are the security boundary and deserve a
-  deliberate test, including confirming a non-member's `select` returns zero
-  rows.
-- **Exercise a two-device sync** end to end: invite, join, concurrent edits,
-  deletion, photo upload and download.
-- **Update App Store privacy labels** before the next submission.
+- **Enable native Sign in with Apple** for the production App ID and Supabase
+  provider. Native-only Swift authentication requires the bundle ID as the
+  provider client ID and does not require the web OAuth `.p8` secret.
+- **Exercise a two-device sync** end to end on physical devices: invite, join,
+  concurrent edits, deletions, removed-member behavior, photo upload/download,
+  offline recovery, and account/circle deletion.
+- **Validate the legacy migration on a physical device** that contains an
+  authentic pre-3.0 shared store and a large photo library. Automated tests cover
+  copied-store relationships, blobs, and failure recovery, but cannot reproduce
+  device storage pressure or launch timing exactly.
+- **Update and publish the App Store privacy answers** before submission, then
+  complete Release archive and TestFlight review checks.

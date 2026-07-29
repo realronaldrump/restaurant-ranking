@@ -7,8 +7,8 @@ import Foundation
 /// `thumbnailData` use external binary storage, so Core Data only reads them
 /// from disk when the property is touched. Building the snapshot without
 /// touching them keeps a sync pass at a few hundred kilobytes no matter how
-/// many meal photos the log holds — the single biggest difference from the
-/// CloudKit mirror, which pushed every blob through the same path as a rating.
+/// many meal photos the log holds. Photo bytes travel through the separate
+/// Storage path and are never part of this record snapshot.
 struct SyncSnapshot {
     var circleID: UUID
     var records: [SyncKey: LocalSyncRecord]
@@ -201,7 +201,6 @@ enum SyncSnapshotBuilder {
 enum SyncError: LocalizedError, Equatable {
     case notConfigured
     case notSignedIn
-    case circleMissingLocally
     case circleKeyMissing
     case noActiveCircle
     case entityMismatch(String)
@@ -212,8 +211,6 @@ enum SyncError: LocalizedError, Equatable {
             "This build has no sync service configured, so the log stays on this iPhone."
         case .notSignedIn:
             "Sign in to sync this circle across devices."
-        case .circleMissingLocally:
-            "The circle being synced is no longer on this device."
         case .circleKeyMissing:
             "This device does not hold the key for that circle. Re-open the invitation to restore it."
         case .noActiveCircle:

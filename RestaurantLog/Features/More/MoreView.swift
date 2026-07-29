@@ -24,7 +24,7 @@ struct MoreView: View {
                     tools: [
                         ("Backfill", "Add past visits from selected photos", "photo.stack", .backfill),
                         ("Merge Duplicates", "Combine records without losing history", "arrow.triangle.merge", .merge),
-                        ("Settings & Privacy", "Circle, permissions, iCloud, and backup", "gearshape", .settings)
+                        ("Settings & Privacy", "Circle, permissions, encrypted sync, and backup", "gearshape", .settings)
                     ]
                 )
             }

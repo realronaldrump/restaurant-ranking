@@ -37,17 +37,23 @@ struct RestaurantLogApp: App {
             }
             .preferredColorScheme(appearancePreference.colorScheme)
             .onOpenURL { url in
-                // An invitation link carries the circle key in its query, so it
-                // is held in memory only until the person confirms the join.
-                if let invitation = CircleInvitation(url: url) {
-                    pendingInvitation = invitation
-                }
+                receiveInvitation(url)
+            }
+            .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                guard let url = activity.webpageURL else { return }
+                receiveInvitation(url)
             }
             .onChange(of: scenePhase) { _, phase in
                 guard phase == .active, let store, let sync,
                       let circleID = store.activeCircleID else { return }
                 Task { await sync.sync(circleID: circleID) }
             }
+        }
+    }
+
+    private func receiveInvitation(_ url: URL) {
+        if let invitation = CircleInvitation(url: url) {
+            pendingInvitation = invitation
         }
     }
 

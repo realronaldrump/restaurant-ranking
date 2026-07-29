@@ -160,6 +160,7 @@ final class AppStore {
     /// has saved successfully. Until then, a failed restore can be rolled back
     /// without disturbing the running app.
     func completeBackupRestore(activeCircleID restoredCircleID: UUID?, selections: [UUID: UUID]) {
+        let replacedCircleIDs = Set(circles.map(\.id))
         activeCircleID = restoredCircleID
         devicePersonIDsByCircle = Dictionary(uniqueKeysWithValues: selections.map {
             ($0.key.uuidString, $0.value.uuidString)
@@ -168,6 +169,10 @@ final class AppStore {
         resetAfterExternalStoreWrite()
         persistDeviceSelection()
         reload()
+        let changedCircleIDs = replacedCircleIDs.union(circles.map(\.id))
+        for circleID in changedCircleIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+            didCommit?(circleID)
+        }
     }
 
     /// Makes an appended recovery circle active while retaining both the original
@@ -211,6 +216,7 @@ final class AppStore {
     /// see the removals as tombstones rather than as an unexplained empty graph.
     @discardableResult
     func eraseAllData() -> Bool {
+        let deletedCircleIDs = Set(circles.map(\.id))
         do {
             // Circles own all saved dining data through cascade relationships.
             // Brands are the model's only other root entity.
@@ -221,6 +227,9 @@ final class AppStore {
                 }
             }
             try persistence.save()
+            for circleID in deletedCircleIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+                didCommit?(circleID)
+            }
 
             circles.removeAll()
             allPeople.removeAll()
@@ -990,6 +999,7 @@ final class AppStore {
 
             context.delete(session)
             try persistence.save()
+            didCommit?(circle.id)
             reload()
             return summary
         } catch {
@@ -1563,7 +1573,7 @@ final class AppStore {
         context.delete(duplicate)
     }
 
-    /// CloudKit can deliver two menu-item records created offline for the same
+    /// Delta sync can deliver two menu-item records created offline for the same
     /// restaurant. Keep the diner-owned reactions, but converge the canonical
     /// dish and any duplicate per-diner entry deterministically.
     @discardableResult
@@ -1933,7 +1943,7 @@ final class AppStore {
 
     /// Person names are unique within a circle. Older builds could split one name
     /// across a member and a reusable companion, while two offline devices can
-    /// independently add the same name before CloudKit syncs. Every replica picks
+    /// independently add the same name before delta syncs. Every replica picks
     /// the same canonical UUID: prefer a member, then the earliest creation date,
     /// then UUID. All linked records are rewritten before duplicate people are
     /// deleted, so concurrent additions converge without losing history.

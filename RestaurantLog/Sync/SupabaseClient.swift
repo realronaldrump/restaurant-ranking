@@ -5,8 +5,7 @@ import Foundation
 /// The app deliberately ships no third-party SDK. The surface it needs is a
 /// dozen HTTP calls against a fixed schema, and hand-writing them keeps the
 /// privacy manifest honest, keeps the dependency graph at one package, and
-/// leaves every request inspectable when something misbehaves — the exact
-/// property the previous CloudKit mirror could not offer.
+/// leaves every request inspectable when something misbehaves.
 actor SupabaseClient {
     struct Session: Codable, Equatable {
         var accessToken: String
@@ -32,6 +31,19 @@ actor SupabaseClient {
         }
     }
 
+    /// Last row from a pull page. The next request asks for rows strictly after
+    /// this tuple so concurrent writes cannot shift an offset underneath us.
+    struct PullCursor: Equatable, Sendable {
+        let updatedMS: Int64
+        let kind: String
+        let id: UUID
+
+        var postgrestFilter: String {
+            let uuid = id.uuidString.lowercased()
+            return "(updated_ms.gt.\(updatedMS),and(updated_ms.eq.\(updatedMS),kind.gt.\(kind)),and(updated_ms.eq.\(updatedMS),kind.eq.\(kind),id.gt.\(uuid)))"
+        }
+    }
+
     struct OutgoingRecord: Encodable {
         let circleID: UUID
         let kind: String
@@ -47,12 +59,18 @@ actor SupabaseClient {
         }
     }
 
-    struct MembershipRow: Decodable {
+    struct MembershipRow: Decodable, Identifiable {
         let circleID: UUID
+        let userID: UUID
+        let personID: UUID
         let role: String
+
+        var id: UUID { userID }
 
         enum CodingKeys: String, CodingKey {
             case circleID = "circle_id"
+            case userID = "user_id"
+            case personID = "person_id"
             case role
         }
     }
@@ -67,9 +85,14 @@ actor SupabaseClient {
     private let session: URLSession
     private var current: Session?
 
-    init(configuration: SyncConfiguration, session: URLSession = .shared) {
+    init(
+        configuration: SyncConfiguration,
+        session: URLSession = .shared,
+        initialSession: Session? = nil
+    ) {
         self.configuration = configuration
         self.session = session
+        current = initialSession
     }
 
     var userID: UUID? { current?.userID }
@@ -168,72 +191,65 @@ actor SupabaseClient {
     // MARK: - Circles
 
     func memberships() async throws -> [MembershipRow] {
+        guard let userID = current?.userID else { throw SyncTransportError.unauthorized }
         var request = try await authorizedRequest(
             path: "circle_members",
-            queryItems: [URLQueryItem(name: "select", value: "circle_id,role")]
+            queryItems: [
+                URLQueryItem(name: "select", value: "circle_id,user_id,person_id,role"),
+                URLQueryItem(name: "user_id", value: "eq.\(userID.uuidString)")
+            ]
         )
         request.httpMethod = "GET"
         let data = try await perform(request)
         return try JSONDecoder().decode([MembershipRow].self, from: data)
     }
 
-    func createCircle(id: UUID, nameCipher: String) async throws {
-        guard let userID = current?.userID else { throw SyncTransportError.unauthorized }
+    func members(circleID: UUID) async throws -> [MembershipRow] {
+        var request = try await authorizedRequest(
+            path: "circle_members",
+            queryItems: [
+                URLQueryItem(name: "select", value: "circle_id,user_id,person_id,role"),
+                URLQueryItem(name: "circle_id", value: "eq.\(circleID.uuidString)")
+            ]
+        )
+        request.httpMethod = "GET"
+        let data = try await perform(request)
+        return try JSONDecoder().decode([MembershipRow].self, from: data)
+    }
 
-        struct CircleRow: Encodable {
-            let id: UUID
-            let ownerID: UUID
-            let nameCipher: String
-
-            enum CodingKeys: String, CodingKey {
-                case id
-                case ownerID = "owner_id"
-                case nameCipher = "name_cipher"
-            }
-        }
-
-        var request = try await authorizedRequest(path: "circles", queryItems: [])
+    func createCircle(id: UUID, nameCipher: String, personID: UUID) async throws {
+        var request = try await authorizedRequest(path: "rpc/create_circle", queryItems: [])
         request.httpMethod = "POST"
-        request.setValue("resolution=merge-duplicates,return=minimal", forHTTPHeaderField: "Prefer")
-        request.httpBody = try encoder.encode([CircleRow(id: id, ownerID: userID, nameCipher: nameCipher)])
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "target_circle": id.uuidString,
+            "encrypted_name": nameCipher,
+            "target_person": personID.uuidString
+        ])
         _ = try await perform(request)
-
-        struct MemberRow: Encodable {
-            let circleID: UUID
-            let userID: UUID
-            let role: String
-
-            enum CodingKeys: String, CodingKey {
-                case circleID = "circle_id"
-                case userID = "user_id"
-                case role
-            }
-        }
-
-        var membership = try await authorizedRequest(path: "circle_members", queryItems: [])
-        membership.httpMethod = "POST"
-        membership.setValue("resolution=ignore-duplicates,return=minimal", forHTTPHeaderField: "Prefer")
-        membership.httpBody = try encoder.encode([MemberRow(circleID: id, userID: userID, role: "owner")])
-        _ = try await perform(membership)
     }
 
     /// Registers an invitation code. Only its hash is stored server side; the
     /// code and the circle key travel to the other member out of band.
-    func createInvite(circleID: UUID, code: String, validForDays: Int = 7) async throws {
+    func createInvite(circleID: UUID, personID: UUID, code: String, validForDays: Int = 7) async throws {
         var request = try await authorizedRequest(path: "rpc/create_circle_invite", queryItems: [])
         request.httpMethod = "POST"
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "target_circle": circleID.uuidString,
+            "target_person": personID.uuidString,
             "invite_code": code,
             "valid_for": "\(validForDays) days"
         ])
         _ = try await perform(request)
     }
 
-    func redeemInvite(code: String) async throws -> UUID {
+    func redeemInvite(code: String, expectedCircleID: UUID, expectedPersonID: UUID) async throws -> UUID {
         var request = try await authorizedRequest(path: "rpc/redeem_circle_invite", queryItems: [])
         request.httpMethod = "POST"
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["invite_code": code])
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "invite_code": code,
+            "expected_circle": expectedCircleID.uuidString,
+            "expected_person": expectedPersonID.uuidString
+        ])
         let data = try await perform(request)
 
         if let decoded = try? JSONDecoder().decode(UUID.self, from: data) { return decoded }
@@ -245,20 +261,61 @@ actor SupabaseClient {
         return id
     }
 
+    func removeMember(circleID: UUID, userID: UUID) async throws {
+        var request = try await authorizedRequest(
+            path: "circle_members",
+            queryItems: [
+                URLQueryItem(name: "circle_id", value: "eq.\(circleID.uuidString)"),
+                URLQueryItem(name: "user_id", value: "eq.\(userID.uuidString)")
+            ]
+        )
+        request.httpMethod = "DELETE"
+        request.setValue("return=minimal", forHTTPHeaderField: "Prefer")
+        _ = try await perform(request)
+    }
+
+    func leaveCircle(circleID: UUID) async throws {
+        guard let userID = current?.userID else { throw SyncTransportError.unauthorized }
+        try await removeMember(circleID: circleID, userID: userID)
+    }
+
+    /// Permanently removes the encrypted database rows and every Storage object.
+    /// The first RPC freezes member writes; retries then continue emptying the
+    /// bucket until the final transactional circle delete can complete.
+    func deleteCircleData(circleID: UUID) async throws {
+        try await callVoidRPC("begin_circle_deletion", body: ["target_circle": circleID.uuidString])
+
+        while true {
+            let names = try await listPhotoObjectNames(circleID: circleID)
+            guard !names.isEmpty else { break }
+            try await deletePhotoObjects(names.map { "\(circleID.uuidString)/\($0)" })
+        }
+
+        try await callVoidRPC("finish_circle_deletion", body: ["target_circle": circleID.uuidString])
+    }
+
+    func deleteAccount() async throws {
+        try await callVoidRPC("delete_sync_account", body: [:])
+        signOut()
+    }
+
     // MARK: - Records
 
     /// Pulls one page of everything in `circleID` changed at or after `since`.
-    func pullRecords(circleID: UUID, since watermark: Int64, offset: Int) async throws -> [RemoteRecord] {
+    func pullRecords(circleID: UUID, since watermark: Int64, after cursor: PullCursor?) async throws -> [RemoteRecord] {
+        var queryItems = [
+            URLQueryItem(name: "select", value: "kind,id,payload,deleted,updated_ms,device_id"),
+            URLQueryItem(name: "circle_id", value: "eq.\(circleID.uuidString)"),
+            URLQueryItem(name: "updated_ms", value: "gte.\(watermark)"),
+            URLQueryItem(name: "order", value: "updated_ms.asc,kind.asc,id.asc"),
+            URLQueryItem(name: "limit", value: String(Self.pullPageSize))
+        ]
+        if let cursor {
+            queryItems.append(URLQueryItem(name: "or", value: cursor.postgrestFilter))
+        }
         var request = try await authorizedRequest(
             path: "records",
-            queryItems: [
-                URLQueryItem(name: "select", value: "kind,id,payload,deleted,updated_ms,device_id"),
-                URLQueryItem(name: "circle_id", value: "eq.\(circleID.uuidString)"),
-                URLQueryItem(name: "updated_ms", value: "gte.\(watermark)"),
-                URLQueryItem(name: "order", value: "updated_ms.asc"),
-                URLQueryItem(name: "limit", value: String(Self.pullPageSize)),
-                URLQueryItem(name: "offset", value: String(offset))
-            ]
+            queryItems: queryItems
         )
         request.httpMethod = "GET"
         let data = try await perform(request)
@@ -274,27 +331,6 @@ actor SupabaseClient {
             request.httpBody = try encoder.encode(batch)
             _ = try await perform(request)
         }
-    }
-
-    /// Highest watermark currently visible in the circle, used to seed a first sync.
-    func latestWatermark(circleID: UUID) async throws -> Int64 {
-        var request = try await authorizedRequest(
-            path: "records",
-            queryItems: [
-                URLQueryItem(name: "select", value: "updated_ms"),
-                URLQueryItem(name: "circle_id", value: "eq.\(circleID.uuidString)"),
-                URLQueryItem(name: "order", value: "updated_ms.desc"),
-                URLQueryItem(name: "limit", value: "1")
-            ]
-        )
-        request.httpMethod = "GET"
-        let data = try await perform(request)
-
-        struct Row: Decodable {
-            let updatedMS: Int64
-            enum CodingKeys: String, CodingKey { case updatedMS = "updated_ms" }
-        }
-        return try JSONDecoder().decode([Row].self, from: data).first?.updatedMS ?? 0
     }
 
     // MARK: - Photo blobs
@@ -320,6 +356,17 @@ actor SupabaseClient {
         }
     }
 
+    func deletePhoto(circleID: UUID, objectKey: String) async throws {
+        var request = try await storageRequest(objectKey: objectKey, circleID: circleID)
+        request.httpMethod = "DELETE"
+        do {
+            _ = try await perform(request)
+        } catch SyncTransportError.notFound {
+            // Deletion is idempotent. A peer or an earlier retry may already
+            // have removed the object.
+        }
+    }
+
     private func storageRequest(objectKey: String, circleID: UUID) async throws -> URLRequest {
         let url = configuration.storageURL
             .appendingPathComponent("object")
@@ -332,6 +379,47 @@ actor SupabaseClient {
         request.setValue(configuration.anonKey, forHTTPHeaderField: "apikey")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         return request
+    }
+
+    private func listPhotoObjectNames(circleID: UUID) async throws -> [String] {
+        var request = URLRequest(
+            url: configuration.storageURL
+                .appendingPathComponent("object/list/circle-photos")
+        )
+        request.httpMethod = "POST"
+        request.setValue(configuration.anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(try await authorizedToken())", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "prefix": circleID.uuidString,
+            "limit": 1000,
+            "offset": 0,
+            "sortBy": ["column": "name", "order": "asc"]
+        ])
+        let data = try await perform(request)
+        struct ObjectRow: Decodable { let name: String }
+        return try JSONDecoder().decode([ObjectRow].self, from: data).map(\.name)
+    }
+
+    private func deletePhotoObjects(_ paths: [String]) async throws {
+        guard !paths.isEmpty else { return }
+        var request = URLRequest(
+            url: configuration.storageURL
+                .appendingPathComponent("object/circle-photos")
+        )
+        request.httpMethod = "DELETE"
+        request.setValue(configuration.anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(try await authorizedToken())", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["prefixes": paths])
+        _ = try await perform(request)
+    }
+
+    private func callVoidRPC(_ name: String, body: [String: Any]) async throws {
+        var request = try await authorizedRequest(path: "rpc/\(name)", queryItems: [])
+        request.httpMethod = "POST"
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        _ = try await perform(request)
     }
 
     // MARK: - Plumbing
@@ -383,7 +471,7 @@ actor SupabaseClient {
         switch http.statusCode {
         case 200 ..< 300:
             return data
-        case 401, 403:
+        case 401:
             // One transparent retry: an access token can expire between the
             // freshness check and the server reading it.
             if allowRetry, let refreshToken = current?.refreshToken ?? CircleKeychain.refreshToken {
@@ -393,6 +481,8 @@ actor SupabaseClient {
                 return try await perform(retried, allowRetry: false)
             }
             throw SyncTransportError.unauthorized
+        case 403:
+            throw SyncTransportError.forbidden(Self.message(from: data))
         case 404:
             throw SyncTransportError.notFound
         case 409:
@@ -426,6 +516,7 @@ actor SupabaseClient {
 
 enum SyncTransportError: LocalizedError, Equatable {
     case unauthorized
+    case forbidden(String)
     case notFound
     case conflict(String)
     case offline(String)
@@ -437,6 +528,8 @@ enum SyncTransportError: LocalizedError, Equatable {
         switch self {
         case .unauthorized:
             "Sign in again to keep this circle in sync."
+        case let .forbidden(detail):
+            "This account no longer has access to that synced circle. Your on-device log is unchanged. \(detail)"
         case .notFound:
             "That record is no longer on the sync service."
         case let .conflict(detail):
@@ -456,7 +549,7 @@ enum SyncTransportError: LocalizedError, Equatable {
     var isTransient: Bool {
         switch self {
         case .offline, .serverUnavailable: true
-        case .unauthorized, .notFound, .conflict, .requestFailed, .malformedResponse: false
+        case .unauthorized, .forbidden, .notFound, .conflict, .requestFailed, .malformedResponse: false
         }
     }
 }

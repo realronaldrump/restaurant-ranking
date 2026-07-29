@@ -7,7 +7,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reaching out. This request will be public. Do not include personal dining records, precise locations, iCloud details, invitation links, photos, or other sensitive information.
+        Thanks for reaching out. This request will be public. Do not include personal dining records, precise locations, account details, invitation links, photos, or other sensitive information.
   - type: dropdown
     id: topic
     attributes:
@@ -16,7 +16,7 @@ body:
         - Logging a meal
         - Rankings or comparisons
         - History or photos
-        - iCloud sharing or sync
+        - Encrypted circle syncing or invitations
         - Privacy or permissions
         - Accessibility
         - Something else

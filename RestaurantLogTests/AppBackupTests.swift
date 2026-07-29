@@ -88,11 +88,15 @@ final class AppBackupTests: XCTestCase {
 
         let destination = makeStore()
         destination.bootstrap(myName: "Temporary", circleName: "Placeholder")
+        let placeholderCircleID = try XCTUnwrap(destination.activeCircleID)
         let junk = destination.createLocation(name: "Should Disappear")
         _ = destination.logVisit(at: junk, reaction: .fine)
+        var scheduledCircleIDs = Set<UUID>()
+        destination.didCommit = { scheduledCircleIDs.insert($0) }
 
         let summary = try await AppBackupService.restore(decoded, into: destination)
 
+        XCTAssertEqual(scheduledCircleIDs, Set([placeholderCircleID, try XCTUnwrap(decoded.activeCircleID)]))
         XCTAssertEqual(summary, .init(circles: 1, locations: 2, visits: 1, photos: 1))
         XCTAssertEqual(destination.circles.map(\.name), ["Dinner Club"])
         XCTAssertEqual(destination.currentPerson?.id, me.id)
@@ -308,6 +312,7 @@ final class AppBackupTests: XCTestCase {
         let store = makeStore()
         store.bootstrap(myName: "Owner", circleName: "Our Table")
         let owner = try XCTUnwrap(store.currentPerson)
+        let ownerID = owner.id
         let partner = try XCTUnwrap(store.addCircleMember(name: "Partner"))
         let first = store.createLocation(name: "First Place", category: .fullService)
         let second = store.createLocation(name: "Second Place", category: .counterService)
@@ -429,7 +434,7 @@ final class AppBackupTests: XCTestCase {
         store.activateCircle(originalCircleID)
         XCTAssertEqual(store.locations.count, 2)
         XCTAssertEqual(store.visits.count, 1)
-        XCTAssertEqual(store.currentPerson?.id, owner.id)
+        XCTAssertEqual(store.currentPerson?.id, ownerID)
     }
 
     private func makeStore() -> AppStore {

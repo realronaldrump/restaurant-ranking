@@ -91,7 +91,11 @@ final class BeliImporterTests: XCTestCase {
         XCTAssertEqual(store.ranked().first?.location.name, "Unknown Date Cafe")
 
         let session = try XCTUnwrap(store.beliImportSessions.first)
+        let circleID = try XCTUnwrap(store.activeCircleID)
+        var scheduledCircleIDs: [UUID] = []
+        store.didCommit = { scheduledCircleIDs.append($0) }
         let deleted = try XCTUnwrap(store.deleteBeliImport(sessionID: session.id))
+        XCTAssertEqual(scheduledCircleIDs, [circleID])
         XCTAssertEqual(deleted.restaurantsDeleted, 1)
         XCTAssertEqual(deleted.outingsDeleted, 1)
         XCTAssertEqual(deleted.rankingsDeleted, 1)

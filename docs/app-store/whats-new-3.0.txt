@@ -1,0 +1,7 @@
+What’s New in Version 3.0
+
+• Add optional end-to-end encrypted circle syncing so shared dining logs stay current across devices.
+• Sign in with Apple and use single-use invitations to securely join a dining circle.
+• Keep edits reliable when changes arrive during a sync or shared records need reconciliation.
+• Transfer encrypted photos separately so everyday ratings and visit updates stay lightweight.
+• Preserve dining history from previously accepted iCloud circles when upgrading to the new sync system.

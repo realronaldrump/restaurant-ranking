@@ -3,6 +3,7 @@ import SwiftUI
 @MainActor
 struct MainTabView: View {
     @Environment(AppStore.self) private var store
+    @Environment(SyncCoordinator.self) private var sync
     @Environment(LocationService.self) private var locationService
     @State private var router = AppRouter()
 
@@ -26,6 +27,7 @@ struct MainTabView: View {
             sheetView(sheet)
                 .environment(router)
                 .environment(store)
+                .environment(sync)
                 .environment(locationService)
                 .presentationBackground(BBTheme.paper)
                 .presentationDragIndicator(.visible)

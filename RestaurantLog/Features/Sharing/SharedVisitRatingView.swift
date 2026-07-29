@@ -154,88 +154,266 @@ struct SharedVisitRatingView: View {
 struct CircleSharingView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppStore.self) private var store
-    @State private var payload: SharePayload?
-    @State private var isPreparing = false
-    @State private var isRebuildingShare = false
-    @State private var confirmsShareRebuild = false
-    @State private var error: String?
+    @Environment(SyncCoordinator.self) private var sync
+    @State private var invitation: CircleInvitation?
+    @State private var isWorking = false
     @State private var newPerson = ""
+
+    private var circleIsSynced: Bool {
+        guard let circle = store.activeCircle else { return false }
+        return sync.isSyncing(circleID: circle.id)
+    }
 
     var body: some View {
         NavigationStack {
-            Group {
-                if let payload { CloudSharingController(payload: payload) }
-                else {
-                    ScrollView { VStack(alignment: .leading, spacing: 20) {
-                        Eyebrow("Private iCloud circle"); Text("Share with your circle").font(BBTheme.display(36)); Text("Invite up to six people. Everyone can see shared outings, while each diner’s entry and rankings stay personal.").foregroundStyle(.secondary)
-                        VStack(alignment: .leading, spacing: 12) { ForEach(store.circleMembers) { person in Label(person.name + (person.id == store.currentPerson?.id ? " (this device)" : ""), systemImage: "person.crop.circle.fill") }; if store.circleMembers.count < 6 { HStack { TextField("Circle member", text: $newPerson); Button("Add") { _ = store.addCircleMember(name: newPerson); newPerson = "" }.disabled(newPerson.trimmingCharacters(in: .whitespaces).isEmpty) } } }.editorialCard()
-                        Button { prepare() } label: { if isPreparing { ProgressView().frame(maxWidth: .infinity) } else { Label("Create or Manage iCloud Invitation", systemImage: "person.badge.plus").frame(maxWidth: .infinity) } }.buttonStyle(PrimaryButtonStyle()).disabled(isPreparing || store.activeCircle == nil)
-                        if let error { Text(error).font(.caption).foregroundStyle(BBTheme.oxblood) }
-                        Text("Apple iCloud handles invitations and shared records. The developer does not receive them.").font(.footnote).foregroundStyle(.secondary)
-                        VStack(alignment: .leading, spacing: 10) {
-                            Eyebrow("Sharing recovery")
-                            Text("Missing on another phone?").font(.headline)
-                            Text("Create a complete copy in a fresh iCloud share, then send a new invitation. The current circle stays untouched as a safety copy.")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                            Text("Use this only on the device where the complete history is visible. This circle currently has \(store.locations.count) places and \(store.visits.count) visits.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Button {
-                                confirmsShareRebuild = true
-                            } label: {
-                                if isRebuildingShare {
-                                    ProgressView().frame(maxWidth: .infinity)
-                                } else {
-                                    Label("Rebuild iCloud Share", systemImage: "arrow.triangle.2.circlepath.icloud")
-                                        .frame(maxWidth: .infinity)
-                                }
-                            }
-                            .buttonStyle(SecondaryButtonStyle())
-                            .disabled(isPreparing || store.activeCircle == nil)
-                        }
-                        .editorialCard()
-                    }.padding(20).readablePageWidth() }.editorialPage()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    header
+                    memberCard
+                    if !sync.isConfigured {
+                        unavailableCard
+                    } else if !sync.isSignedIn {
+                        signInCard
+                    } else if circleIsSynced {
+                        syncedCard
+                        invitationCard
+                    } else {
+                        enableCard
+                    }
+                    if let message = sync.lastError {
+                        Text(message).font(.caption).foregroundStyle(BBTheme.oxblood)
+                    }
+                    Text("Outings, ratings and photos are encrypted on this iPhone before they are uploaded. The key stays on the devices in your circle and travels only inside an invitation.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
+                .padding(20)
+                .readablePageWidth()
             }
+            .editorialPage()
             .navigationTitle("Your Circle")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
-            .alert("Rebuild iCloud sharing?", isPresented: $confirmsShareRebuild) {
-                Button("Cancel", role: .cancel) {}
-                Button("Create New Share") { rebuildShare() }
-            } message: {
-                Text("Continue only if this device shows the complete history. A full recovery copy will become the active circle and use a brand-new iCloud share. The original circle and all of its data will remain on this device. Everyone else must accept the new invitation.")
-            }
-        }
-    }
-    private func prepare() {
-        guard let circle = store.activeCircle else { return }
-        error = nil
-        isPreparing = true
-        Task {
-            do {
-                payload = try await CloudSharingService.shared.payload(for: circle, persistence: store.persistence)
-            } catch {
-                self.error = error.localizedDescription
-            }
-            isPreparing = false
         }
     }
 
-    private func rebuildShare() {
-        guard let circle = store.activeCircle else { return }
-        error = nil
-        isPreparing = true
-        isRebuildingShare = true
-        Task {
-            do {
-                payload = try await CloudSharingService.shared.recoveryPayload(for: circle, store: store)
-            } catch {
-                self.error = error.localizedDescription
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Eyebrow("Private circle")
+            Text("Share with your circle").font(BBTheme.display(36))
+            Text("Invite up to six people. Everyone sees shared outings, while each diner\u{2019}s entry and rankings stay personal.")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var memberCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(store.circleMembers) { person in
+                Label(
+                    person.name + (person.id == store.currentPerson?.id ? " (this device)" : ""),
+                    systemImage: "person.crop.circle.fill"
+                )
             }
-            isRebuildingShare = false
-            isPreparing = false
+            if store.circleMembers.count < 6 {
+                HStack {
+                    TextField("Circle member", text: $newPerson)
+                    Button("Add") {
+                        _ = store.addCircleMember(name: newPerson)
+                        newPerson = ""
+                    }
+                    .disabled(newPerson.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        }
+        .editorialCard()
+    }
+
+    private var unavailableCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Eyebrow("Syncing")
+            Text("Not available in this build").font(.headline)
+            Text("This copy of the app has no sync service configured, so the log stays on this iPhone. Backups in Settings still move it between devices.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .editorialCard()
+    }
+
+    private var signInCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Eyebrow("Syncing")
+            Text("Sign in to sync").font(.headline)
+            Text("Signing in tells the sync service which member a device belongs to. It never receives your dining records in readable form.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Button {
+                run { await sync.signInWithApple() }
+            } label: {
+                Label("Sign in with Apple", systemImage: "apple.logo").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .disabled(isWorking)
+        }
+        .editorialCard()
+    }
+
+    private var enableCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Eyebrow("Syncing")
+            Text("Turn on syncing for this circle").font(.headline)
+            Text("A key is created on this iPhone and stored in its Keychain. Everything uploaded from here on is encrypted with it first.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Button {
+                guard let circle = store.activeCircle else { return }
+                run { await sync.enableSync(circleID: circle.id, circleName: circle.name) }
+            } label: {
+                if isWorking {
+                    ProgressView().frame(maxWidth: .infinity)
+                } else {
+                    Label("Turn On Syncing", systemImage: "arrow.triangle.2.circlepath")
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .disabled(isWorking || store.activeCircle == nil)
+        }
+        .editorialCard()
+    }
+
+    private var syncedCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Eyebrow("Syncing")
+            LabeledContent("Status", value: sync.status.description)
+            if let outcome = sync.lastOutcome, outcome.conflicts > 0 {
+                Text("This device\u{2019}s version was kept for \(outcome.conflicts) record(s) edited in two places.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Button("Sync Now") {
+                guard let circle = store.activeCircle else { return }
+                run { await sync.sync(circleID: circle.id) }
+            }
+            .buttonStyle(SecondaryButtonStyle())
+            .disabled(isWorking || sync.status.isBusy)
+        }
+        .editorialCard()
+    }
+
+    private var invitationCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Eyebrow("Invitations")
+            Text("Invite someone").font(.headline)
+            Text("An invitation carries the circle key, so send it the way you would send a house key \u{2014} directly to the person, in a conversation you trust. It works once and expires in seven days.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            if let invitation, let url = invitation.url {
+                ShareLink(item: url) {
+                    Label("Send Invitation", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                Text("Anyone who opens this link joins the circle. Create a new one if it goes astray.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Button {
+                    guard let circle = store.activeCircle else { return }
+                    run { invitation = await sync.makeInvitation(circleID: circle.id, circleName: circle.name) }
+                } label: {
+                    if isWorking {
+                        ProgressView().frame(maxWidth: .infinity)
+                    } else {
+                        Label("Create Invitation", systemImage: "person.badge.plus").frame(maxWidth: .infinity)
+                    }
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(isWorking)
+            }
+        }
+        .editorialCard()
+    }
+
+    private func run(_ work: @escaping () async -> Void) {
+        isWorking = true
+        Task {
+            await work()
+            isWorking = false
+        }
+    }
+}
+
+/// Presented when an invitation link is opened on this device.
+@MainActor
+struct JoinCircleView: View {
+    let invitation: CircleInvitation
+    let onJoined: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(SyncCoordinator.self) private var sync
+    @State private var isWorking = false
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Eyebrow("Invitation")
+                        Text(invitation.circleName).font(BBTheme.display(34))
+                        Text("Joining adds this iPhone to the circle and downloads its outings, dishes and photos. Your ratings and rankings stay your own.")
+                            .foregroundStyle(.secondary)
+                    }
+                    if !sync.isSignedIn {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Sign in first").font(.headline)
+                            Button {
+                                run { await sync.signInWithApple() }
+                            } label: {
+                                Label("Sign in with Apple", systemImage: "apple.logo").frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(PrimaryButtonStyle())
+                            .disabled(isWorking)
+                        }
+                        .editorialCard()
+                    } else {
+                        Button {
+                            run {
+                                if await sync.join(invitation) {
+                                    onJoined()
+                                    dismiss()
+                                } else {
+                                    error = sync.lastError
+                                }
+                            }
+                        } label: {
+                            if isWorking {
+                                ProgressView().frame(maxWidth: .infinity)
+                            } else {
+                                Label("Join This Circle", systemImage: "person.2.fill").frame(maxWidth: .infinity)
+                            }
+                        }
+                        .buttonStyle(PrimaryButtonStyle())
+                        .disabled(isWorking)
+                    }
+                    if let error {
+                        Text(error).font(.caption).foregroundStyle(BBTheme.oxblood)
+                    }
+                }
+                .padding(22)
+                .readablePageWidth()
+            }
+            .editorialPage()
+            .navigationTitle("Join Circle")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Not Now") { dismiss() } } }
+        }
+    }
+
+    private func run(_ work: @escaping () async -> Void) {
+        isWorking = true
+        Task {
+            await work()
+            isWorking = false
         }
     }
 }

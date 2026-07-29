@@ -6,7 +6,7 @@ final class RestaurantLogUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
-        app.launchArguments = ["-disableCloudKit", "-resetForUITests", "-seedSampleData"]
+        app.launchArguments = ["-resetForUITests", "-seedSampleData"]
         app.launch()
         XCTAssertTrue(
             app.buttons["log-meal-button"].waitForExistence(timeout: 12),
@@ -178,7 +178,6 @@ final class RestaurantLogUITests: XCTestCase {
     func testOnboardingSupportingTextWrapsAtAccessibilitySize() {
         app.terminate()
         app.launchArguments = [
-            "-disableCloudKit",
             "-resetForUITests",
             "-UIPreferredContentSizeCategoryName",
             "UICTContentSizeCategoryAccessibilityExtraExtraLarge"
@@ -203,7 +202,7 @@ final class RestaurantLogUITests: XCTestCase {
     func testOnboardingBackupRestoreRequiresDestructiveConfirmation() {
         app.terminate()
         app.launchArguments = [
-            "-disableCloudKit", "-resetForUITests",
+            "-resetForUITests",
             "-didCompleteGrandOpening", "NO"
         ]
         app.launch()

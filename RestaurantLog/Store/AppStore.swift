@@ -2,7 +2,6 @@ import CoreData
 import CryptoKit
 import Foundation
 import Observation
-import OSLog
 import UIKit
 
 struct ComparisonQuestion: Identifiable {
@@ -14,20 +13,6 @@ struct ComparisonQuestion: Identifiable {
 enum SettleScorePrompt {
     case comparison(ComparisonQuestion)
     case anchor(RestaurantLocation)
-}
-
-enum CloudSyncStatus: Equatable {
-    case available
-    case syncing
-    case retrying
-
-    var description: String {
-        switch self {
-        case .available: "Active"
-        case .syncing: "Syncing…"
-        case .retrying: "Retrying…"
-        }
-    }
 }
 
 @MainActor
@@ -47,10 +32,8 @@ final class AppStore {
     private(set) var devicePersonID: UUID?
     private(set) var revision = 0
     var lastError: String?
-    private(set) var cloudSyncStatus: CloudSyncStatus = .available
 
     @ObservationIgnored private var devicePersonIDsByCircle: [String: String] = [:]
-    @ObservationIgnored private var isWaitingForAcceptedCircle = false
     @ObservationIgnored private var scoreCache: [UUID: [LocationScore]] = [:]
     @ObservationIgnored private var circleScoreCache: [String: [CircleLocationScore]] = [:]
     @ObservationIgnored private var locationsByIdentity: [LocationIdentityKey: RestaurantLocation] = [:]
@@ -60,12 +43,8 @@ final class AppStore {
     @ObservationIgnored private var pendingSorts: Set<CachedCollection> = []
     @ObservationIgnored private var remoteReloadTask: Task<Void, Never>?
     @ObservationIgnored private(set) var diagnosticReloadCount = 0
-    @ObservationIgnored private var syncingCloudStores: Set<String> = []
-    @ObservationIgnored private var retryingCloudStores: Set<String> = []
-    @ObservationIgnored private let cloudSyncLogger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.davis.bigbeautifulranking",
-        category: "CloudSync"
-    )
+    /// Called with the active circle after every successful save.
+    @ObservationIgnored var didCommit: ((UUID) -> Void)?
 
     var context: NSManagedObjectContext { persistence.container.viewContext }
     var activeCircle: CircleEntity? {
@@ -105,7 +84,7 @@ final class AppStore {
         devicePersonIDsByCircle = UserDefaults.standard.dictionary(forKey: "devicePersonIDsByCircle") as? [String: String] ?? [:]
         reload()
         if let loadError = persistence.loadError {
-            reportError("iCloud sync could not start, so your log is staying on this device for now. \(loadError.localizedDescription)")
+            reportError("Your dining log could not be opened. \(loadError.localizedDescription)")
         }
         NotificationCenter.default.addObserver(
             forName: .NSPersistentStoreRemoteChange,
@@ -114,15 +93,14 @@ final class AppStore {
         ) { [weak self] _ in
             Task { @MainActor in self?.scheduleRemoteReload() }
         }
+        // Sync writes on a background context of this same process, which does
+        // not raise a remote-change notification, so the engine says so directly.
         NotificationCenter.default.addObserver(
-            forName: .cloudShareWasAccepted,
-            object: persistence,
+            forName: .syncDidApplyRemoteChanges,
+            object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in
-                self?.isWaitingForAcceptedCircle = true
-                self?.reload()
-            }
+            Task { @MainActor in self?.scheduleRemoteReload() }
         }
         NotificationCenter.default.addObserver(
             forName: .persistenceDidFail,
@@ -130,27 +108,7 @@ final class AppStore {
             queue: .main
         ) { [weak self] notification in
             let message = notification.userInfo?[PersistenceNotificationKey.message] as? String
-            Task { @MainActor in self?.reportError(message ?? "Big Beautiful Log could not save or sync your latest changes.") }
-        }
-        NotificationCenter.default.addObserver(
-            forName: NSPersistentCloudKitContainer.eventChangedNotification,
-            object: persistence.container,
-            queue: .main
-        ) { [weak self] notification in
-            guard let event = notification.userInfo?[NSPersistentCloudKitContainer.eventNotificationUserInfoKey]
-                    as? NSPersistentCloudKitContainer.Event else { return }
-            Task { @MainActor in
-                guard let self else { return }
-                if event.endDate == nil {
-                    self.processCloudSyncStart(storeIdentifier: event.storeIdentifier)
-                } else {
-                    self.processCloudSyncCompletion(
-                        storeIdentifier: event.storeIdentifier,
-                        succeeded: event.succeeded,
-                        error: event.error
-                    )
-                }
-            }
+            Task { @MainActor in self?.reportError(message ?? "Big Beautiful Log could not save your latest changes.") }
         }
     }
 
@@ -191,37 +149,6 @@ final class AppStore {
         lastError = nil
     }
 
-    func processCloudSyncStart(storeIdentifier: String) {
-        retryingCloudStores.remove(storeIdentifier)
-        syncingCloudStores.insert(storeIdentifier)
-        updateCloudSyncStatus()
-    }
-
-    func processCloudSyncCompletion(storeIdentifier: String, succeeded: Bool, error: Error?) {
-        syncingCloudStores.remove(storeIdentifier)
-        if succeeded {
-            retryingCloudStores.remove(storeIdentifier)
-        } else {
-            retryingCloudStores.insert(storeIdentifier)
-            if let error {
-                cloudSyncLogger.error(
-                    "Background iCloud sync will retry. \(error.localizedDescription, privacy: .public)"
-                )
-            }
-        }
-        updateCloudSyncStatus()
-    }
-
-    private func updateCloudSyncStatus() {
-        if !retryingCloudStores.isEmpty {
-            cloudSyncStatus = .retrying
-        } else if !syncingCloudStores.isEmpty {
-            cloudSyncStatus = .syncing
-        } else {
-            cloudSyncStatus = .available
-        }
-    }
-
     /// Device identity is local-only state, but it belongs in a portable backup
     /// so every restored log opens as the same person on a new installation.
     func selectedPersonIDForBackup(circleID: UUID) -> UUID? {
@@ -257,7 +184,6 @@ final class AppStore {
     }
 
     private func resetAfterExternalStoreWrite() {
-        isWaitingForAcceptedCircle = false
         remoteReloadTask?.cancel()
         remoteReloadTask = nil
         context.reset()
@@ -280,8 +206,9 @@ final class AppStore {
         context.undoManager?.removeAllActions()
     }
 
-    /// Permanently removes every dining circle from every configured persistent store.
-    /// Object-by-object deletes are intentional so CloudKit can mirror them.
+    /// Permanently removes every dining circle from the local store.
+    /// Object-by-object deletes let cascade rules run and let the next sync pass
+    /// see the removals as tombstones rather than as an unexplained empty graph.
     @discardableResult
     func eraseAllData() -> Bool {
         do {
@@ -305,7 +232,6 @@ final class AppStore {
             activeCircleID = nil
             devicePersonID = nil
             devicePersonIDsByCircle.removeAll()
-            isWaitingForAcceptedCircle = false
             remoteReloadTask?.cancel()
             remoteReloadTask = nil
             scoreCache.removeAll()
@@ -1389,7 +1315,6 @@ final class AppStore {
         remoteReloadTask = nil
         diagnosticReloadCount += 1
         do {
-            let previousCircleIDs = Set(circles.map(\.id))
             let previousDevicePersonID = devicePersonID
             circles = try fetch(CircleEntity.self, sort: [NSSortDescriptor(key: "createdAt", ascending: true)])
             allPeople = try fetch(PersonEntity.self, sort: [NSSortDescriptor(key: "createdAt", ascending: true)])
@@ -1409,13 +1334,9 @@ final class AppStore {
                 do { try persistence.save() }
                 catch { reportError("Older circle data could not be upgraded yet. \(error.localizedDescription)") }
             }
-            let acceptedCircle = circles.first(where: { !previousCircleIDs.contains($0.id) })
-                ?? circles.filter(isStoredInSharedDatabase).max(by: { $0.createdAt < $1.createdAt })
-            if isWaitingForAcceptedCircle, let acceptedCircle {
-                activeCircleID = acceptedCircle.id
-                devicePersonID = nil
-                isWaitingForAcceptedCircle = false
-            } else if activeCircleID == nil || !circles.contains(where: { $0.id == activeCircleID }) {
+            // Joining a circle now activates it explicitly, so reload only has
+            // to keep the current selection valid.
+            if activeCircleID == nil || !circles.contains(where: { $0.id == activeCircleID }) {
                 activeCircleID = circles.first?.id
             }
             if let activeCircleID {
@@ -1443,6 +1364,9 @@ final class AppStore {
             try persistence.save()
             sortPendingCollections()
             revision += 1
+            // Let whoever owns sync decide when to run; the store stays
+            // unaware of the network so a save can never depend on it.
+            if let activeCircleID { didCommit?(activeCircleID) }
         } catch {
             context.rollback()
             reload()
@@ -1459,14 +1383,14 @@ final class AppStore {
             guard let self else { return }
             let previousCircleIDs = Set(circles.map(\.id))
             reload()
-            let arrivedCircles = circles.filter { !previousCircleIDs.contains($0.id) }
-            let restoredCircle = arrivedCircles
-                .filter(isStoredInSharedDatabase)
+            // A circle this device has never seen can only have arrived from a
+            // sync pull, which means someone accepted an invitation here.
+            let arrived = circles
+                .filter { !previousCircleIDs.contains($0.id) }
                 .max(by: { $0.createdAt < $1.createdAt })
-                ?? arrivedCircles.max(by: { $0.createdAt < $1.createdAt })
-            if let restoredCircle {
-                activateCircle(restoredCircle.id)
-                NotificationCenter.default.post(name: .cloudCircleWasRestored, object: self)
+            if let arrived {
+                activateCircle(arrived.id)
+                NotificationCenter.default.post(name: .circleDidArriveFromSync, object: self)
             }
         }
     }
@@ -2378,9 +2302,6 @@ final class AppStore {
         devicePersonIDsByCircle[circleID.uuidString].flatMap(UUID.init(uuidString:))
     }
 
-    private func isStoredInSharedDatabase(_ circle: CircleEntity) -> Bool {
-        circle.objectID.persistentStore?.url?.lastPathComponent.contains("-shared") == true
-    }
 }
 
 private extension String {

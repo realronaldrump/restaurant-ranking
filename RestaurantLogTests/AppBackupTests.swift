@@ -293,7 +293,7 @@ final class AppBackupTests: XCTestCase {
     }
 
     func testReloadSelectsFirstCircleWhenStoredActiveCircleIsMissing() throws {
-        let persistence = PersistenceController(inMemory: true, cloudEnabled: false)
+        let persistence = PersistenceController(inMemory: true)
         let original = AppStore(persistence: persistence)
         original.bootstrap(myName: "Source", circleName: "Recovered")
         let expectedCircleID = try XCTUnwrap(original.activeCircleID)
@@ -433,6 +433,6 @@ final class AppBackupTests: XCTestCase {
     }
 
     private func makeStore() -> AppStore {
-        AppStore(persistence: PersistenceController(inMemory: true, cloudEnabled: false))
+        AppStore(persistence: PersistenceController(inMemory: true))
     }
 }

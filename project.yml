@@ -29,9 +29,7 @@ targets:
     platform: iOS
     attributes:
       SystemCapabilities:
-        com.apple.iCloud:
-          enabled: 1
-        com.apple.Push:
+        com.apple.developer.applesignin:
           enabled: 1
     sources:
       - path: RestaurantLog
@@ -43,7 +41,13 @@ targets:
         CFBundleDisplayName: Big Beautiful Restaurant Log
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
-        CKSharingSupported: true
+        SupabaseURL: https://$(SUPABASE_HOST)
+        SupabaseAnonKey: $(SUPABASE_ANON_KEY)
+        CFBundleURLTypes:
+          - CFBundleURLName: com.davis.bigbeautifulranking.invite
+            CFBundleTypeRole: Editor
+            CFBundleURLSchemes:
+              - bigbeautifullog
         UTExportedTypeDeclarations:
           - UTTypeIdentifier: com.davis.bigbeautiful.backup
             UTTypeDescription: Big Beautiful Restaurant Log Backup
@@ -59,20 +63,17 @@ targets:
         NSLocationWhenInUseUsageDescription: Your location helps find nearby restaurants while you log a meal. It is never tracked in the background.
         NSPhotoLibraryUsageDescription: Photo access lets you attach meal photos and privately rebuild your dining history.
         UIApplicationSupportsIndirectInputEvents: true
-        UIBackgroundModes:
-          - remote-notification
         UIDesignRequiresCompatibility: true
         UILaunchScreen:
           UIColorName: Paper
+    configFiles:
+      Debug: Config/Supabase.xcconfig
+      Release: Config/Supabase.xcconfig
     entitlements:
       path: RestaurantLog/Resources/RestaurantLog.entitlements
       properties:
-        aps-environment: $(APS_ENVIRONMENT)
-        com.apple.developer.icloud-container-environment: $(ICLOUD_CONTAINER_ENVIRONMENT)
-        com.apple.developer.icloud-container-identifiers:
-          - iCloud.com.davis.bigbeautifulranking
-        com.apple.developer.icloud-services:
-          - CloudKit
+        com.apple.developer.applesignin:
+          - Default
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.davis.bigbeautifulranking
@@ -85,17 +86,10 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         ENABLE_PREVIEWS: YES
         GENERATE_INFOPLIST_FILE: NO
-      configs:
-        Debug:
-          APS_ENVIRONMENT: development
-          ICLOUD_CONTAINER_ENVIRONMENT: Development
-        Release:
-          APS_ENVIRONMENT: production
-          ICLOUD_CONTAINER_ENVIRONMENT: Production
     dependencies:
       - package: ZIPFoundation
       - sdk: CoreData.framework
-      - sdk: CloudKit.framework
+      - sdk: AuthenticationServices.framework
       - sdk: MapKit.framework
       - sdk: PhotosUI.framework
       - sdk: Photos.framework

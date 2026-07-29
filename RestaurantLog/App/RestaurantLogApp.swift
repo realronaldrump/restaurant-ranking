@@ -4,8 +4,10 @@ import SwiftUI
 @MainActor
 struct RestaurantLogApp: App {
     private static var hasSeededSampleData = false
-    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @Environment(\.scenePhase) private var scenePhase
     @State private var store: AppStore?
+    @State private var sync: SyncCoordinator?
+    @State private var pendingInvitation: CircleInvitation?
     @State private var locationService = LocationService()
     @State private var launchMessage = "Opening your restaurant log…"
     @AppStorage("didCompleteGrandOpening") private var didCompleteGrandOpening = false
@@ -26,19 +28,31 @@ struct RestaurantLogApp: App {
     var body: some Scene {
         WindowGroup {
             Group {
-                if let store {
-                    loadedContent(store)
+                if let store, let sync {
+                    loadedContent(store, sync)
                 } else {
                     AppLaunchView(message: launchMessage)
                         .task { await prepareApp() }
                 }
             }
             .preferredColorScheme(appearancePreference.colorScheme)
+            .onOpenURL { url in
+                // An invitation link carries the circle key in its query, so it
+                // is held in memory only until the person confirms the join.
+                if let invitation = CircleInvitation(url: url) {
+                    pendingInvitation = invitation
+                }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                guard phase == .active, let store, let sync,
+                      let circleID = store.activeCircleID else { return }
+                Task { await sync.sync(circleID: circleID) }
+            }
         }
     }
 
     @ViewBuilder
-    private func loadedContent(_ store: AppStore) -> some View {
+    private func loadedContent(_ store: AppStore, _ sync: SyncCoordinator) -> some View {
         Group {
             if didCompleteGrandOpening, store.activeCircle != nil {
                 MainTabView()
@@ -47,7 +61,16 @@ struct RestaurantLogApp: App {
             }
         }
         .environment(store)
+        .environment(sync)
         .environment(locationService)
+        .sheet(item: $pendingInvitation) { invitation in
+            JoinCircleView(invitation: invitation) {
+                didCompleteGrandOpening = true
+                pendingInvitation = nil
+            }
+            .environment(store)
+            .environment(sync)
+        }
         .fullScreenCover(isPresented: Binding(
             get: { didCompleteGrandOpening && store.needsDeviceIdentity },
             set: { _ in }
@@ -64,15 +87,9 @@ struct RestaurantLogApp: App {
         } message: {
             Text(store.lastError ?? "Big Beautiful Log encountered an unexpected persistence error.")
         }
-        .onReceive(NotificationCenter.default.publisher(for: .cloudShareWasAccepted)) { _ in
-            // Accepting an invitation is itself setup; once its records arrive,
-            // the identity gate will ask which circle member uses this device.
-            didCompleteGrandOpening = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .cloudCircleWasRestored)) { _ in
-            // A previously accepted share may import after the first local fetch.
-            // Treat its first circle as restored setup instead of leaving the
-            // device in empty-log onboarding.
+        .onReceive(NotificationCenter.default.publisher(for: .circleDidArriveFromSync)) { _ in
+            // A circle pulled from the sync service is itself completed setup;
+            // the identity gate then asks which member uses this device.
             didCompleteGrandOpening = true
         }
         .onAppear {
@@ -93,21 +110,27 @@ struct RestaurantLogApp: App {
         let persistence = PersistenceController.shared
         await persistence.prepare()
         let preparedStore = AppStore(persistence: persistence)
+        let coordinator = SyncCoordinator(container: persistence.container)
+        await coordinator.restoreSession()
 
-        // CloudKit imports accepted shares asynchronously after the stores open.
-        // Give a fresh installation a short, visible restore window before empty
-        // onboarding. Later arrivals are still handled by cloudCircleWasRestored.
-        if preparedStore.circles.isEmpty, persistence.isCloudSyncActive {
-            launchMessage = "Looking for your iCloud restaurant log…"
-            for _ in 0..<10 where preparedStore.circles.isEmpty {
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                preparedStore.reload()
-            }
+        // Every successful save asks for a sync; the coordinator debounces the
+        // burst that one logged meal produces.
+        preparedStore.didCommit = { [weak coordinator] circleID in
+            coordinator?.scheduleSync(circleID: circleID)
+        }
+
+        // A fresh installation that already has an account may be waiting on the
+        // first pull of an existing circle. Show that rather than empty onboarding.
+        if preparedStore.circles.isEmpty, coordinator.isConfigured, coordinator.isSignedIn {
+            launchMessage = "Looking for your dining log…"
+            await coordinator.syncKnownCircles()
+            preparedStore.reload()
         }
         if !preparedStore.circles.isEmpty {
             didCompleteGrandOpening = true
         }
         store = preparedStore
+        sync = coordinator
     }
 }
 

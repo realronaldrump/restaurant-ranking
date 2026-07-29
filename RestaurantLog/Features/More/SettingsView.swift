@@ -1,4 +1,3 @@
-import CloudKit
 import CoreLocation
 import Photos
 import SwiftUI
@@ -7,12 +6,12 @@ import UniformTypeIdentifiers
 @MainActor
 struct SettingsView: View {
     @Environment(AppStore.self) private var store
+    @Environment(SyncCoordinator.self) private var sync
     @Environment(LocationService.self) private var locationService
     @AppStorage("didCompleteGrandOpening") private var didCompleteGrandOpening = false
     @AppStorage("hapticsEnabled") private var hapticsEnabled = true
     @AppStorage("didDismissPhotoVisitTimeSync") private var didDismissPhotoVisitTimeSync = false
     @AppStorage(AppearancePreference.storageKey) private var appearancePreference = AppearancePreference.system
-    @State private var accountStatus = "Checking…"
     @State private var newPerson = ""
     @State private var newCompanion = ""
     @State private var editingPerson: PersonEntity?
@@ -96,16 +95,17 @@ struct SettingsView: View {
             } footer: {
                 Text("These names can be reused on visits. Add one to the circle later without losing any linked history.")
             }
-            Section("iCloud & permissions") {
-                LabeledContent("iCloud account", value: accountStatus)
-                LabeledContent(
-                    "iCloud sync",
-                    value: store.persistence.isCloudSyncActive ? store.cloudSyncStatus.description : "Off"
-                )
-                if store.persistence.isCloudSyncActive, store.cloudSyncStatus == .retrying {
-                    Text("Your latest changes are saved on this iPhone. iCloud is retrying automatically.")
+            Section("Syncing & permissions") {
+                LabeledContent("Circle sync", value: syncDescription)
+                if case .offline = sync.status {
+                    Text("Your latest changes are saved on this iPhone and will upload when the connection returns.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+                if case let .failed(message) = sync.status {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(BBTheme.oxblood)
                 }
                 LabeledContent("Foreground location", value: locationDescription)
                 LabeledContent("Photo Library", value: photoDescription)
@@ -182,7 +182,7 @@ struct SettingsView: View {
                 }
             }
             Section("Privacy") {
-                Text("Records stay on your device and in your private or shared iCloud database. Map search uses Apple Maps, and photos are processed on device. The app has no ads or analytics.")
+                Text("Records stay on this iPhone. With circle syncing on, they are encrypted here before upload and the service cannot read them. Map search uses Apple Maps, and photos are processed on device. The app has no ads or analytics.")
                 NavigationLink("Read the full privacy policy") { PrivacyPolicyView() }
                 if let privacyURL = URL(string: "https://realronaldrump.github.io/restaurant-ranking/privacy.html") {
                     Link("Privacy policy on the web", destination: privacyURL)
@@ -213,19 +213,6 @@ struct SettingsView: View {
         .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
         .sheet(item: $editingPerson) { person in
             EditPersonView(person: person)
-        }
-        .task {
-            guard store.persistence.isCloudSyncActive else {
-                accountStatus = "Off"
-                return
-            }
-            do {
-                accountStatus = try await CKContainer(
-                    identifier: PersistenceController.cloudContainerIdentifier
-                ).accountStatus().description
-            } catch {
-                accountStatus = "Unavailable"
-            }
         }
         .fileExporter(
             isPresented: $isExportingBackup,
@@ -273,7 +260,7 @@ struct SettingsView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The selected backup will replace all current dining logs and their iCloud-synced data. Export a current backup first if you may need it later.")
+            Text("The selected backup will replace all current dining logs on this iPhone, and the replacement will then sync to the rest of your circle. Export a current backup first if you may need it later.")
         }
         .alert("Reset Big Beautiful?", isPresented: $isShowingResetConfirmation) {
             Button("Cancel", role: .cancel) {}
@@ -290,7 +277,7 @@ struct SettingsView: View {
                 }
             }
         } message: {
-            Text("This permanently deletes all circles, restaurants, visits, photos, rankings, and app setup from this device and iCloud. Shared-circle data may also be removed for other members. iOS permissions will not change. This cannot be undone.")
+            Text("This permanently deletes all circles, restaurants, visits, photos, rankings, and app setup from this iPhone. If the circle is synced, the deletions are published to the other members as well. iOS permissions will not change. This cannot be undone.")
         }
     }
 
@@ -421,6 +408,12 @@ struct SettingsView: View {
     private var photoDescription: String {
         switch PHPhotoLibrary.authorizationStatus(for: .readWrite) { case .authorized: "Full access"; case .limited: "Limited"; case .denied: "Denied"; case .restricted: "Restricted"; case .notDetermined: "Not requested"; @unknown default: "Unknown" }
     }
+    private var syncDescription: String {
+        guard sync.isConfigured else { return "Not available in this build" }
+        guard sync.isSignedIn else { return "Signed out" }
+        guard let circleID = store.activeCircleID, sync.isSyncing(circleID: circleID) else { return "Off for this circle" }
+        return sync.status.description
+    }
 }
 
 @MainActor
@@ -483,9 +476,6 @@ private struct EditPersonView: View {
     }
 }
 
-private extension CKAccountStatus {
-    var description: String { switch self { case .available: "Available"; case .noAccount: "No iCloud account"; case .restricted: "Restricted"; case .couldNotDetermine: "Could not determine"; case .temporarilyUnavailable: "Temporarily unavailable"; @unknown default: "Unknown" } }
-}
 
 struct PrivacyPolicyView: View {
     var body: some View {
@@ -494,7 +484,7 @@ struct PrivacyPolicyView: View {
                 Eyebrow("Effective July 27, 2026")
                 Text("Private by design.").font(BBTheme.display(37))
                 Text("Big Beautiful Restaurant Log does not collect, sell, or transmit personal data to the developer. There are no developer-operated servers, advertising SDKs, analytics SDKs, or third-party tracking systems.")
-                Text("Dining records are stored on the device and, when iCloud is enabled, in your private or explicitly shared CloudKit databases. Map coordinates are sent to Apple only for ordinary MapKit searches. Photos are processed on-device; app-stored copies have embedded location metadata removed.")
+                Text("Dining records are stored on this iPhone. When circle syncing is on, they are encrypted on device and uploaded to the sync service, which holds them in a form it cannot read. Map coordinates are sent to Apple only for ordinary MapKit searches. Photos are processed on-device; app-stored copies have embedded location metadata removed.")
                 Text("If you import a Beli export, the ZIP is read on-device. The app contacts Apple Maps to help match restaurants and downloads only the Beli photo links included in that export when you explicitly start the import. Beli profile, social, device, follow, and comment data is not retained.")
                 Text("Location is foreground-only and optional. Photo Library access is optional; the standard picker works without full-library permission. Permissions can be revoked at any time in iOS Settings.")
                 if let privacyURL = URL(string: "https://realronaldrump.github.io/restaurant-ranking/privacy.html") {

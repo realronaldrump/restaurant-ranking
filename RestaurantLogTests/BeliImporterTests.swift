@@ -61,7 +61,7 @@ final class BeliImporterTests: XCTestCase {
     }
 
     func testImportIsIdempotentAndKeepsUnknownDateOuting() throws {
-        let persistence = PersistenceController(inMemory: true, cloudEnabled: false)
+        let persistence = PersistenceController(inMemory: true)
         let store = AppStore(persistence: persistence)
         store.bootstrap(myName: "Davis")
         let created = Date(timeIntervalSince1970: 1_750_000_000)
@@ -100,7 +100,7 @@ final class BeliImporterTests: XCTestCase {
     }
 
     func testUnknownDateRatingUsesNeutralRecency() throws {
-        let persistence = PersistenceController(inMemory: true, cloudEnabled: false)
+        let persistence = PersistenceController(inMemory: true)
         let store = AppStore(persistence: persistence)
         store.bootstrap(myName: "Davis")
         let location = store.createLocation(name: "Old but Unknown")
@@ -115,7 +115,7 @@ final class BeliImporterTests: XCTestCase {
     }
 
     func testDeletingImportRemovesCreatedDataButPreservesMatchedExistingRecords() throws {
-        let store = AppStore(persistence: PersistenceController(inMemory: true, cloudEnabled: false))
+        let store = AppStore(persistence: PersistenceController(inMemory: true))
         store.bootstrap(myName: "Davis")
         let date = Date(timeIntervalSince1970: 1_750_000_000)
         let location = store.createLocation(name: "Existing Cafe", city: "Waco, TX")
@@ -171,7 +171,7 @@ final class BeliImporterTests: XCTestCase {
     }
 
     func testDeletingImportPreservesImportedRestaurantThatLaterGainedManualActivity() throws {
-        let store = AppStore(persistence: PersistenceController(inMemory: true, cloudEnabled: false))
+        let store = AppStore(persistence: PersistenceController(inMemory: true))
         store.bootstrap(myName: "Davis")
         let date = Date(timeIntervalSince1970: 1_750_000_000)
         let ranking = BeliRankingRow(

@@ -4,21 +4,54 @@
 
 - Product: Big Beautiful Restaurant Log
 - Bundle identifier: `com.davis.bigbeautifulranking`
-- iCloud container: `iCloud.com.davis.bigbeautifulranking`
+- Sync service: Supabase project (host and anon key supplied through `Config/Supabase.local.xcconfig`)
 - Version: 2.6.1 (build 10)
 - Devices: iPhone only
 - Minimum OS: iOS 17.0
 
 ## App Privacy answers
 
-Select **Data Not Collected**. The developer receives no user data. Dining records and photos are processed locally and may be stored in the user’s own private or explicitly shared iCloud databases. Apple’s guidance distinguishes data processed only on-device and data handled by Apple frameworks from data collected by the developer.
+> **Changed in this version — re-answer before the next submission.** Earlier
+> releases answered **Data Not Collected** because sharing ran entirely through
+> the user's own iCloud account. Circle syncing now uses a developer-operated
+> service, so the answers below must be reviewed with Apple's current definitions
+> rather than carried forward.
+
+The developer cannot read dining records: every payload and photo is encrypted on
+device with a key the service never receives. Apple's App Privacy questions are
+about what leaves the device and is linked to identity, not about whether it is
+readable, so the honest answers are:
+
+- **Identifiers → User ID:** Collected, linked to identity, used for App
+  Functionality. Sign in with Apple establishes a user ID so the service can
+  authorize which circle a device may reach.
+- **Contact Info → Email Address:** Collected, linked to identity, used for App
+  Functionality — whatever Apple returns for the account, including a private
+  relay address.
+- **User Content → Photos, Other User Content:** Collected, linked to identity,
+  used for App Functionality. Declare this even though it is stored as
+  ciphertext; it is uploaded and associated with an account.
+- Tracking: No.
+
+Nothing is used for advertising, marketing, or analytics, and none of it is
+shared with third parties beyond the hosting provider acting as a processor.
+
+Also confirm before upload:
+
+- `PrivacyInfo.xcprivacy` still matches these answers. It currently declares no
+  collection; it needs updating alongside this section.
+- `ITSAppUsesNonExemptEncryption` is currently `false`. The app encrypts user
+  content with AES-GCM through Apple's CryptoKit. Apps using only encryption
+  provided by the operating system are generally exempt, which is why the value
+  is unchanged — confirm this against Apple's current export-compliance guidance
+  for this release rather than assuming.
 
 - Tracking: No
 - Third-party advertising: No
 - Developer advertising or marketing: No
 - Analytics: No
 - Data brokers: No
-- Third-party SDKs: ZIPFoundation, used only to read user-selected Beli ZIP exports. It contains no advertising, analytics, tracking, accounts, or network service.
+- Third-party SDKs: ZIPFoundation, used only to read user-selected Beli ZIP exports. It contains no advertising, analytics, tracking, accounts, or network service. The sync client is hand-written over `URLSession`; no networking or backend SDK is linked.
 
 The bundled `PrivacyInfo.xcprivacy` declares no collection or tracking and declares `CA92.1` for app-scoped `UserDefaults`, which stores only device-local circle identity, selected circle, onboarding completion, and haptic preference.
 
@@ -58,27 +91,27 @@ The bundled `PrivacyInfo.xcprivacy` declares no collection or tracking and decla
 ## Capabilities to configure in the Apple Developer portal
 
 1. Create or select App ID `com.davis.bigbeautifulranking`.
-2. Enable iCloud and CloudKit.
-3. Attach container `iCloud.com.davis.bigbeautifulranking`.
-4. Enable Push Notifications for CloudKit silent changes.
-5. Set the Xcode project’s Development Team.
-6. Run once against the Development CloudKit environment.
-7. Exercise every entity and relationship, then deploy the CloudKit schema to Production in CloudKit Console.
-8. Test CKShare invitation acceptance between two physical devices signed into different iCloud accounts.
+2. Enable **Sign in with Apple**. iCloud, CloudKit, and Push Notifications are no
+   longer used and can be removed from the App ID.
+3. Create a Sign in with Apple key (`.p8`) and note the Key ID and Team ID for
+   the sync service's Apple auth provider.
+4. Set the Xcode project's Development Team.
+5. Apply both files in `supabase/migrations/` to the project, following
+   `supabase/README.md`.
+6. Test an invitation between two physical devices signed into different Apple
+   Accounts: create, send, join, edit on both, delete on one, and confirm photos
+   arrive on the second device.
 
-For version 2.5, confirm the participant, import-session, import-link, unknown-date, photo-caption, and comparison evidence-fingerprint fields exist in the Development schema before promoting it to Production.
+There is no longer a schema to promote between environments. Adding an entity
+means adding a `SyncKind` case; the `records` table is unchanged, so no
+migration accompanies it.
 
-### Production schema deployment record
+### Retired: CloudKit production schema record
 
-On July 28, 2026, the pending Development schema was deployed to Production for version 2.6. The deployment:
-
-- Added the two comparison evidence-fingerprint fields.
-- Added the two photo caption/contributor fields.
-- Added the `CD_VisitParticipantEntity` record type and its indexes.
-- Added the `cloudkit.share` record type.
-- Updated the `_world`, `_icloud`, and `_creator` security roles.
-
-Before every future TestFlight or App Store upload that changes `ManagedObjectModel`, the release owner must verify that CloudKit Console no longer shows “Modified” beside Record Types, Indexes, or Security Roles. A production archive must not be distributed until any additive schema changes are deployed.
+Version 2.6 and earlier mirrored Core Data into CloudKit and required schema
+promotion in CloudKit Console before every release that changed
+`ManagedObjectModel`. That step no longer exists. The historical deployment
+record is in this file's git history.
 
 ## Permission behavior
 
@@ -88,4 +121,4 @@ Before every future TestFlight or App Store upload that changes `ManagedObjectMo
 
 ## Review notes
 
-The app has no developer account system. Sign-in and sharing use the user’s existing iCloud account. A reviewer can choose “Preview with a sample Salt Lake log” during the Grand Opening to inspect every primary screen without entering personal data.
+Signing in is required only to share a log with another person; everything else works without an account. A reviewer can choose “Preview with a sample Salt Lake log” during the Grand Opening to inspect every primary screen without signing in or entering personal data.

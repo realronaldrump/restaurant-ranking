@@ -6,3 +6,6 @@ xcuserdata/
 *.moved-aside
 *.xccheckout
 *.xcscmblueprint
+
+# Local sync-service overrides (never committed).
+Config/Supabase.local.xcconfig

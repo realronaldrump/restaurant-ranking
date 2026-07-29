@@ -305,9 +305,9 @@ enum AppBackupCodec {
 
     /// Builds a standalone copy of one circle with an entirely new identity graph.
     ///
-    /// CloudKit records can participate in only one share. A fresh set of identifiers
-    /// lets the owner create a new zone when an existing encrypted share is no longer
-    /// readable, while the original local circle remains untouched as a recovery copy.
+    /// A fresh set of identifiers makes the copy a genuinely separate circle
+    /// rather than a second reference to the same records, which is what allows
+    /// it to be shared, exported, or edited without touching the original.
     static func makeRecoveryCopy(
         of circleID: UUID,
         from archive: AppBackupArchive
@@ -780,9 +780,8 @@ enum AppBackupService {
         context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
 
         try await context.perform {
-            guard let destinationStore = context.persistentStoreCoordinator?.persistentStores.first(where: {
-                $0.url?.lastPathComponent.contains("-shared") != true
-            }) else { throw AppBackupError.noDestinationStore }
+            guard let destinationStore = context.persistentStoreCoordinator?.persistentStores.first
+            else { throw AppBackupError.noDestinationStore }
 
             do {
                 for entity in ManagedObjectModel.make().entities.compactMap(\.name) {
@@ -806,7 +805,7 @@ enum AppBackupService {
     }
 
     /// Adds a newly-identified recovery graph beside the original circle.
-    /// The source objects are never deleted or reassigned to another CloudKit zone.
+    /// The source objects are never deleted or modified.
     @discardableResult
     @MainActor
     static func appendRecoveryCopy(
@@ -820,9 +819,8 @@ enum AppBackupService {
         context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
 
         try await context.perform {
-            guard let destinationStore = context.persistentStoreCoordinator?.persistentStores.first(where: {
-                $0.url?.lastPathComponent.contains("-shared") != true
-            }) else { throw AppBackupError.noDestinationStore }
+            guard let destinationStore = context.persistentStoreCoordinator?.persistentStores.first
+            else { throw AppBackupError.noDestinationStore }
             do {
                 try insert(archive, into: context, destinationStore: destinationStore)
                 try context.save()

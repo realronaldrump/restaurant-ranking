@@ -1,0 +1,18 @@
+// Sync service location.
+//
+// These two values are not secrets. The anon key is a public client identifier;
+// every row it can reach is gated by row level security, and the payloads behind
+// that gate are encrypted with a per-circle key this project never holds.
+//
+// The host is stored without its scheme on purpose: xcconfig treats "//" as the
+// start of a comment, so "https://example.com" would be truncated. Info.plist
+// rebuilds the URL as https://$(SUPABASE_HOST).
+//
+// Leave the placeholders in place to build a device-only app with syncing off.
+// To point a build at a real project, either edit Supabase.local.xcconfig
+// (untracked) or override SUPABASE_HOST and SUPABASE_ANON_KEY in CI.
+
+SUPABASE_HOST = YOUR_PROJECT.supabase.co
+SUPABASE_ANON_KEY = YOUR_ANON_KEY
+
+#include? "Supabase.local.xcconfig"

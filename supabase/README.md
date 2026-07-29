@@ -27,6 +27,7 @@ supabase/migrations/0004_private_rls_helpers.sql
 supabase/migrations/0005_secure_default_privileges.sql
 supabase/migrations/0006_transactional_deletion_guards.sql
 supabase/migrations/0007_membership_presence.sql
+supabase/migrations/0008_deletion_authorization_order.sql
 ```
 
 With the CLI:
@@ -137,6 +138,12 @@ on every public table. Membership predicates deliberately use `SECURITY
 DEFINER` helpers in the unexposed `private` schema because a policy on
 `circle_members` cannot safely query the same RLS-protected table. Do not move
 those helpers back to `public` or replace them with a recursive policy.
+
+The circle-deletion RPC authorizes the owner before inspecting Storage and
+compares the first object-path segment as a UUID rather than as text. Keep both
+properties when editing it: Apple clients emit uppercase UUID path segments,
+while PostgreSQL renders UUID text in lowercase. A text comparison can miss
+real objects and permit orphaned encrypted photo blobs.
 
 **Losing every device that holds a circle key means losing the ability to read
 that circle's uploaded records.** That is what end-to-end encryption costs, and

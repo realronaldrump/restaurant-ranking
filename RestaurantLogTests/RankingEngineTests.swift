@@ -616,6 +616,15 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertEqual(store.attendees(for: visit).map(\.name), ["George", "Mickey"])
     }
 
+    func testRenamingACircleTrimsTheNameAndRejectsAnEmptyName() throws {
+        let circle = try XCTUnwrap(store.activeCircle)
+
+        XCTAssertTrue(store.renameCircle(circle, to: "  The Supper Club  "))
+        XCTAssertEqual(store.activeCircle?.name, "The Supper Club")
+        XCTAssertFalse(store.renameCircle(circle, to: "   "))
+        XCTAssertEqual(store.activeCircle?.name, "The Supper Club")
+    }
+
     func testReloadReconcilesLegacyMemberGuestDuplicatesAcrossEveryReference() throws {
         let circle = try XCTUnwrap(store.activeCircle)
         let michelle = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" })

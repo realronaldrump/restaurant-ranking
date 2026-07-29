@@ -161,6 +161,9 @@ struct CircleSharingView: View {
     @State private var inviteeID: UUID?
     @State private var memberToRemove: SupabaseClient.MembershipRow?
     @State private var isConfirmingServiceDeletion = false
+    @State private var isRenamingCircle = false
+    @State private var circleNameDraft = ""
+    @State private var circleRenameError: String?
 
     private var circleIsSynced: Bool {
         guard let circle = store.activeCircle else { return false }
@@ -200,10 +203,18 @@ struct CircleSharingView: View {
             .navigationTitle("Your Circle")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
-            .task(id: store.activeCircleID) {
+            .task(id: circleTaskID) {
                 guard let circleID = store.activeCircleID, circleIsSynced, sync.isSignedIn else { return }
                 await sync.refreshMembers(circleID: circleID)
                 selectFirstInviteeIfNeeded()
+            }
+            .alert("Rename Circle", isPresented: $isRenamingCircle) {
+                TextField("Circle name", text: $circleNameDraft)
+                    .textInputAutocapitalization(.words)
+                Button("Save") { saveCircleName() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Use a short name everyone in the circle will recognize.")
             }
             .confirmationDialog(
                 "Remove this member from syncing?",
@@ -253,25 +264,56 @@ struct CircleSharingView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
             Eyebrow("Private circle")
-            Text("Share with your circle").font(BBTheme.display(36))
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(store.activeCircle?.name ?? "Your Circle").font(BBTheme.display(36))
+                Button {
+                    circleNameDraft = store.activeCircle?.name ?? ""
+                    circleRenameError = nil
+                    isRenamingCircle = true
+                } label: {
+                    Image(systemName: "pencil.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(BBTheme.oxblood)
+                }
+                .accessibilityLabel("Rename circle")
+            }
             Text("Invite up to six people. Everyone sees shared outings, while each diner\u{2019}s entry and rankings stay personal.")
                 .foregroundStyle(.secondary)
+            if let circleRenameError {
+                Text(circleRenameError).font(.caption).foregroundStyle(BBTheme.oxblood)
+            }
         }
     }
 
     private var memberCard: some View {
         VStack(alignment: .leading, spacing: 12) {
+            Eyebrow("Members")
+            Text("A name is a local profile. A Connected badge means that person has accepted an invitation and can sync the circle on their device.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             ForEach(store.circleMembers) { person in
-                HStack {
-                    Label(
-                        person.name + (person.id == store.currentPerson?.id ? " (this device)" : ""),
-                        systemImage: "person.crop.circle.fill"
-                    )
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "person.crop.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(Color(hex: person.colorHex))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(person.name + (person.id == store.currentPerson?.id ? " (this device)" : ""))
+                            .font(.headline)
+                        if let membership = membership(for: person.id) {
+                            Text(membership.role == "owner" ? "Owner · Connected" : "Connected")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(BBTheme.oxblood)
+                            Text(presenceDescription(for: membership))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text(circleIsSynced ? "Invitation needed" : "Local profile")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     Spacer()
                     if let membership = membership(for: person.id) {
-                        Text(membership.role == "owner" ? "Owner" : "Synced")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
                         if isCurrentAccountOwner, membership.userID != sync.accountUserID {
                             Button(role: .destructive) { memberToRemove = membership } label: {
                                 Image(systemName: "person.crop.circle.badge.minus")
@@ -309,17 +351,30 @@ struct CircleSharingView: View {
     private var signInCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             Eyebrow("Syncing")
-            Text("Sign in to sync").font(.headline)
-            Text("Signing in tells the sync service which member a device belongs to. It never receives your dining records in readable form.")
+            Text("Connect this circle").font(.headline)
+            Text("Sign in with Apple, create this circle’s private key, and upload the existing log in encrypted form. The service never receives readable dining records.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
             Button {
-                run { await sync.signInWithApple() }
+                guard let circle = store.activeCircle, let personID = store.currentPerson?.id else { return }
+                run {
+                    await sync.signInWithApple()
+                    if sync.isSignedIn {
+                        await sync.enableSync(circleID: circle.id, circleName: circle.name, personID: personID)
+                    }
+                }
             } label: {
-                Label("Sign in with Apple", systemImage: "apple.logo").frame(maxWidth: .infinity)
+                if isWorking {
+                    HStack { ProgressView(); Text("Connecting…") }.frame(maxWidth: .infinity)
+                } else {
+                    Label("Sign In & Turn On Syncing", systemImage: "apple.logo").frame(maxWidth: .infinity)
+                }
             }
             .buttonStyle(PrimaryButtonStyle())
-            .disabled(isWorking)
+            .disabled(isWorking || store.currentPerson == nil)
+            if isWorking {
+                firstSyncExplanation
+            }
         }
         .editorialCard()
     }
@@ -328,7 +383,7 @@ struct CircleSharingView: View {
         VStack(alignment: .leading, spacing: 10) {
             Eyebrow("Syncing")
             Text("Turn on syncing for this circle").font(.headline)
-            Text("A key is created on this iPhone and stored in its Keychain. Everything uploaded from here on is encrypted with it first.")
+            Text("A key is created on this iPhone and stored in its Keychain. The existing log and future changes are encrypted before upload.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
             Button {
@@ -336,7 +391,11 @@ struct CircleSharingView: View {
                 run { await sync.enableSync(circleID: circle.id, circleName: circle.name, personID: personID) }
             } label: {
                 if isWorking {
-                    ProgressView().frame(maxWidth: .infinity)
+                    HStack {
+                        ProgressView()
+                        Text(sync.status.isBusy ? "Encrypting & Uploading…" : "Connecting…")
+                    }
+                    .frame(maxWidth: .infinity)
                 } else {
                     Label("Turn On Syncing", systemImage: "arrow.triangle.2.circlepath")
                         .frame(maxWidth: .infinity)
@@ -344,6 +403,9 @@ struct CircleSharingView: View {
             }
             .buttonStyle(PrimaryButtonStyle())
             .disabled(isWorking || store.activeCircle == nil)
+            if isWorking {
+                firstSyncExplanation
+            }
         }
         .editorialCard()
     }
@@ -351,7 +413,9 @@ struct CircleSharingView: View {
     private var syncedCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             Eyebrow("Syncing")
-            LabeledContent("Status", value: sync.status.description)
+            LabeledContent("Connection", value: "Connected")
+            LabeledContent("Accounts", value: "\(activeMemberships.count) connected")
+            LabeledContent("Last sync", value: sync.status.description)
             if let outcome = sync.lastOutcome, outcome.conflicts > 0 {
                 Text("This device\u{2019}s version was kept for \(outcome.conflicts) record(s) edited in two places.")
                     .font(.caption)
@@ -447,7 +511,7 @@ struct CircleSharingView: View {
 
     private var eligibleInvitees: [PersonEntity] {
         store.circleMembers.filter { person in
-            !sync.circleMemberships.contains(where: { $0.personID == person.id })
+            !activeMemberships.contains(where: { $0.personID == person.id })
         }
     }
 
@@ -457,11 +521,48 @@ struct CircleSharingView: View {
 
     private var currentAccountMembership: SupabaseClient.MembershipRow? {
         guard let userID = sync.accountUserID else { return nil }
-        return sync.circleMemberships.first { $0.userID == userID }
+        return activeMemberships.first { $0.userID == userID }
     }
 
     private func membership(for personID: UUID) -> SupabaseClient.MembershipRow? {
-        sync.circleMemberships.first { $0.personID == personID }
+        activeMemberships.first { $0.personID == personID }
+    }
+
+    private var activeMemberships: [SupabaseClient.MembershipRow] {
+        guard let circleID = store.activeCircleID else { return [] }
+        return sync.memberships(circleID: circleID)
+    }
+
+    private var circleTaskID: String {
+        let circle = store.activeCircleID?.uuidString ?? "none"
+        return "\(circle)-\(sync.isSignedIn)-\(circleIsSynced)"
+    }
+
+    private var firstSyncExplanation: some View {
+        Text("The first sync can take a minute when the log contains many visits or photos. Keep the app open; this screen will change to Connected when it finishes.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    private func presenceDescription(for membership: SupabaseClient.MembershipRow) -> String {
+        var details: [String] = []
+        if let version = membership.appVersion { details.append("App \(version)") }
+        if let date = membership.lastSeenAt {
+            details.append("Active \(date.formatted(.relative(presentation: .named, unitsStyle: .wide)))")
+        } else {
+            details.append("Awaiting first app check-in")
+        }
+        return details.joined(separator: " · ")
+    }
+
+    private func saveCircleName() {
+        guard let circle = store.activeCircle else { return }
+        if store.renameCircle(circle, to: circleNameDraft) {
+            circleRenameError = nil
+            Haptics.success()
+        } else {
+            circleRenameError = "Enter a non-empty name that is different from your other circles."
+        }
     }
 
     private func selectFirstInviteeIfNeeded() {

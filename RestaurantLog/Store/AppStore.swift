@@ -310,6 +310,21 @@ final class AppStore {
         return true
     }
 
+    @discardableResult
+    func renameCircle(_ circle: CircleEntity, to name: String) -> Bool {
+        guard circles.contains(where: { $0.id == circle.id }) else { return false }
+        let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanName.isEmpty else { return false }
+        let duplicate = circles.contains {
+            $0.id != circle.id
+                && $0.name.compare(cleanName, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        }
+        guard !duplicate else { return false }
+        circle.name = cleanName
+        commit()
+        return true
+    }
+
     func person(id: UUID) -> PersonEntity? { people.first { $0.id == id } }
 
     func taggedPeople(for visit: VisitEntity) -> [PersonEntity] {

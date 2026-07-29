@@ -58,6 +58,11 @@ final class SyncCoordinator {
     private static let debounceInterval: Duration = .seconds(2)
 
     var isConfigured: Bool { configuration != nil }
+    var clientVersion: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        return build.map { "\(version) (\($0))" } ?? version
+    }
 
     init(container: NSPersistentContainer, configuration: SyncConfiguration? = SyncConfiguration.fromBundle()) {
         self.configuration = configuration
@@ -235,9 +240,17 @@ final class SyncCoordinator {
     }
 
     func refreshMembers(circleID: UUID) async {
-        guard let engine, isSignedIn else {
+        guard let engine, isSignedIn, isSyncing(circleID: circleID) else {
             circleMemberships = []
             return
+        }
+        // This deliberately stores only operational metadata. The service
+        // still cannot read a circle name, dining record, note, or photo. A
+        // presence failure must not hide an otherwise readable member roster.
+        do {
+            try await engine.supabase.touchMembership(circleID: circleID, appVersion: clientVersion)
+        } catch {
+            logger.debug("Could not update membership presence: \(error.localizedDescription, privacy: .public)")
         }
         do {
             circleMemberships = try await engine.supabase.members(circleID: circleID)
@@ -249,6 +262,10 @@ final class SyncCoordinator {
             circleMemberships = []
             lastError = error.localizedDescription
         }
+    }
+
+    func memberships(circleID: UUID) -> [SupabaseClient.MembershipRow] {
+        circleMemberships.filter { $0.circleID == circleID }
     }
 
     func removeMember(circleID: UUID, userID: UUID) async -> Bool {
@@ -386,6 +403,7 @@ final class SyncCoordinator {
         status = .syncing
         do {
             let outcome = try await engine.synchronize(circleID: circleID)
+            try? await engine.supabase.touchMembership(circleID: circleID, appVersion: clientVersion)
             lastOutcome = outcome
             status = .upToDate(.now)
             lastError = nil

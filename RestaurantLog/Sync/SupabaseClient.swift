@@ -59,19 +59,34 @@ actor SupabaseClient {
         }
     }
 
-    struct MembershipRow: Decodable, Identifiable {
+    struct MembershipRow: Decodable, Identifiable, Sendable {
         let circleID: UUID
         let userID: UUID
         let personID: UUID
         let role: String
+        let joinedAtText: String
+        let lastSeenAtText: String?
+        let appVersion: String?
 
         var id: UUID { userID }
+        var joinedAt: Date? { Self.decodeTimestamp(joinedAtText) }
+        var lastSeenAt: Date? { lastSeenAtText.flatMap(Self.decodeTimestamp) }
 
         enum CodingKeys: String, CodingKey {
             case circleID = "circle_id"
             case userID = "user_id"
             case personID = "person_id"
             case role
+            case joinedAtText = "joined_at"
+            case lastSeenAtText = "last_seen_at"
+            case appVersion = "app_version"
+        }
+
+        private static func decodeTimestamp(_ value: String) -> Date? {
+            let fractional = ISO8601DateFormatter()
+            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = fractional.date(from: value) { return date }
+            return ISO8601DateFormatter().date(from: value)
         }
     }
 
@@ -195,7 +210,7 @@ actor SupabaseClient {
         var request = try await authorizedRequest(
             path: "circle_members",
             queryItems: [
-                URLQueryItem(name: "select", value: "circle_id,user_id,person_id,role"),
+                URLQueryItem(name: "select", value: "circle_id,user_id,person_id,role,joined_at,last_seen_at,app_version"),
                 URLQueryItem(name: "user_id", value: "eq.\(userID.uuidString)")
             ]
         )
@@ -208,13 +223,25 @@ actor SupabaseClient {
         var request = try await authorizedRequest(
             path: "circle_members",
             queryItems: [
-                URLQueryItem(name: "select", value: "circle_id,user_id,person_id,role"),
+                URLQueryItem(name: "select", value: "circle_id,user_id,person_id,role,joined_at,last_seen_at,app_version"),
                 URLQueryItem(name: "circle_id", value: "eq.\(circleID.uuidString)")
             ]
         )
         request.httpMethod = "GET"
         let data = try await perform(request)
         return try JSONDecoder().decode([MembershipRow].self, from: data)
+    }
+
+    /// Records only operational presence metadata. Dining content remains in
+    /// the separately encrypted record and photo streams.
+    func touchMembership(circleID: UUID, appVersion: String) async throws {
+        var request = try await authorizedRequest(path: "rpc/touch_circle_membership", queryItems: [])
+        request.httpMethod = "POST"
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "target_circle": circleID.uuidString,
+            "client_version": appVersion
+        ])
+        _ = try await perform(request)
     }
 
     func createCircle(id: UUID, nameCipher: String, personID: UUID) async throws {

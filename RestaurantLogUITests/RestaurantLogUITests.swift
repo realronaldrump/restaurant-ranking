@@ -42,6 +42,7 @@ final class RestaurantLogUITests: XCTestCase {
         openAppearanceSettings()
 
         let appearancePicker = app.segmentedControls["appearance-picker"]
+        for _ in 0..<6 where !appearancePicker.exists { app.swipeUp() }
         XCTAssertTrue(appearancePicker.waitForExistence(timeout: 3))
         appearancePicker.buttons["Dark"].tap()
         XCTAssertTrue(appearancePicker.buttons["Dark"].isSelected)
@@ -52,6 +53,7 @@ final class RestaurantLogUITests: XCTestCase {
         openAppearanceSettings()
 
         let persistedPicker = app.segmentedControls["appearance-picker"]
+        for _ in 0..<6 where !persistedPicker.exists { app.swipeUp() }
         XCTAssertTrue(persistedPicker.waitForExistence(timeout: 3))
         XCTAssertTrue(persistedPicker.buttons["Dark"].isSelected)
         persistedPicker.buttons["System"].tap()
@@ -64,7 +66,19 @@ final class RestaurantLogUITests: XCTestCase {
         for _ in 0..<10 where !footer.exists { app.swipeUp() }
 
         XCTAssertTrue(footer.waitForExistence(timeout: 3))
-        XCTAssertEqual(footer.label, "Big Beautiful Restaurant Log 3.0 • Released July 28, 2026")
+        XCTAssertEqual(footer.label, "Big Beautiful Restaurant Log 3.0.1 • Released July 29, 2026")
+    }
+
+    func testCircleManagementShowsMemberStateAndRenameControl() {
+        app.tabBars.buttons["More"].tap()
+        XCTAssertTrue(app.navigationBars["More"].waitForExistence(timeout: 5))
+
+        app.buttons["Manage"].tap()
+
+        XCTAssertTrue(app.navigationBars["Your Circle"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Rename circle"].exists)
+        XCTAssertTrue(app.staticTexts["MEMBERS"].exists)
+        XCTAssertGreaterThan(app.staticTexts.matching(NSPredicate(format: "label == %@", "Local profile")).count, 0)
     }
 
     func testDiningAtlasShowsTheFirstVisitTrail() {

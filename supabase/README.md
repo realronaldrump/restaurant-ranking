@@ -17,7 +17,7 @@ with a per-circle key this project never holds.
 ## 2. Apply the migrations
 
 Apply every file in `supabase/migrations/` in numerical order. At the time of
-the 3.0 release that is:
+the 3.0.1 release that is:
 
 ```
 supabase/migrations/0001_circles_and_records.sql
@@ -26,6 +26,7 @@ supabase/migrations/0003_security_hardening.sql
 supabase/migrations/0004_private_rls_helpers.sql
 supabase/migrations/0005_secure_default_privileges.sql
 supabase/migrations/0006_transactional_deletion_guards.sql
+supabase/migrations/0007_membership_presence.sql
 ```
 
 With the CLI:
@@ -115,7 +116,7 @@ order by updated_ms desc
 limit 50;
 
 -- Who is in a circle.
-select m.user_id, m.role, m.joined_at
+select m.user_id, m.role, m.joined_at, m.last_seen_at, m.app_version
 from circle_members m where m.circle_id = '<circle>';
 
 -- Outstanding invitations.

@@ -103,6 +103,39 @@ final class SupabaseClientTests: XCTestCase {
             components.queryItems?.first(where: { $0.name == "user_id" })?.value,
             "eq.\(userID.uuidString)"
         )
+        XCTAssertEqual(
+            components.queryItems?.first(where: { $0.name == "select" })?.value,
+            "circle_id,user_id,person_id,role,joined_at,last_seen_at,app_version"
+        )
+    }
+
+    func testMembershipPresenceDecodesAppVersionAndLastActivity() async throws {
+        let body = """
+        [{"circle_id":"\(circleID.uuidString)","user_id":"\(userID.uuidString)","person_id":"\(personID.uuidString)","role":"owner","joined_at":"2026-07-29T18:00:00Z","last_seen_at":"2026-07-29T20:15:12.345Z","app_version":"3.0.1 (11)"}]
+        """
+        SupabaseURLProtocol.respond { _ in (200, Data(body.utf8)) }
+        let client = makeClient()
+
+        let memberships = try await client.members(circleID: circleID)
+        let membership = try XCTUnwrap(memberships.first)
+
+        XCTAssertEqual(membership.appVersion, "3.0.1 (11)")
+        XCTAssertNotNil(membership.joinedAt)
+        XCTAssertNotNil(membership.lastSeenAt)
+    }
+
+    func testTouchMembershipUsesAuthenticatedRPCAndVersionMetadata() async throws {
+        SupabaseURLProtocol.respond { _ in (200, Data("null".utf8)) }
+        let client = makeClient()
+
+        try await client.touchMembership(circleID: circleID, appVersion: "3.0.1 (11)")
+
+        let request = try XCTUnwrap(SupabaseURLProtocol.requests.first)
+        XCTAssertEqual(request.url?.path, "/rest/v1/rpc/touch_circle_membership")
+        let body = try XCTUnwrap(request.httpBody)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: String])
+        XCTAssertEqual(json["target_circle"], circleID.uuidString)
+        XCTAssertEqual(json["client_version"], "3.0.1 (11)")
     }
 
     func testForbiddenResponseDoesNotRefreshAValidSession() async {

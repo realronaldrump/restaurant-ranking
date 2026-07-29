@@ -5,7 +5,7 @@
 - Product: Big Beautiful Restaurant Log
 - Bundle identifier: `com.davis.bigbeautifulranking`
 - Sync service: Supabase project (host and anon key supplied through `Config/Supabase.local.xcconfig`)
-- Version: 3.0 (build 10)
+- Version: 3.0.1 (build 11)
 - Devices: iPhone only
 - Minimum OS: iOS 17.0
 
@@ -81,13 +81,14 @@ reading user-selected imports and backups.
 - Availability: keep iPad unsupported and disable “Make this app available on Apple silicon Mac” so the iPhone app is not distributed for Mac.
 - License agreement: use Apple’s Standard Licensed Application End User License Agreement; do not enter a custom EULA.
 
-## What’s New in Version 3.0
+## What’s New in Version 3.0.1
 
-- Added optional end-to-end encrypted circle syncing so shared dining logs stay current across devices.
+- Added end-to-end encrypted circle syncing so shared dining logs stay current across devices.
 - Added Sign in with Apple and single-use invitations for securely joining a dining circle.
-- Improved reliability when edits arrive during a sync and when shared records need to be reconciled.
-- Kept encrypted photos on a separate transfer path so everyday ratings and visit updates stay lightweight.
-- Preserved dining history from previously accepted iCloud circles when upgrading to the new sync system.
+- Added clear connection status, first-sync progress, connected-member app versions, and recent activity.
+- Added easy circle renaming and direct member management from Settings and the More tab.
+- Improved reliability for simultaneous edits, deletions, large first syncs, and encrypted photo transfers.
+- Preserved dining history and photos from previously accepted iCloud circles during the upgrade.
 
 ## Capabilities to configure in the Apple Developer portal
 
@@ -114,7 +115,7 @@ migration accompanies it.
 
 ## Permission behavior
 
-- Location: When In Use only. There is no Always authorization or background visit detection in 3.0.
+- Location: When In Use only. There is no Always authorization or background visit detection in 3.0.1.
 - Photos: the primary Backfill path uses PhotosPicker without library permission. The optional date-range scan requests read access.
 - Notifications: no user-visible notifications are requested.
 

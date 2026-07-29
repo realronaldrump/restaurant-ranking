@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 struct SettingsView: View {
     @Environment(AppStore.self) private var store
     @Environment(SyncCoordinator.self) private var sync
+    @Environment(AppRouter.self) private var router
     @Environment(LocationService.self) private var locationService
     @AppStorage("didCompleteGrandOpening") private var didCompleteGrandOpening = false
     @AppStorage("hapticsEnabled") private var hapticsEnabled = true
@@ -28,6 +29,7 @@ struct SettingsView: View {
     @State private var backupMessage: String?
     @State private var isConfirmingSyncAccountDeletion = false
     @State private var isDeletingSyncAccount = false
+    @State private var isChangingCircleSync = false
 
     var body: some View {
         Form {
@@ -99,6 +101,44 @@ struct SettingsView: View {
             }
             Section("Syncing & permissions") {
                 LabeledContent("Circle sync", value: syncDescription)
+                if sync.isConfigured, let circle = store.activeCircle {
+                    if isCircleSynced {
+                        Text(connectedCircleDescription)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("This circle is still local to this iPhone. Connect it to securely share its encrypted log with invited members.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if !isCircleSynced {
+                        Button {
+                            connectCurrentCircle()
+                        } label: {
+                            if isChangingCircleSync {
+                                HStack {
+                                    ProgressView()
+                                    Text(sync.status.isBusy ? "Encrypting & Uploading…" : "Connecting…")
+                                }
+                                .frame(maxWidth: .infinity)
+                            } else {
+                                Label(
+                                    sync.isSignedIn ? "Turn On Syncing for \(circle.name)" : "Sign In & Turn On Syncing",
+                                    systemImage: "arrow.triangle.2.circlepath"
+                                )
+                                .frame(maxWidth: .infinity)
+                            }
+                        }
+                        .buttonStyle(PrimaryButtonStyle())
+                        .disabled(isChangingCircleSync || store.currentPerson == nil)
+                        if isChangingCircleSync {
+                            Text("The first sync can take a minute when the log contains many visits or photos. Keep the app open until it says Connected.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Button("Manage Circle & Members") { router.sheet = .shareCircle }
+                }
                 if case .offline = sync.status {
                     Text("Your latest changes are saved on this iPhone and will upload when the connection returns.")
                         .font(.caption)
@@ -121,8 +161,6 @@ struct SettingsView: View {
                             isConfirmingSyncAccountDeletion = true
                         }
                         .disabled(isDeletingSyncAccount)
-                    } else {
-                        Button("Sign in with Apple") { Task { await sync.signInWithApple() } }
                     }
                 }
                 LabeledContent("Foreground location", value: locationDescription)
@@ -229,6 +267,10 @@ struct SettingsView: View {
         .editorialForm()
         .scrollDismissesKeyboard(.interactively)
         .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
+        .task(id: syncRosterTaskID) {
+            guard let circleID = store.activeCircleID, sync.isSignedIn else { return }
+            await sync.refreshMembers(circleID: circleID)
+        }
         .sheet(item: $editingPerson) { person in
             EditPersonView(person: person)
         }
@@ -318,7 +360,7 @@ struct SettingsView: View {
         }
     }
 
-    private static let releaseDateText = "July 28, 2026"
+    private static let releaseDateText = "July 29, 2026"
 
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
@@ -447,9 +489,47 @@ struct SettingsView: View {
     }
     private var syncDescription: String {
         guard sync.isConfigured else { return "Not available in this build" }
-        guard sync.isSignedIn else { return "Signed out" }
-        guard let circleID = store.activeCircleID, sync.isSyncing(circleID: circleID) else { return "Off for this circle" }
-        return sync.status.description
+        guard sync.isSignedIn else { return "Local only · Sign in to connect" }
+        guard isCircleSynced else { return "Local only · Ready to connect" }
+        if sync.status.isBusy { return "Connecting…" }
+        let count = activeMemberships.count
+        return count == 0 ? "Connected" : "Connected · \(count) account\(count == 1 ? "" : "s")"
+    }
+
+    private var isCircleSynced: Bool {
+        guard let circleID = store.activeCircleID else { return false }
+        return sync.isSyncing(circleID: circleID)
+    }
+
+    private var activeMemberships: [SupabaseClient.MembershipRow] {
+        guard let circleID = store.activeCircleID else { return [] }
+        return sync.memberships(circleID: circleID)
+    }
+
+    private var connectedCircleDescription: String {
+        let count = activeMemberships.count
+        if count == 0 { return "Encrypted syncing is connected. Open circle management to refresh the member roster." }
+        return "Encrypted syncing is on for this circle. \(count) account\(count == 1 ? " is" : "s are") connected."
+    }
+
+    private var syncRosterTaskID: String {
+        let circle = store.activeCircleID?.uuidString ?? "none"
+        return "\(circle)-\(sync.isSignedIn)-\(isCircleSynced)"
+    }
+
+    private func connectCurrentCircle() {
+        guard let circle = store.activeCircle, let personID = store.currentPerson?.id else { return }
+        isChangingCircleSync = true
+        Task {
+            if !sync.isSignedIn { await sync.signInWithApple() }
+            if sync.isSignedIn {
+                await sync.enableSync(circleID: circle.id, circleName: circle.name, personID: personID)
+            }
+            isChangingCircleSync = false
+            if sync.isSyncing(circleID: circle.id), sync.lastError == nil {
+                router.sheet = .shareCircle
+            }
+        }
     }
 }
 

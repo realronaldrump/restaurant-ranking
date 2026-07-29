@@ -11,11 +11,10 @@
 
 ## App Privacy answers
 
-> **Changed in this version — re-answer before the next submission.** Earlier
-> releases answered **Data Not Collected** because sharing ran entirely through
-> the user's own iCloud account. Circle syncing now uses a developer-operated
-> service, so the answers below must be reviewed with Apple's current definitions
-> rather than carried forward.
+> **Completed for 3.0.1 on July 29, 2026.** Earlier releases answered **Data Not
+> Collected** because sharing ran entirely through the user's own iCloud account.
+> App Store Connect now publishes the seven data types below as linked to the
+> user, used for App Functionality, and not used for tracking.
 
 The developer cannot read dining records: every payload and photo is encrypted on
 device with a key the service never receives. Apple's App Privacy questions are
@@ -78,8 +77,40 @@ reading user-selected imports and backups.
 - Category: Food & Drink.
 - Content rights: the app contains no licensed third-party media.
 - Export compliance: the app uses only Apple-provided encryption; `ITSAppUsesNonExemptEncryption` is `NO`.
-- Availability: keep iPad unsupported and disable “Make this app available on Apple silicon Mac” so the iPhone app is not distributed for Mac.
+- Availability: all 175 countries or regions on app release. Keep iPad unsupported and disable both “Make this app available on Apple silicon Mac” and Apple Vision Pro distribution so this remains an iPhone-only app.
 - License agreement: use Apple’s Standard Licensed Application End User License Agreement; do not enter a custom EULA.
+
+## Final release gates
+
+- App Store build: version 3.0.1, build 11, uploaded and validated July 29,
+  2026. It is attached to the App Store version and staged in a draft review
+  submission.
+- TestFlight: build 11 is assigned to the external **Big Beautiful Testers**
+  group and is awaiting TestFlight Beta App Review. Complete the two-device
+  soak below after Apple approves it and before submitting the App Store draft.
+- EU Digital Services Act: the Account Holder must use **Business → Complete
+  Compliance Requirements** to declare whether they distribute in the EU as a
+  trader or non-trader. This is a legal status decision and must not be guessed
+  or completed by an automation agent.
+- After the soak passes and the DSA declaration is complete, open **App Review →
+  Draft Submission** and choose **Submit for Review**. The version is configured
+  to release automatically after approval.
+
+### Two-device TestFlight soak
+
+1. Install build 11 from TestFlight on two iPhones using different Apple
+   Accounts.
+2. Confirm an existing user's restaurants, visits, rankings, relationships, and
+   photo blobs survive the upgrade.
+3. Create a new invitation, join from the second phone, and wait for the first
+   download to finish.
+4. Create and edit a clearly named temporary visit on each phone, add a photo,
+   choose **Sync Now**, and confirm both devices converge without duplicates.
+5. Make a conflicting edit and deletion of the temporary visit and confirm the
+   edited version is preserved.
+6. Remove and re-invite the test member and confirm access changes correctly.
+7. Turn syncing off, sign out, sign back in, and confirm the local dining log is
+   preserved.
 
 ## What’s New in Version 3.0.1
 

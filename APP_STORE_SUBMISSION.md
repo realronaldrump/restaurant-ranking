@@ -88,13 +88,11 @@ reading user-selected imports and backups.
 - TestFlight: build 11 is assigned to the external **Big Beautiful Testers**
   group and is awaiting TestFlight Beta App Review. Complete the two-device
   soak below after Apple approves it and before submitting the App Store draft.
-- EU Digital Services Act: the Account Holder must use **Business → Complete
-  Compliance Requirements** to declare whether they distribute in the EU as a
-  trader or non-trader. This is a legal status decision and must not be guessed
-  or completed by an automation agent.
-- After the soak passes and the DSA declaration is complete, open **App Review →
-  Draft Submission** and choose **Submit for Review**. The version is configured
-  to release automatically after approval.
+- EU Digital Services Act: completed by the Account Holder and shown as
+  **Active** for all 27 applicable countries or regions on July 29, 2026.
+- After the soak passes, open **App Review → Draft Submission** and choose
+  **Submit for Review**. The version is configured to release automatically
+  after approval.
 
 ### Two-device TestFlight soak
 

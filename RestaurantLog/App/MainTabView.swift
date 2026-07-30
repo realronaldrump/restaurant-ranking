@@ -2,10 +2,7 @@ import SwiftUI
 
 @MainActor
 struct MainTabView: View {
-    @Environment(AppStore.self) private var store
-    @Environment(SyncCoordinator.self) private var sync
-    @Environment(LocationService.self) private var locationService
-    @State private var router = AppRouter()
+    @Environment(AppRouter.self) private var router
 
     var body: some View {
         @Bindable var router = router
@@ -23,16 +20,6 @@ struct MainTabView: View {
         .toolbarBackground(BBTheme.paper.opacity(0.96), for: .tabBar)
         .toolbarBackground(.visible, for: .tabBar)
         .environment(router)
-        .sheet(item: $router.sheet) { sheet in
-            sheetView(sheet)
-                .environment(router)
-                .environment(store)
-                .environment(sync)
-                .environment(locationService)
-                .presentationBackground(BBTheme.paper)
-                .presentationDragIndicator(.visible)
-                .tint(BBTheme.oxblood)
-        }
         .onChange(of: router.selectedTab) { _, _ in Haptics.selection() }
     }
 
@@ -61,27 +48,6 @@ struct MainTabView: View {
         }
     }
 
-    @ViewBuilder
-    private func sheetView(_ sheet: AppSheet) -> some View {
-        switch sheet {
-        case .logMeal: LogMealFlow()
-        case .logMealAt(let id): LogMealFlow(initialLocationID: id)
-        case .rateVisit(let id):
-            if let visit = store.visits.first(where: { $0.id == id }) {
-                SharedVisitRatingView(visit: visit)
-            } else {
-                ContentUnavailableView("Visit unavailable", systemImage: "calendar.badge.exclamationmark")
-            }
-        case .addWant: AddWantView()
-        case .compare(let id):
-            if let location = store.locations.first(where: { $0.id == id }) {
-                DirectComparisonView(source: location)
-            } else {
-                ContentUnavailableView("Place unavailable", systemImage: "mappin.slash")
-            }
-        case .shareCircle: CircleSharingView()
-        }
-    }
 }
 
 private extension View {

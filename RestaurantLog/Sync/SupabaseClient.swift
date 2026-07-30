@@ -289,21 +289,14 @@ actor SupabaseClient {
     }
 
     func removeMember(circleID: UUID, userID: UUID) async throws {
-        var request = try await authorizedRequest(
-            path: "circle_members",
-            queryItems: [
-                URLQueryItem(name: "circle_id", value: "eq.\(circleID.uuidString)"),
-                URLQueryItem(name: "user_id", value: "eq.\(userID.uuidString)")
-            ]
-        )
-        request.httpMethod = "DELETE"
-        request.setValue("return=minimal", forHTTPHeaderField: "Prefer")
-        _ = try await perform(request)
+        try await callVoidRPC("remove_circle_member", body: [
+            "target_circle": circleID.uuidString,
+            "target_user": userID.uuidString
+        ])
     }
 
     func leaveCircle(circleID: UUID) async throws {
-        guard let userID = current?.userID else { throw SyncTransportError.unauthorized }
-        try await removeMember(circleID: circleID, userID: userID)
+        try await callVoidRPC("leave_circle", body: ["target_circle": circleID.uuidString])
     }
 
     /// Permanently removes the encrypted database rows and every Storage object.

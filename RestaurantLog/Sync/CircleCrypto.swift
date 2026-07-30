@@ -99,7 +99,7 @@ enum CircleCryptoError: LocalizedError {
 /// the operator of the database never sees it. That is the whole reason the
 /// invitation must be delivered over a channel the two people already trust —
 /// Messages, AirDrop, or a spoken/scanned code — and why it is single use.
-struct CircleInvitation: Codable, Equatable, Identifiable {
+struct CircleInvitation: Codable, Equatable, Hashable, Identifiable {
     static let scheme = "https"
     static let host = "realronaldrump.github.io"
     static let path = "/restaurant-ranking/join"
@@ -110,7 +110,10 @@ struct CircleInvitation: Codable, Equatable, Identifiable {
     var code: String
     var key: String
 
-    var id: UUID { circleID }
+    /// A newly issued link for the same circle must still be a new presentation.
+    /// Using only `circleID` here caused SwiftUI to treat replacement links as
+    /// the already-presented item.
+    var id: String { "\(circleID.uuidString)|\(personID.uuidString)|\(code)" }
 
     var url: URL? {
         var components = URLComponents()
@@ -197,6 +200,24 @@ enum CircleKeychain {
 
     static func removeRefreshToken() {
         remove(account: "supabase-refresh-token")
+    }
+
+    /// Keeps a cold-open universal link recoverable while Core Data and the
+    /// signed-in account are still bootstrapping. The payload contains a circle
+    /// key, so it belongs in Keychain rather than UserDefaults or app logs.
+    static func storePendingInvitation(_ invitation: CircleInvitation) throws {
+        let encoded = try JSONEncoder().encode(invitation).base64EncodedString()
+        try store(encoded, account: "pending-circle-invitation")
+    }
+
+    static var pendingInvitation: CircleInvitation? {
+        guard let encoded = read(account: "pending-circle-invitation"),
+              let data = Data(base64Encoded: encoded) else { return nil }
+        return try? JSONDecoder().decode(CircleInvitation.self, from: data)
+    }
+
+    static func removePendingInvitation() {
+        remove(account: "pending-circle-invitation")
     }
 
     // MARK: Primitives

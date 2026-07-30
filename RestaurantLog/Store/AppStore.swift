@@ -124,6 +124,76 @@ final class AppStore {
         commit()
     }
 
+    /// Creates a separate dining log and makes it the explicit active circle.
+    /// A local circle can later be connected to the signed-in account without
+    /// mixing any of its records or rankings with existing circles.
+    @discardableResult
+    func createCircle(name: String, ownerName: String) -> CircleEntity? {
+        let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanOwner = ownerName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanName.isEmpty, !cleanOwner.isEmpty else { return nil }
+        guard !circles.contains(where: {
+            $0.name.compare(cleanName, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        }) else { return nil }
+
+        let circle = CircleEntity(context: context)
+        circle.id = UUID()
+        circle.name = cleanName
+        circle.createdAt = .now
+        circles.append(circle)
+        let owner = makePerson(name: cleanOwner, isCircleMember: true, color: "6F1D2B", circle: circle)
+        activeCircleID = circle.id
+        devicePersonID = owner.id
+        persistDeviceSelection()
+        commit()
+        return circle
+    }
+
+    /// Removes one complete local object graph without publishing tombstones.
+    /// Callers must first leave/delete the server membership and remove the
+    /// local key when the circle is synced.
+    @discardableResult
+    func removeCircleFromThisDevice(_ circleID: UUID) -> Bool {
+        guard let circle = circles.first(where: { $0.id == circleID }) else { return false }
+        var nextCircleID = circles.first(where: { $0.id != circleID })?.id
+        var nextPersonID = nextCircleID.flatMap { selectedPersonID(for: $0) }
+
+        // The rest of the app requires an active local log. Deleting the final
+        // circle therefore leaves a fresh personal circle instead of a broken,
+        // permanently empty shell that can no longer reach onboarding.
+        if nextCircleID == nil {
+            let ownerName = allPeople.first(where: { $0.circle?.id == circleID && $0.id == devicePersonID })?.name
+                .trimmedOr("Me") ?? "Me"
+            let replacement = CircleEntity(context: context)
+            replacement.id = UUID()
+            replacement.name = "My Circle"
+            replacement.createdAt = .now
+            let replacementOwner = makePerson(
+                name: ownerName,
+                isCircleMember: true,
+                color: "6F1D2B",
+                circle: replacement
+            )
+            nextCircleID = replacement.id
+            nextPersonID = replacementOwner.id
+        }
+        do {
+            context.delete(circle)
+            try persistence.save()
+            devicePersonIDsByCircle.removeValue(forKey: circleID.uuidString)
+            activeCircleID = nextCircleID
+            devicePersonID = nextPersonID
+            persistDeviceSelection()
+            reload()
+            return true
+        } catch {
+            context.rollback()
+            reload()
+            reportError("The circle could not be removed from this iPhone. \(error.localizedDescription)")
+            return false
+        }
+    }
+
     func activateCircle(_ circleID: UUID) {
         guard circles.contains(where: { $0.id == circleID }) else { return }
         activeCircleID = circleID
@@ -132,6 +202,28 @@ final class AppStore {
         }
         persistDeviceSelection()
         revision += 1
+    }
+
+    /// Finishes an invitation handoff after sync has rebuilt the downloaded
+    /// graph. Joining is not complete from the person's perspective until the
+    /// new circle is both visible and active; leaving the previous selection in
+    /// place makes a successful server redemption look like a no-op.
+    @discardableResult
+    func completeCircleJoin(circleID: UUID, personID: UUID) -> Bool {
+        reload()
+        guard circles.contains(where: { $0.id == circleID }),
+              let person = allPeople.first(where: { $0.id == personID }),
+              person.circle?.id == circleID,
+              person.isCircleMember else {
+            reportError("The circle joined successfully, but its downloaded profile is not ready yet. Sync again to finish opening it.")
+            return false
+        }
+
+        activeCircleID = circleID
+        devicePersonID = personID
+        persistDeviceSelection()
+        revision += 1
+        return true
     }
 
     func selectCurrentPerson(_ personID: UUID) {

@@ -262,6 +262,16 @@ enum LegacyStoreConsolidator {
         context.mergePolicy = NSMergePolicy(merge: .mergeByPropertyObjectTrumpMergePolicyType)
         context.transactionAuthor = "previous-version-import"
 
+        // Close both stores deterministically before the caller retires the
+        // original. External binary attributes may otherwise still have lazy
+        // clone work outstanding when the source files move, producing missing
+        // `.interim` references even though the context save returned.
+        defer {
+            context.performAndWait { context.reset() }
+            try? coordinator.remove(source)
+            try? coordinator.remove(destination)
+        }
+
         return try context.performAndWait {
             var copied = 0
             do {
@@ -369,7 +379,10 @@ enum LegacyStoreConsolidator {
     ) -> Any? {
         guard attribute.attributeType == .binaryDataAttributeType,
               let data = value as? Data else { return value }
-        return data.withUnsafeBytes { Data($0) }
+        // `Data(UnsafeRawBufferPointer)` may retain Foundation's file-backed
+        // NSData storage. Round-tripping through bytes forces ownership so the
+        // destination cannot retain a reference to Core Data's `.interim` clone.
+        return Data([UInt8](data))
     }
 
     private static func storeOptions(readOnly: Bool, historyTracking: Bool) -> [AnyHashable: Any] {

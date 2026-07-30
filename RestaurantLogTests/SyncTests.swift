@@ -90,6 +90,74 @@ final class CircleCryptoTests: XCTestCase {
         XCTAssertNil(CircleInvitation(url: URL(string: "bigbeautifullog://join")!))
         XCTAssertNil(CircleInvitation(url: URL(string: "https://realronaldrump.github.io/restaurant-ranking/join#not-an-invite")!))
     }
+
+}
+
+@MainActor
+final class InvitationRoutingTests: XCTestCase {
+    func testIncomingInvitationReplacesAnAlreadyPresentedSheet() async throws {
+        let persistence = MemoryInvitationPersistence()
+        let router = AppRouter(invitationPersistence: persistence)
+        router.sheet = .shareCircle
+        let invitation = CircleInvitation(
+            circleID: UUID(), personID: UUID(), circleName: "Shared Table",
+            code: CircleCrypto.makeInviteCode(), key: CircleCrypto.encode(CircleCrypto.makeKey())
+        )
+
+        XCTAssertTrue(router.receiveInvitation(try XCTUnwrap(invitation.url)))
+        try await Task.sleep(for: .milliseconds(450))
+
+        guard case let .joinCircle(presented) = router.sheet else {
+            return XCTFail("Expected the invitation to become the single active sheet")
+        }
+        XCTAssertEqual(presented, invitation)
+        XCTAssertEqual(persistence.pendingInvitation, invitation)
+    }
+
+    func testPendingInvitationSurvivesLaunchBootstrapUntilExplicitlyCleared() throws {
+        let persistence = MemoryInvitationPersistence()
+        let invitation = CircleInvitation(
+            circleID: UUID(), personID: UUID(), circleName: "Kelsey's Circle",
+            code: CircleCrypto.makeInviteCode(), key: CircleCrypto.encode(CircleCrypto.makeKey())
+        )
+        let receivingRouter = AppRouter(invitationPersistence: persistence)
+        XCTAssertTrue(receivingRouter.receiveInvitation(try XCTUnwrap(invitation.url)))
+
+        let relaunchedRouter = AppRouter(invitationPersistence: persistence)
+        relaunchedRouter.restorePendingInvitation()
+        guard case let .joinCircle(restored) = relaunchedRouter.sheet else {
+            return XCTFail("Expected the cold-launch router to restore the invitation")
+        }
+        XCTAssertEqual(restored, invitation)
+
+        relaunchedRouter.completeInvitation(invitation)
+        XCTAssertNil(persistence.pendingInvitation)
+    }
+}
+
+private final class MemoryInvitationPersistence: InvitationPersistence {
+    var pendingInvitation: CircleInvitation?
+    func store(_ invitation: CircleInvitation) throws { pendingInvitation = invitation }
+    func remove() { pendingInvitation = nil }
+}
+
+final class CircleSyncPreferenceTests: XCTestCase {
+    func testPauseStatePersistsWithoutDiscardingCircleEnrollmentState() throws {
+        let suiteName = "CircleSyncPreferenceTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let circleID = UUID()
+
+        var preferences = CircleSyncPreferences(defaults: defaults)
+        XCTAssertFalse(preferences.isPaused(circleID))
+
+        preferences.setPaused(true, for: circleID)
+        preferences = CircleSyncPreferences(defaults: defaults)
+        XCTAssertTrue(preferences.isPaused(circleID))
+
+        preferences.setPaused(false, for: circleID)
+        XCTAssertFalse(preferences.isPaused(circleID))
+    }
 }
 
 // MARK: - Payload encoding

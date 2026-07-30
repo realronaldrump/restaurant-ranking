@@ -62,6 +62,24 @@ struct MoreView: View {
                     Text(store.activeCircle?.name ?? "Your Circle").font(BBTheme.display(29))
                 }
                 Spacer()
+                if store.circles.count > 1 {
+                    Menu {
+                        ForEach(store.circles) { circle in
+                            Button {
+                                store.activateCircle(circle.id)
+                            } label: {
+                                Label(
+                                    circle.name,
+                                    systemImage: circle.id == store.activeCircleID ? "checkmark.circle.fill" : "circle"
+                                )
+                            }
+                        }
+                    } label: {
+                        Label("Switch", systemImage: "arrow.left.arrow.right.circle.fill")
+                    }
+                    .font(.callout.weight(.bold))
+                    .frame(minHeight: 44)
+                }
                 Button("Manage") { router.sheet = .shareCircle }
                     .font(.callout.weight(.bold))
                     .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
@@ -110,6 +128,11 @@ struct MoreView: View {
         return sync.isSyncing(circleID: circleID)
     }
 
+    private var circleHasKey: Bool {
+        guard let circleID = store.activeCircleID else { return false }
+        return sync.hasCircleKey(circleID: circleID)
+    }
+
     private var activeMemberships: [SupabaseClient.MembershipRow] {
         guard let circleID = store.activeCircleID else { return [] }
         return sync.memberships(circleID: circleID)
@@ -118,14 +141,16 @@ struct MoreView: View {
     private var circleStatusTitle: String {
         guard sync.isConfigured else { return "Local only" }
         guard sync.isSignedIn else { return "Local only · Sign in to connect" }
-        guard circleIsSynced else { return "Local only · Finish sync setup" }
+        guard circleHasKey else { return "Local only · Finish sync setup" }
+        guard circleIsSynced else { return "Sync paused on this iPhone" }
         return "Sync connected"
     }
 
     private var circleStatusDetail: String {
-        guard circleIsSynced else {
+        guard circleHasKey else {
             return "This log is safe on this iPhone but is not yet shared with other devices. Tap Manage to connect it."
         }
+        if !circleIsSynced { return "Syncing is paused on this iPhone. Tap Manage whenever you want to resume it." }
         let connected = activeMemberships.count
         let local = store.circleMembers.count
         if connected == 0 { return "Connected securely. Tap Manage to refresh member status or send an invitation." }
@@ -133,7 +158,7 @@ struct MoreView: View {
     }
 
     private var circleStatusSymbol: String {
-        circleIsSynced ? "lock.shield.fill" : "iphone"
+        circleIsSynced ? "lock.shield.fill" : (circleHasKey ? "pause.circle.fill" : "iphone")
     }
 
     private var circleStatusTaskID: String {

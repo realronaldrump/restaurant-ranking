@@ -81,6 +81,33 @@ final class RestaurantLogUITests: XCTestCase {
         XCTAssertGreaterThan(app.staticTexts.matching(NSPredicate(format: "label == %@", "Local profile")).count, 0)
     }
 
+    func testCircleManagementCanCreateSwitchAndRemoveASeparateLocalCircle() {
+        app.tabBars.buttons["More"].tap()
+        app.buttons["Manage"].tap()
+        XCTAssertTrue(app.navigationBars["Your Circle"].waitForExistence(timeout: 5))
+
+        app.buttons["new-circle-button"].tap()
+        let name = app.alerts.textFields["Circle name"]
+        XCTAssertTrue(name.waitForExistence(timeout: 3))
+        name.typeText("Travel Table")
+        app.alerts.buttons["Create"].tap()
+
+        XCTAssertTrue(app.staticTexts["Travel Table"].waitForExistence(timeout: 3))
+        let remove = app.buttons["remove-local-circle-button"]
+        XCTAssertTrue(remove.exists)
+        let scrollView = app.scrollViews.firstMatch
+        for _ in 0..<10 where !remove.isHittable { scrollView.swipeUp() }
+        XCTAssertTrue(remove.isHittable)
+        remove.tap()
+        let confirmation = app.buttons["Remove Circle"]
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
+        XCTAssertTrue(confirmation.isHittable)
+        confirmation.tap()
+
+        XCTAssertTrue(app.navigationBars["More"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Our Table"].exists)
+    }
+
     func testDiningAtlasShowsTheFirstVisitTrail() {
         app.tabBars.buttons["History"].tap()
         XCTAssertTrue(app.navigationBars["History"].waitForExistence(timeout: 5))

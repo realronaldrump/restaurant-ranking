@@ -4,5 +4,7 @@ What’s New in Version 3.0.1
 • Sign in with Apple and use single-use invitations to securely join a dining circle.
 • See clear connection status, first-sync progress, connected-member app versions, and recent activity.
 • Rename a circle and manage its members directly from Settings or the More tab.
+• Switch circles clearly, or leave, delete, and remove circles with explicit controls.
+• Open an invitation and move directly into the joined circle after syncing finishes.
 • Keep simultaneous edits, deletions, large first syncs, and encrypted photo transfers reliable.
 • Preserve dining history and photos from previously accepted iCloud circles during the upgrade.

@@ -28,6 +28,7 @@ supabase/migrations/0005_secure_default_privileges.sql
 supabase/migrations/0006_transactional_deletion_guards.sql
 supabase/migrations/0007_membership_presence.sql
 supabase/migrations/0008_deletion_authorization_order.sql
+supabase/migrations/0009_verified_membership_lifecycle.sql
 ```
 
 With the CLI:

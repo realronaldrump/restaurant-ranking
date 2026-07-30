@@ -1568,6 +1568,46 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertEqual(store.currentPerson?.id, invitedGuest.id)
     }
 
+    func testCompletingInviteJoinActivatesDownloadedCircleAndInvitedProfile() throws {
+        let originalCircleID = try XCTUnwrap(store.activeCircleID)
+        let second = try makeCircle(name: "Kelsey's Circle", people: ["Kelsey", "Davis"])
+        let davis = try XCTUnwrap(second.people.first { $0.name == "Davis" })
+
+        XCTAssertEqual(store.activeCircleID, originalCircleID)
+
+        XCTAssertTrue(store.completeCircleJoin(circleID: second.circle.id, personID: davis.id))
+        XCTAssertEqual(store.activeCircleID, second.circle.id)
+        XCTAssertEqual(store.activeCircle?.name, "Kelsey's Circle")
+        XCTAssertEqual(store.currentPerson?.id, davis.id)
+    }
+
+    func testCreatingAndRemovingASecondCircleKeepsCircleSelectionExplicit() throws {
+        let originalCircleID = try XCTUnwrap(store.activeCircleID)
+        let second = try XCTUnwrap(store.createCircle(name: "Travel Table", ownerName: "George"))
+
+        XCTAssertEqual(store.activeCircleID, second.id)
+        XCTAssertEqual(store.activeCircle?.name, "Travel Table")
+        XCTAssertEqual(store.currentPerson?.name, "George")
+
+        XCTAssertTrue(store.removeCircleFromThisDevice(second.id))
+        XCTAssertEqual(store.activeCircleID, originalCircleID)
+        XCTAssertEqual(store.circles.count, 1)
+        XCTAssertEqual(store.currentPerson?.name, "George")
+    }
+
+    func testRemovingTheOnlyCircleLeavesAFreshUsablePersonalCircle() throws {
+        let removedID = try XCTUnwrap(store.activeCircleID)
+
+        XCTAssertTrue(store.removeCircleFromThisDevice(removedID))
+
+        XCTAssertEqual(store.circles.count, 1)
+        XCTAssertNotEqual(store.activeCircleID, removedID)
+        XCTAssertEqual(store.activeCircle?.name, "My Circle")
+        XCTAssertEqual(store.currentPerson?.name, "George")
+        XCTAssertTrue(store.locations.isEmpty)
+        XCTAssertTrue(store.visits.isEmpty)
+    }
+
     func testPersistenceFailuresBecomeUserVisible() async {
         NotificationCenter.default.post(
             name: .persistenceDidFail,

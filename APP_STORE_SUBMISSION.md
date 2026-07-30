@@ -5,7 +5,7 @@
 - Product: Big Beautiful Restaurant Log
 - Bundle identifier: `com.davis.bigbeautifulranking`
 - Sync service: Supabase project (host and anon key supplied through `Config/Supabase.local.xcconfig`)
-- Version: 3.0.1 (build 11)
+- Version: 3.0.1 (build 12 candidate)
 - Devices: iPhone only
 - Minimum OS: iOS 17.0
 
@@ -82,12 +82,12 @@ reading user-selected imports and backups.
 
 ## Final release gates
 
-- App Store build: version 3.0.1, build 11, uploaded and validated July 29,
-  2026. It is attached to the App Store version and staged in a draft review
-  submission.
-- TestFlight: build 11 is assigned to the external **Big Beautiful Testers**
-  group and is awaiting TestFlight Beta App Review. Complete the two-device
-  soak below after Apple approves it and before submitting the App Store draft.
+- App Store build: version 3.0.1, build 11 was uploaded and validated July 29,
+  2026, but is superseded by build 12 because its invitation UI did not activate
+  the joined circle reliably. Upload and select build 12 after the gates below.
+- TestFlight: do not use build 11 for the final soak. Assign build 12 to the
+  external **Big Beautiful Testers** group, complete the two-device soak below,
+  and only then submit the App Store draft.
 - EU Digital Services Act: completed by the Account Holder and shown as
   **Active** for all 27 applicable countries or regions on July 29, 2026.
 - After the soak passes, open **App Review → Draft Submission** and choose
@@ -96,7 +96,7 @@ reading user-selected imports and backups.
 
 ### Two-device TestFlight soak
 
-1. Install build 11 from TestFlight on two iPhones using different Apple
+1. Install build 12 from TestFlight on two iPhones using different Apple
    Accounts.
 2. Confirm an existing user's restaurants, visits, rankings, relationships, and
    photo blobs survive the upgrade.
@@ -116,6 +116,8 @@ reading user-selected imports and backups.
 - Added Sign in with Apple and single-use invitations for securely joining a dining circle.
 - Added clear connection status, first-sync progress, connected-member app versions, and recent activity.
 - Added easy circle renaming and direct member management from Settings and the More tab.
+- Added a clear circle switcher plus explicit controls to leave, delete, or remove a circle from one iPhone.
+- Fixed invitation links so a successful join activates the shared circle instead of leaving the previous log onscreen.
 - Improved reliability for simultaneous edits, deletions, large first syncs, and encrypted photo transfers.
 - Preserved dining history and photos from previously accepted iCloud circles during the upgrade.
 

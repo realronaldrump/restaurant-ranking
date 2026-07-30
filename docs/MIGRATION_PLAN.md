@@ -1,7 +1,7 @@
 # Replacing iCloud sharing with an encrypted sync service
 
 Status: implemented and compiled under Swift 6. The unit suite passes, and all
-six migrations have been applied to the production Supabase project. Live RLS
+nine migrations have been applied to the production Supabase project. Live RLS
 checks with three isolated accounts verified member access, non-member
 invisibility, rejected writes, invitation expiry, single redemption, idempotent
 retry, and member removal. See [What is left](#what-is-left) for release-device

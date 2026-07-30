@@ -7,7 +7,7 @@ struct RestaurantLogApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @State private var store: AppStore?
     @State private var sync: SyncCoordinator?
-    @State private var pendingInvitation: CircleInvitation?
+    @State private var router = AppRouter()
     @State private var locationService = LocationService()
     @State private var launchMessage = "Opening your restaurant log…"
     @AppStorage("didCompleteGrandOpening") private var didCompleteGrandOpening = false
@@ -52,13 +52,12 @@ struct RestaurantLogApp: App {
     }
 
     private func receiveInvitation(_ url: URL) {
-        if let invitation = CircleInvitation(url: url) {
-            pendingInvitation = invitation
-        }
+        _ = router.receiveInvitation(url)
     }
 
     @ViewBuilder
     private func loadedContent(_ store: AppStore, _ sync: SyncCoordinator) -> some View {
+        @Bindable var router = router
         Group {
             if didCompleteGrandOpening, store.activeCircle != nil {
                 MainTabView()
@@ -68,14 +67,21 @@ struct RestaurantLogApp: App {
         }
         .environment(store)
         .environment(sync)
+        .environment(router)
         .environment(locationService)
-        .sheet(item: $pendingInvitation) { invitation in
-            JoinCircleView(invitation: invitation) {
-                didCompleteGrandOpening = true
-                pendingInvitation = nil
+        .sheet(item: $router.sheet, onDismiss: {
+            if let circleID = router.takePendingLocalCircleRemoval() {
+                _ = store.removeCircleFromThisDevice(circleID)
             }
-            .environment(store)
-            .environment(sync)
+        }) { sheet in
+            appSheet(sheet, store: store, sync: sync)
+                .environment(router)
+                .environment(store)
+                .environment(sync)
+                .environment(locationService)
+                .presentationBackground(BBTheme.paper)
+                .presentationDragIndicator(.visible)
+                .tint(BBTheme.oxblood)
         }
         .fullScreenCover(isPresented: Binding(
             get: { didCompleteGrandOpening && store.needsDeviceIdentity },
@@ -137,6 +143,44 @@ struct RestaurantLogApp: App {
         }
         store = preparedStore
         sync = coordinator
+        router.restorePendingInvitation()
+    }
+
+    @ViewBuilder
+    private func appSheet(_ sheet: AppSheet, store: AppStore, sync: SyncCoordinator) -> some View {
+        switch sheet {
+        case .logMeal:
+            LogMealFlow()
+        case .logMealAt(let id):
+            LogMealFlow(initialLocationID: id)
+        case .rateVisit(let id):
+            if let visit = store.visits.first(where: { $0.id == id }) {
+                SharedVisitRatingView(visit: visit)
+            } else {
+                ContentUnavailableView("Visit unavailable", systemImage: "calendar.badge.exclamationmark")
+            }
+        case .addWant:
+            AddWantView()
+        case .compare(let id):
+            if let location = store.locations.first(where: { $0.id == id }) {
+                DirectComparisonView(source: location)
+            } else {
+                ContentUnavailableView("Place unavailable", systemImage: "mappin.slash")
+            }
+        case .shareCircle:
+            CircleSharingView()
+        case .joinCircle(let invitation):
+            JoinCircleView(
+                invitation: invitation,
+                onJoined: {
+                    didCompleteGrandOpening = true
+                    router.completeInvitation(invitation)
+                },
+                onDiscard: {
+                    router.discardInvitation(invitation)
+                }
+            )
+        }
     }
 }
 

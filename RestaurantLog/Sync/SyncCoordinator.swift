@@ -4,6 +4,34 @@ import Observation
 import OSLog
 import UIKit
 
+struct CircleSyncPreferences {
+    private static let pausedCircleIDsKey = "pausedCircleSyncIDs"
+    let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    func isPaused(_ circleID: UUID) -> Bool {
+        Set(defaults.stringArray(forKey: Self.pausedCircleIDsKey) ?? [])
+            .contains(circleID.uuidString)
+    }
+
+    func setPaused(_ paused: Bool, for circleID: UUID) {
+        var circleIDs = Set(defaults.stringArray(forKey: Self.pausedCircleIDsKey) ?? [])
+        if paused {
+            circleIDs.insert(circleID.uuidString)
+        } else {
+            circleIDs.remove(circleID.uuidString)
+        }
+        if circleIDs.isEmpty {
+            defaults.removeObject(forKey: Self.pausedCircleIDsKey)
+        } else {
+            defaults.set(circleIDs.sorted(), forKey: Self.pausedCircleIDsKey)
+        }
+    }
+}
+
 /// Coalesces repeat requests while retaining every distinct circle. A single
 /// optional UUID can silently lose work when edits in two circles arrive while
 /// a pass is running or while the debounce timer is being restarted.
@@ -47,6 +75,7 @@ final class SyncCoordinator {
     @ObservationIgnored private var scheduledCircles = CircleSyncQueue()
     @ObservationIgnored private var pendingCircles = CircleSyncQueue()
     @ObservationIgnored private let signIn = AppleSignIn()
+    @ObservationIgnored private let syncPreferences: CircleSyncPreferences
     @ObservationIgnored private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.davis.bigbeautifulranking",
         category: "Sync"
@@ -64,8 +93,13 @@ final class SyncCoordinator {
         return build.map { "\(version) (\($0))" } ?? version
     }
 
-    init(container: NSPersistentContainer, configuration: SyncConfiguration? = SyncConfiguration.fromBundle()) {
+    init(
+        container: NSPersistentContainer,
+        configuration: SyncConfiguration? = SyncConfiguration.fromBundle(),
+        syncPreferences: CircleSyncPreferences = CircleSyncPreferences()
+    ) {
         self.configuration = configuration
+        self.syncPreferences = syncPreferences
         if let configuration {
             engine = SyncEngine(configuration: configuration, container: container)
             status = .idle
@@ -127,8 +161,14 @@ final class SyncCoordinator {
 
     // MARK: - Circle enrolment
 
+    func hasCircleKey(circleID: UUID) -> Bool { CircleKeychain.key(for: circleID) != nil }
+
+    func isPaused(circleID: UUID) -> Bool {
+        hasCircleKey(circleID: circleID) && syncPreferences.isPaused(circleID)
+    }
+
     func isSyncing(circleID: UUID) -> Bool {
-        CircleKeychain.key(for: circleID) != nil
+        hasCircleKey(circleID: circleID) && !syncPreferences.isPaused(circleID)
     }
 
     /// Turns sync on for a circle this device already owns. Generates the key,
@@ -155,6 +195,7 @@ final class SyncCoordinator {
             // that this circle is enrolled; a retry is idempotent either way.
             try await engine.supabase.createCircle(id: circleID, nameCipher: sealedName, personID: personID)
             try CircleKeychain.storeKey(key, for: circleID)
+            syncPreferences.setPaused(false, for: circleID)
             lastError = nil
             _ = await sync(circleID: circleID)
             await refreshMembers(circleID: circleID)
@@ -216,6 +257,7 @@ final class SyncCoordinator {
                 return false
             }
             try CircleKeychain.storeKey(key, for: circleID)
+            syncPreferences.setPaused(false, for: circleID)
             lastError = nil
             guard await sync(circleID: circleID) else {
                 if lastError == nil { lastError = "Membership is saved. Try syncing again to finish downloading this circle." }
@@ -229,18 +271,37 @@ final class SyncCoordinator {
         }
     }
 
-    /// Stops syncing a circle on this device and forgets its key. Records
-    /// already on the server stay there for the other members.
-    func disableSync(circleID: UUID) {
+    /// Pauses network work without destroying the only local copy of the E2EE
+    /// key. Forgetting it would make a member unable to resume and could make
+    /// an owner generate a different key that peers cannot decrypt.
+    func pauseSync(circleID: UUID) {
         scheduledCircles.remove(circleID)
         pendingCircles.remove(circleID)
+        syncPreferences.setPaused(true, for: circleID)
+        status = .idle
+    }
+
+    @discardableResult
+    func resumeSync(circleID: UUID) async -> Bool {
+        guard hasCircleKey(circleID: circleID) else {
+            lastError = SyncError.circleKeyMissing.localizedDescription
+            return false
+        }
+        syncPreferences.setPaused(false, for: circleID)
+        return await sync(circleID: circleID)
+    }
+
+    private func forgetCircleAccess(circleID: UUID) {
+        scheduledCircles.remove(circleID)
+        pendingCircles.remove(circleID)
+        syncPreferences.setPaused(false, for: circleID)
         CircleKeychain.removeKey(for: circleID)
         SyncBaselineStore.reset(circleID: circleID)
         status = .idle
     }
 
     func refreshMembers(circleID: UUID) async {
-        guard let engine, isSignedIn, isSyncing(circleID: circleID) else {
+        guard let engine, isSignedIn, hasCircleKey(circleID: circleID) else {
             circleMemberships = []
             return
         }
@@ -288,7 +349,7 @@ final class SyncCoordinator {
         guard let engine else { return false }
         do {
             try await engine.supabase.deleteCircleData(circleID: circleID)
-            disableSync(circleID: circleID)
+            forgetCircleAccess(circleID: circleID)
             circleMemberships = []
             lastError = nil
             return true
@@ -302,7 +363,7 @@ final class SyncCoordinator {
         guard let engine else { return false }
         do {
             try await engine.supabase.leaveCircle(circleID: circleID)
-            disableSync(circleID: circleID)
+            forgetCircleAccess(circleID: circleID)
             circleMemberships = []
             lastError = nil
             return true
@@ -324,8 +385,7 @@ final class SyncCoordinator {
                 } else {
                     try await engine.supabase.leaveCircle(circleID: membership.circleID)
                 }
-                CircleKeychain.removeKey(for: membership.circleID)
-                SyncBaselineStore.reset(circleID: membership.circleID)
+                forgetCircleAccess(circleID: membership.circleID)
             }
             try await engine.supabase.deleteAccount()
             isSignedIn = false
@@ -367,7 +427,7 @@ final class SyncCoordinator {
         guard let engine, isSignedIn else { return }
         do {
             for membership in try await engine.supabase.memberships()
-            where CircleKeychain.key(for: membership.circleID) != nil {
+            where isSyncing(circleID: membership.circleID) {
                 await sync(circleID: membership.circleID)
             }
         } catch {

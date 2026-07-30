@@ -155,6 +155,7 @@ struct CircleSharingView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppStore.self) private var store
     @Environment(SyncCoordinator.self) private var sync
+    @Environment(AppRouter.self) private var router
     @State private var invitation: CircleInvitation?
     @State private var isWorking = false
     @State private var newPerson = ""
@@ -164,10 +165,19 @@ struct CircleSharingView: View {
     @State private var isRenamingCircle = false
     @State private var circleNameDraft = ""
     @State private var circleRenameError: String?
+    @State private var isCreatingCircle = false
+    @State private var newCircleName = ""
+    @State private var newCircleOwnerName = ""
+    @State private var localCirclePendingDeletion: UUID?
 
     private var circleIsSynced: Bool {
         guard let circle = store.activeCircle else { return false }
         return sync.isSyncing(circleID: circle.id)
+    }
+
+    private var circleHasKey: Bool {
+        guard let circle = store.activeCircle else { return false }
+        return sync.hasCircleKey(circleID: circle.id)
     }
 
     var body: some View {
@@ -175,12 +185,13 @@ struct CircleSharingView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     header
+                    circleLibraryCard
                     memberCard
                     if !sync.isConfigured {
                         unavailableCard
                     } else if !sync.isSignedIn {
                         signInCard
-                    } else if circleIsSynced {
+                    } else if circleHasKey {
                         syncedCard
                         invitationCard
                         if currentAccountMembership != nil {
@@ -188,6 +199,9 @@ struct CircleSharingView: View {
                         }
                     } else {
                         enableCard
+                    }
+                    if !circleHasKey {
+                        localCircleActionsCard
                     }
                     if let message = sync.lastError {
                         Text(message).font(.caption).foregroundStyle(BBTheme.oxblood)
@@ -204,7 +218,7 @@ struct CircleSharingView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
             .task(id: circleTaskID) {
-                guard let circleID = store.activeCircleID, circleIsSynced, sync.isSignedIn else { return }
+                guard let circleID = store.activeCircleID, circleHasKey, sync.isSignedIn else { return }
                 await sync.refreshMembers(circleID: circleID)
                 selectFirstInviteeIfNeeded()
             }
@@ -215,6 +229,16 @@ struct CircleSharingView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Use a short name everyone in the circle will recognize.")
+            }
+            .alert("Create a New Circle", isPresented: $isCreatingCircle) {
+                TextField("Circle name", text: $newCircleName)
+                    .textInputAutocapitalization(.words)
+                TextField("Your name in this circle", text: $newCircleOwnerName)
+                    .textInputAutocapitalization(.words)
+                Button("Create") { createCircle() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Each circle is a separate private dining log. Records and rankings never mix between circles.")
             }
             .confirmationDialog(
                 "Remove this member from syncing?",
@@ -241,13 +265,17 @@ struct CircleSharingView: View {
                 isPresented: $isConfirmingServiceDeletion,
                 titleVisibility: .visible
             ) {
-                Button(isCurrentAccountOwner ? "Delete Synced Copy" : "Leave Synced Circle", role: .destructive) {
+                Button(isCurrentAccountOwner ? "Delete Circle" : "Leave Circle", role: .destructive) {
                     guard let circleID = store.activeCircleID else { return }
                     run {
                         if isCurrentAccountOwner {
-                            _ = await sync.deleteSyncedCircle(circleID: circleID)
+                            if await sync.deleteSyncedCircle(circleID: circleID) {
+                                closeThenRemoveLocalCircle(circleID)
+                            }
                         } else {
-                            _ = await sync.leaveSyncedCircle(circleID: circleID)
+                            if await sync.leaveSyncedCircle(circleID: circleID) {
+                                closeThenRemoveLocalCircle(circleID)
+                            }
                         }
                         invitation = nil
                     }
@@ -255,8 +283,25 @@ struct CircleSharingView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text(isCurrentAccountOwner
-                    ? "This permanently removes the encrypted records, photo objects, invitations, and memberships from the service. The dining log on this iPhone stays intact and stops syncing."
-                    : "This removes this account’s service membership and turns off syncing on this iPhone. The dining log already stored here stays intact.")
+                    ? "This permanently removes the encrypted service copy and this iPhone’s local copy. Other members’ already-downloaded offline copies cannot be remotely erased, but they lose service access and stop syncing."
+                    : "This removes your membership, forgets the circle key, and removes this circle’s local copy from this iPhone. Other circles are unchanged.")
+            }
+            .confirmationDialog(
+                "Remove this local circle from this iPhone?",
+                isPresented: Binding(
+                    get: { localCirclePendingDeletion != nil },
+                    set: { if !$0 { localCirclePendingDeletion = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Remove Circle", role: .destructive) {
+                    guard let circleID = localCirclePendingDeletion else { return }
+                    closeThenRemoveLocalCircle(circleID)
+                    localCirclePendingDeletion = nil
+                }
+                Button("Cancel", role: .cancel) { localCirclePendingDeletion = nil }
+            } message: {
+                Text("This circle is not synced. Its restaurants, outings, photos, and rankings will be removed from this iPhone. Other circles are unchanged.")
             }
         }
     }
@@ -285,6 +330,58 @@ struct CircleSharingView: View {
         }
     }
 
+    private var circleLibraryCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Eyebrow("Your circles")
+                    Text("Switching changes the whole dining log")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    newCircleName = ""
+                    newCircleOwnerName = store.currentPerson?.name ?? ""
+                    isCreatingCircle = true
+                } label: {
+                    Label("New", systemImage: "plus.circle.fill")
+                }
+                .font(.callout.weight(.semibold))
+                .accessibilityIdentifier("new-circle-button")
+            }
+            ForEach(store.circles) { circle in
+                Button {
+                    invitation = nil
+                    store.activateCircle(circle.id)
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: circle.id == store.activeCircleID ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(circle.id == store.activeCircleID ? BBTheme.oxblood : .secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(circle.name).font(.headline).foregroundStyle(BBTheme.ink)
+                            Text(circle.id == store.activeCircleID ? "Open now" : "Tap to open")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if sync.hasCircleKey(circleID: circle.id) {
+                            Image(systemName: sync.isPaused(circleID: circle.id) ? "pause.circle.fill" : "lock.shield.fill")
+                                .foregroundStyle(BBTheme.oxblood)
+                                .accessibilityLabel("Sync connected")
+                        } else {
+                            Text("Local").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(minHeight: 50)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .editorialCard()
+    }
+
     private var memberCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             Eyebrow("Members")
@@ -307,7 +404,7 @@ struct CircleSharingView: View {
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         } else {
-                            Text(circleIsSynced ? "Invitation needed" : "Local profile")
+                            Text(circleHasKey ? "Invitation needed" : "Local profile")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
                         }
@@ -351,8 +448,10 @@ struct CircleSharingView: View {
     private var signInCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             Eyebrow("Syncing")
-            Text("Connect this circle").font(.headline)
-            Text("Sign in with Apple, create this circle’s private key, and upload the existing log in encrypted form. The service never receives readable dining records.")
+            Text(circleHasKey ? "Resume this circle" : "Connect this circle").font(.headline)
+            Text(circleHasKey
+                ? "This iPhone still holds the circle’s private key. Sign in with Apple to resume encrypted syncing without changing that key."
+                : "Sign in with Apple, create this circle’s private key, and upload the existing log in encrypted form. The service never receives readable dining records.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
             Button {
@@ -360,7 +459,12 @@ struct CircleSharingView: View {
                 run {
                     await sync.signInWithApple()
                     if sync.isSignedIn {
-                        await sync.enableSync(circleID: circle.id, circleName: circle.name, personID: personID)
+                        if sync.hasCircleKey(circleID: circle.id) {
+                            _ = await sync.resumeSync(circleID: circle.id)
+                            await sync.refreshMembers(circleID: circle.id)
+                        } else {
+                            await sync.enableSync(circleID: circle.id, circleName: circle.name, personID: personID)
+                        }
                     }
                 }
             } label: {
@@ -413,7 +517,7 @@ struct CircleSharingView: View {
     private var syncedCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             Eyebrow("Syncing")
-            LabeledContent("Connection", value: "Connected")
+            LabeledContent("Connection", value: circleIsSynced ? "Connected" : "Paused on this iPhone")
             LabeledContent("Accounts", value: "\(activeMemberships.count) connected")
             LabeledContent("Last sync", value: sync.status.description)
             if let outcome = sync.lastOutcome, outcome.conflicts > 0 {
@@ -426,11 +530,14 @@ struct CircleSharingView: View {
                 run { await sync.sync(circleID: circle.id) }
             }
             .buttonStyle(SecondaryButtonStyle())
-            .disabled(isWorking || sync.status.isBusy)
-            Button("Turn Off Syncing on This iPhone") {
+            .disabled(isWorking || sync.status.isBusy || !circleIsSynced)
+            Button(circleIsSynced ? "Pause Syncing on This iPhone" : "Resume Syncing on This iPhone") {
                 guard let circleID = store.activeCircleID else { return }
-                sync.disableSync(circleID: circleID)
-                invitation = nil
+                if circleIsSynced {
+                    sync.pauseSync(circleID: circleID)
+                } else {
+                    run { _ = await sync.resumeSync(circleID: circleID) }
+                }
             }
             .buttonStyle(SecondaryButtonStyle())
             Button("Sign Out") { run { await sync.signOut() } }
@@ -493,17 +600,34 @@ struct CircleSharingView: View {
 
     private var serviceDataCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Eyebrow("Service data")
-            Text(isCurrentAccountOwner ? "Delete the synced copy" : "Leave this circle")
+            Eyebrow("Circle actions")
+            Text(isCurrentAccountOwner ? "Delete this circle" : "Leave this circle")
                 .font(.headline)
             Text(isCurrentAccountOwner
-                ? "Permanently remove this circle’s encrypted records, stored photo objects, invitations, and memberships from the service without deleting this iPhone’s local log."
-                : "Remove this account’s service access and keep the local log on this iPhone.")
+                ? "Permanently remove its encrypted service data, memberships, stored photos, and this iPhone’s local copy."
+                : "Remove your membership, forget its key, and remove this circle from this iPhone.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
-            Button(isCurrentAccountOwner ? "Delete Synced Copy" : "Leave Synced Circle", role: .destructive) {
+            Button(isCurrentAccountOwner ? "Delete Circle" : "Leave Circle", role: .destructive) {
                 isConfirmingServiceDeletion = true
             }
+            .accessibilityIdentifier(isCurrentAccountOwner ? "delete-circle-button" : "leave-circle-button")
+            .disabled(isWorking)
+        }
+        .editorialCard()
+    }
+
+    private var localCircleActionsCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Eyebrow("Circle actions")
+            Text("Remove this local circle").font(.headline)
+            Text("This circle has no service membership. Removing it affects only this iPhone.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Button("Remove Circle from This iPhone", role: .destructive) {
+                localCirclePendingDeletion = store.activeCircleID
+            }
+            .accessibilityIdentifier("remove-local-circle-button")
             .disabled(isWorking)
         }
         .editorialCard()
@@ -565,6 +689,33 @@ struct CircleSharingView: View {
         }
     }
 
+    private func createCircle() {
+        let owner = newCircleOwnerName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallbackOwner = store.currentPerson?.name ?? "Me"
+        if store.createCircle(
+            name: newCircleName,
+            ownerName: owner.isEmpty ? fallbackOwner : owner
+        ) != nil {
+            invitation = nil
+            circleRenameError = nil
+            Haptics.success()
+        } else {
+            sync.lastError = "Use a non-empty circle name that is different from your other circles."
+        }
+    }
+
+    /// Core Data invalidates a deleted managed object immediately. Let the
+    /// management sheet finish dismissing before deleting the graph so SwiftUI
+    /// cannot re-evaluate an outgoing row that still captures that object.
+    private func closeThenRemoveLocalCircle(_ circleID: UUID) {
+        Task { @MainActor in
+            // A confirmation dialog is itself a presentation layer. Allow its
+            // destructive action to dismiss first, then close the parent sheet.
+            try? await Task.sleep(for: .milliseconds(150))
+            router.dismissCircleManagement(removing: circleID)
+        }
+    }
+
     private func selectFirstInviteeIfNeeded() {
         if !eligibleInvitees.contains(where: { $0.id == inviteeID }) {
             inviteeID = eligibleInvitees.first?.id
@@ -586,6 +737,7 @@ struct CircleSharingView: View {
 struct JoinCircleView: View {
     let invitation: CircleInvitation
     let onJoined: () -> Void
+    let onDiscard: () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @Environment(AppStore.self) private var store
@@ -619,10 +771,15 @@ struct JoinCircleView: View {
                         Button {
                             run {
                                 if await sync.join(invitation) {
-                                    store.reload()
-                                    store.selectCurrentPerson(invitation.personID)
-                                    onJoined()
-                                    dismiss()
+                                    if store.completeCircleJoin(
+                                        circleID: invitation.circleID,
+                                        personID: invitation.personID
+                                    ) {
+                                        onJoined()
+                                        dismiss()
+                                    } else {
+                                        error = store.lastError
+                                    }
                                 } else {
                                     error = sync.lastError
                                 }
@@ -635,6 +792,7 @@ struct JoinCircleView: View {
                             }
                         }
                         .buttonStyle(PrimaryButtonStyle())
+                        .accessibilityIdentifier("join-circle-button")
                         .disabled(isWorking)
                     }
                     if let error {
@@ -647,7 +805,14 @@ struct JoinCircleView: View {
             .editorialPage()
             .navigationTitle("Join Circle")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Not Now") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Not Now") {
+                        onDiscard()
+                        dismiss()
+                    }
+                }
+            }
         }
     }
 

@@ -138,6 +138,32 @@ final class SupabaseClientTests: XCTestCase {
         XCTAssertEqual(json["client_version"], "3.0.1 (11)")
     }
 
+    func testOwnerRemovalUsesVerifiedRPCInsteadOfSilentRLSDelete() async throws {
+        SupabaseURLProtocol.respond { _ in (200, Data("true".utf8)) }
+        let client = makeClient()
+        let removedUserID = UUID(uuidString: "44444444-4444-4444-4444-444444444444")!
+
+        try await client.removeMember(circleID: circleID, userID: removedUserID)
+
+        let request = try XCTUnwrap(SupabaseURLProtocol.requests.first)
+        XCTAssertEqual(request.url?.path, "/rest/v1/rpc/remove_circle_member")
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(request.httpBody)) as? [String: String])
+        XCTAssertEqual(json["target_circle"], circleID.uuidString)
+        XCTAssertEqual(json["target_user"], removedUserID.uuidString)
+    }
+
+    func testLeavingUsesVerifiedRPCInsteadOfSilentRLSDelete() async throws {
+        SupabaseURLProtocol.respond { _ in (200, Data("true".utf8)) }
+        let client = makeClient()
+
+        try await client.leaveCircle(circleID: circleID)
+
+        let request = try XCTUnwrap(SupabaseURLProtocol.requests.first)
+        XCTAssertEqual(request.url?.path, "/rest/v1/rpc/leave_circle")
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(request.httpBody)) as? [String: String])
+        XCTAssertEqual(json["target_circle"], circleID.uuidString)
+    }
+
     func testForbiddenResponseDoesNotRefreshAValidSession() async {
         SupabaseURLProtocol.respond { _ in
             (403, Data("{\"message\":\"row-level security policy denied access\"}".utf8))

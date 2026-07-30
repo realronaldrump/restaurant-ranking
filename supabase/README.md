@@ -17,7 +17,7 @@ with a per-circle key this project never holds.
 ## 2. Apply the migrations
 
 Apply every file in `supabase/migrations/` in numerical order. At the time of
-the 3.0.2 release that is:
+the 3.1 release that is:
 
 ```
 supabase/migrations/0001_circles_and_records.sql
@@ -29,6 +29,7 @@ supabase/migrations/0006_transactional_deletion_guards.sql
 supabase/migrations/0007_membership_presence.sql
 supabase/migrations/0008_deletion_authorization_order.sql
 supabase/migrations/0009_verified_membership_lifecycle.sql
+supabase/migrations/0010_join_codes.sql
 ```
 
 With the CLI:
@@ -126,12 +127,16 @@ select code_hash, expires_at, redeemed_at from circle_invites
 where circle_id = '<circle>';
 ```
 
-**Invitations.** Single use, expiring in seven days, stored only as a SHA-256
-hash. The plaintext code and the circle key exist only inside the invitation
-link, so it must be delivered the way you would deliver a house key — directly,
-in a conversation you trust. An invitation is bound to the intended circle and
-person record; the service permits only one account to redeem it. To revoke one
-before it is used, delete its row.
+**Invitations.** A join code is twelve Crockford base32 characters, single use,
+expiring in seven days. The service stores the code's SHA-256 hash next to a key
+envelope: the circle key sealed with AES-GCM under a key derived from the code
+itself (PBKDF2-HMAC-SHA256, 200k iterations, per-invitation salt, bound to the
+circle id). So the service can match a redemption without being able to open the
+envelope, and a database disclosure does not hand anybody a circle. Redemption
+inserts the membership and returns the envelope in one transaction, which is why
+an account can never end up as a member of a circle it cannot decrypt. Any
+member may invite; the joiner claims their own person record as they accept. To
+revoke outstanding codes, call `revoke_join_codes` or delete the rows.
 
 **Security boundary.** The authenticated role receives only the minimum table
 privileges needed by the app; the anonymous role receives none. RLS is enabled

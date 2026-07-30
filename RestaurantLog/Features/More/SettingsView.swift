@@ -13,7 +13,6 @@ struct SettingsView: View {
     @AppStorage("hapticsEnabled") private var hapticsEnabled = true
     @AppStorage("didDismissPhotoVisitTimeSync") private var didDismissPhotoVisitTimeSync = false
     @AppStorage(AppearancePreference.storageKey) private var appearancePreference = AppearancePreference.system
-    @State private var newPerson = ""
     @State private var newCompanion = ""
     @State private var editingPerson: PersonEntity?
     @State private var isShowingResetConfirmation = false
@@ -36,46 +35,28 @@ struct SettingsView: View {
             if !didDismissPhotoVisitTimeSync, store.photoDateSyncCandidateCount > 0 {
                 photoVisitTimeSuggestion
             }
-            if store.circles.count > 1 {
-                Section("Active log") {
-                    Picker("Circle", selection: Binding(
-                        get: { store.activeCircle?.id },
-                        set: { if let id = $0 { store.activateCircle(id) } }
-                    )) {
-                        ForEach(store.circles) { circle in Text(circle.name).tag(UUID?.some(circle.id)) }
-                    }
-                    Text("Shared invitations can add another private log. Switching never mixes rankings between circles.").font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            Section("Circle") {
-                if !store.circleMembers.isEmpty {
-                    Picker("This device is used by", selection: Binding(
-                        get: { store.currentPerson?.id },
-                        set: { if let id = $0 { store.selectCurrentPerson(id) } }
-                    )) {
-                        ForEach(store.circleMembers) { person in Text(person.name).tag(UUID?.some(person.id)) }
-                    }
-                }
+            Section {
                 ForEach(store.circleMembers) { person in
                     Button { editingPerson = person } label: {
                         HStack {
                             Circle().fill(Color(hex: person.colorHex)).frame(width: 24, height: 24)
                             Text(person.name).foregroundStyle(BBTheme.ink)
                             Spacer()
-                            if person.id == store.currentPerson?.id { Text("This device").foregroundStyle(.secondary) }
+                            if person.id == store.currentPerson?.id {
+                                Text("You").foregroundStyle(.secondary)
+                            }
                             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
                         }
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
-                if store.circleMembers.count < 6 {
-                    HStack {
-                        TextField("Add a circle member", text: $newPerson)
-                        Button("Add") { _ = store.addCircleMember(name: newPerson); newPerson = "" }
-                            .disabled(newPerson.trimmingCharacters(in: .whitespaces).isEmpty)
-                    }
-                }
+            } header: {
+                Text("Your circle")
+            } footer: {
+                Text(sync.isShared
+                    ? "Everybody here shares this log. Manage who is in it under Backup & sharing."
+                    : "People join your circle with a join code, and then share this log. Send one under Backup & sharing.")
             }
             Section {
                 ForEach(store.namedCompanions) { person in
@@ -95,51 +76,33 @@ struct SettingsView: View {
                         .disabled(newCompanion.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             } header: {
-                Text("Other people")
+                Text("People you dine with")
             } footer: {
-                Text("These names can be reused on visits. Add one to the circle later without losing any linked history.")
+                Text("Names you can tag on an outing. They do not need the app, and tagging one never shares your log with anybody.")
             }
             Section("Syncing & permissions") {
-                LabeledContent("Circle sync", value: syncDescription)
-                if sync.isConfigured, let circle = store.activeCircle {
-                    if circleHasKey {
-                        Text(connectedCircleDescription)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                LabeledContent("Backup & sharing", value: syncDescription)
+                if sync.isConfigured {
+                    Text(syncExplanation)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if sync.isSignedIn {
+                        Button(sync.isShared ? "Manage Circle & Members" : "Share This Log") { router.sheet = .circle }
                     } else {
-                        Text("This circle is still local to this iPhone. Connect it to securely share its encrypted log with invited members.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    if !circleHasKey || !sync.isSignedIn {
                         Button {
-                            connectCurrentCircle()
+                            signIn()
                         } label: {
                             if isChangingCircleSync {
-                                HStack {
-                                    ProgressView()
-                                    Text(sync.status.isBusy ? "Encrypting & Uploading…" : "Connecting…")
-                                }
-                                .frame(maxWidth: .infinity)
+                                HStack { ProgressView(); Text("Signing in…") }
+                                    .frame(maxWidth: .infinity)
                             } else {
-                                Label(
-                                    sync.isSignedIn
-                                        ? "Turn On Syncing for \(circle.name)"
-                                        : (circleHasKey ? "Sign In & Resume Syncing" : "Sign In & Turn On Syncing"),
-                                    systemImage: "arrow.triangle.2.circlepath"
-                                )
-                                .frame(maxWidth: .infinity)
+                                Label("Sign in with Apple", systemImage: "apple.logo")
+                                    .frame(maxWidth: .infinity)
                             }
                         }
                         .buttonStyle(PrimaryButtonStyle())
-                        .disabled(isChangingCircleSync || store.currentPerson == nil)
-                        if isChangingCircleSync {
-                            Text("The first sync can take a minute when the log contains many visits or photos. Keep the app open until it says Connected.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+                        .disabled(isChangingCircleSync)
                     }
-                    Button("Manage Circle & Members") { router.sheet = .shareCircle }
                 }
                 if case .offline = sync.status {
                     Text("Your latest changes are saved on this iPhone and will upload when the connection returns.")
@@ -151,22 +114,30 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(BBTheme.oxblood)
                 }
-                if sync.isConfigured {
-                    if sync.isSignedIn {
-                        if let circleID = store.activeCircleID, circleHasKey {
-                            Button(isCircleSynced ? "Pause Syncing on This iPhone" : "Resume Syncing on This iPhone") {
-                                if isCircleSynced {
-                                    sync.pauseSync(circleID: circleID)
-                                } else {
-                                    Task { _ = await sync.resumeSync(circleID: circleID) }
-                                }
+                if sync.isConfigured, sync.isSignedIn {
+                    Button("Sign Out") { Task { await sync.signOut() } }
+                    Button("Delete Sync Account and Service Data", role: .destructive) {
+                        isConfirmingSyncAccountDeletion = true
+                    }
+                    .disabled(isDeletingSyncAccount)
+                    .confirmationDialog(
+                        "Delete your sync account and service data?",
+                        isPresented: $isConfirmingSyncAccountDeletion,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Delete Sync Account", role: .destructive) {
+                            isDeletingSyncAccount = true
+                            Task {
+                                let deleted = await sync.deleteAccount()
+                                backupMessage = deleted
+                                    ? "Your sync account and its service data were deleted. Your dining log stayed on this iPhone."
+                                    : sync.lastError
+                                isDeletingSyncAccount = false
                             }
                         }
-                        Button("Sign Out") { Task { await sync.signOut() } }
-                        Button("Delete Sync Account and Service Data", role: .destructive) {
-                            isConfirmingSyncAccountDeletion = true
-                        }
-                        .disabled(isDeletingSyncAccount)
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("The shared copy, its encrypted records, stored photos, invitations, memberships, and the account itself are permanently deleted. Your dining log stays on this iPhone.")
                     }
                 }
                 LabeledContent("Foreground location", value: locationDescription)
@@ -196,6 +167,10 @@ struct SettingsView: View {
                     Label("Import from Beli", systemImage: "square.and.arrow.down.on.square")
                 }
                 .disabled(isPreparingBackup || isRestoringBackup)
+                .fileImporter(isPresented: $isImportingBeli, allowedContentTypes: [.zip]) { result in
+                    if case .success(let url) = result { beliSelection = .init(url: url) }
+                    else if case .failure(let error) = result { backupMessage = error.localizedDescription }
+                }
 
                 Button {
                     prepareBackup()
@@ -210,6 +185,17 @@ struct SettingsView: View {
                     Label(isRestoringBackup ? "Restoring Backup…" : "Restore from Backup", systemImage: "arrow.down.doc")
                 }
                 .disabled(isPreparingBackup || isRestoringBackup)
+                .confirmationDialog("Restore from backup?", isPresented: $isShowingRestoreConfirmation, titleVisibility: .visible) {
+                    Button("Choose Backup and Replace Everything", role: .destructive) {
+                        isImportingBackup = true
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("The selected backup will replace all current dining logs on this iPhone, and the replacement will then sync to the rest of your circle. Export a current backup first if you may need it later.")
+                }
+                .fileImporter(isPresented: $isImportingBackup, allowedContentTypes: [.restaurantLogBackup]) { result in
+                    restoreBackup(result)
+                }
 
                 Text("Beli ZIP imports add or update dining history without duplicating previous imports. A .bbrlog backup contains every circle, member, restaurant, visit, rating, comparison, wish-list entry, dish, stored photo, and import link. Restore replaces the app’s current data.")
                     .font(.caption)
@@ -273,7 +259,7 @@ struct SettingsView: View {
         .editorialForm()
         .scrollDismissesKeyboard(.interactively)
         .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
-        .task(id: syncRosterTaskID) {
+        .task(id: "\(store.activeCircleID?.uuidString ?? "none")-\(sync.isSignedIn)") {
             guard let circleID = store.activeCircleID, sync.isSignedIn else { return }
             await sync.refreshMembers(circleID: circleID)
         }
@@ -294,13 +280,6 @@ struct SettingsView: View {
             }
             backupDocument = nil
         }
-        .fileImporter(isPresented: $isImportingBackup, allowedContentTypes: [.restaurantLogBackup]) { result in
-            restoreBackup(result)
-        }
-        .fileImporter(isPresented: $isImportingBeli, allowedContentTypes: [.zip]) { result in
-            if case .success(let url) = result { beliSelection = .init(url: url) }
-            else if case .failure(let error) = result { backupMessage = error.localizedDescription }
-        }
         .sheet(item: $beliSelection) { selection in
             BeliImportView(selection: selection) { summary in
                 backupMessage = "Imported \(summary.outingsCreated) new outings and \(summary.photosAdded) photos from Beli."
@@ -320,15 +299,7 @@ struct SettingsView: View {
         } message: { _ in
             Text("This permanently removes the data created by this import, including any edits made inside its imported outings. Pre-existing matched records remain. This cannot be undone.")
         }
-        .confirmationDialog("Restore from backup?", isPresented: $isShowingRestoreConfirmation, titleVisibility: .visible) {
-            Button("Choose Backup and Replace Everything", role: .destructive) {
-                isImportingBackup = true
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("The selected backup will replace all current dining logs on this iPhone, and the replacement will then sync to the rest of your circle. Export a current backup first if you may need it later.")
-        }
-        .alert("Reset Big Beautiful?", isPresented: $isShowingResetConfirmation) {
+        .alert("Reset Big Beautiful Restaurant Log?", isPresented: $isShowingResetConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Erase Everything", role: .destructive) {
                 didCompleteGrandOpening = false
@@ -345,28 +316,9 @@ struct SettingsView: View {
         } message: {
             Text("This permanently deletes all circles, restaurants, visits, photos, rankings, and app setup from this iPhone. If the circle is synced, the deletions are published to the other members as well. iOS permissions will not change. This cannot be undone.")
         }
-        .confirmationDialog(
-            "Delete your sync account and service data?",
-            isPresented: $isConfirmingSyncAccountDeletion,
-            titleVisibility: .visible
-        ) {
-            Button("Delete Sync Account", role: .destructive) {
-                isDeletingSyncAccount = true
-                Task {
-                    let deleted = await sync.deleteSyncAccount()
-                    backupMessage = deleted
-                        ? "Your sync account and its service data were deleted. Your on-device dining logs were preserved."
-                        : sync.lastError
-                    isDeletingSyncAccount = false
-                }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Owned circles, encrypted records, stored photo objects, invitations, memberships, and the service account are permanently deleted. Circles owned by someone else are left for their remaining members. Dining logs already on this iPhone stay here with syncing off.")
-        }
     }
 
-    private static let releaseDateText = "July 29, 2026"
+    private static let releaseDateText = "July 30, 2026"
 
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
@@ -495,64 +447,32 @@ struct SettingsView: View {
     }
     private var syncDescription: String {
         guard sync.isConfigured else { return "Not available in this build" }
-        guard sync.isSignedIn else { return circleHasKey ? "Paused · Sign in to resume" : "Local only · Sign in to connect" }
-        guard circleHasKey else { return "Local only · Ready to connect" }
-        guard isCircleSynced else { return "Paused on this iPhone" }
-        if sync.status.isBusy { return "Connecting…" }
-        let count = activeMemberships.count
-        return count == 0 ? "Connected" : "Connected · \(count) account\(count == 1 ? "" : "s")"
+        guard sync.isSignedIn else { return "Signed out · this iPhone only" }
+        if sync.isPreparing || sync.status.isBusy { return "Syncing…" }
+        let count = sync.members.count
+        return count > 1 ? "Shared with \(count - 1) other\(count == 2 ? "" : "s")" : "Backed up & encrypted"
     }
 
-    private var isCircleSynced: Bool {
-        guard let circleID = store.activeCircleID else { return false }
-        return sync.isSyncing(circleID: circleID)
-    }
-
-    private var circleHasKey: Bool {
-        guard let circleID = store.activeCircleID else { return false }
-        return sync.hasCircleKey(circleID: circleID)
-    }
-
-    private var activeMemberships: [SupabaseClient.MembershipRow] {
-        guard let circleID = store.activeCircleID else { return [] }
-        return sync.memberships(circleID: circleID)
-    }
-
-    private var connectedCircleDescription: String {
-        if !sync.isSignedIn {
-            return "The circle key is preserved securely on this iPhone. Sign in with Apple to resume exchanging changes."
+    private var syncExplanation: String {
+        guard sync.isSignedIn else {
+            return "This log exists only on this iPhone. Signing in keeps an encrypted copy in your account and lets you share it with the people you dine with."
         }
-        if !isCircleSynced {
-            return "The circle key is preserved securely. Resume syncing whenever you want this iPhone to exchange changes."
-        }
-        let count = activeMemberships.count
-        if count == 0 { return "Encrypted syncing is connected. Open circle management to refresh the member roster." }
-        return "Encrypted syncing is on for this circle. \(count) account\(count == 1 ? " is" : "s are") connected."
+        return sync.members.count > 1
+            ? "This log is shared. Everyone sees the same restaurants and outings, and each person keeps their own reactions and rankings."
+            : "This log is encrypted and kept in your account. Nobody else can see it until you share it."
     }
 
-    private var syncRosterTaskID: String {
-        let circle = store.activeCircleID?.uuidString ?? "none"
-        return "\(circle)-\(sync.isSignedIn)-\(isCircleSynced)"
-    }
-
-    private func connectCurrentCircle() {
-        guard let circle = store.activeCircle, let personID = store.currentPerson?.id else { return }
+    private func signIn() {
         isChangingCircleSync = true
         Task {
-            if !sync.isSignedIn { await sync.signInWithApple() }
-            if sync.isSignedIn {
-                if sync.hasCircleKey(circleID: circle.id) {
-                    _ = await sync.resumeSync(circleID: circle.id)
-                } else {
-                    await sync.enableSync(circleID: circle.id, circleName: circle.name, personID: personID)
-                }
-            }
-            isChangingCircleSync = false
-            if sync.isSyncing(circleID: circle.id), sync.lastError == nil {
-                router.sheet = .shareCircle
-            }
+            defer { isChangingCircleSync = false }
+            guard await sync.signInWithApple(),
+                  let circle = store.activeCircle,
+                  let personID = store.currentPerson?.id ?? store.circleMembers.first?.id else { return }
+            await sync.activate(circleID: circle.id, name: circle.name, personID: personID)
         }
     }
+
 }
 
 @MainActor
@@ -576,16 +496,6 @@ private struct EditPersonView: View {
                         .textInputAutocapitalization(.words)
                     if let errorMessage {
                         Text(errorMessage).font(.caption).foregroundStyle(BBTheme.oxblood)
-                    }
-                }
-                if !person.isCircleMember, store.circleMembers.count < 6 {
-                    Section {
-                        Button("Add to Circle") {
-                            guard saveName(), store.addCircleMember(name: person.name) != nil else { return }
-                            dismiss()
-                        }
-                    } footer: {
-                        Text("Existing visit tags stay attached, and this person can identify themselves and add ratings on a shared device.")
                     }
                 }
             }

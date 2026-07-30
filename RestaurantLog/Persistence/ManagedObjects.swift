@@ -285,6 +285,18 @@ final class ExternalImportSessionEntity: NSManagedObject, Identifiable {
     }
 }
 
+extension NSManagedObject {
+    /// False once this object has been deleted, whether or not the deletion has
+    /// been saved yet.
+    ///
+    /// Core Data invalidates a deleted object as soon as its context saves, and
+    /// reading any property of an invalidated object raises an Objective-C
+    /// exception that no Swift `catch` can stop. SwiftUI can hold a row for one
+    /// more render pass after the store has moved on, so every collection the
+    /// interface reads is filtered through this first.
+    var isAlive: Bool { !isDeleted && managedObjectContext != nil }
+}
+
 extension Array where Element: Hashable {
     func uniqued() -> [Element] {
         var seen = Set<Element>()

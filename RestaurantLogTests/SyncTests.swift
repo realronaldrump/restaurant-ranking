@@ -67,70 +67,121 @@ final class CircleCryptoTests: XCTestCase {
         XCTAssertThrowsError(try CircleCrypto.decodeKey(Data([1, 2, 3]).base64EncodedString()))
     }
 
-    func testInvitationSurvivesAURLRoundTrip() throws {
-        let invitation = CircleInvitation(
-            circleID: UUID(),
-            personID: UUID(),
-            circleName: "Our Table",
-            code: CircleCrypto.makeInviteCode(),
-            key: CircleCrypto.encode(CircleCrypto.makeKey())
+    func testJoinCodeNormalisesWhatSomebodyActuallyTypes() throws {
+        let code = try XCTUnwrap(CircleJoinCode("K7M4-2QPX-9WTR"))
+        XCTAssertEqual(code.normalized, "K7M42QPX9WTR")
+        XCTAssertEqual(code.formatted, "K7M4-2QPX-9WTR")
+        // Lower case, spaces, and the letters Crockford maps onto digits.
+        XCTAssertEqual(CircleJoinCode("k7m4 2qpx 9wtr"), code)
+        XCTAssertEqual(CircleJoinCode("OI")?.normalized, nil)
+        XCTAssertEqual(CircleJoinCode("oiluOILU1234")?.normalized, "011V011V1234")
+        XCTAssertNil(CircleJoinCode("K7M4-2QPX"), "a short code is not a code")
+        XCTAssertNil(CircleJoinCode("K7M4-2QPX-9WTR-9WTR"))
+        XCTAssertNil(CircleJoinCode("K7M4-2QPX-9WT!"))
+    }
+
+    func testRandomJoinCodesAreDistinctAndWellFormed() {
+        let codes = (0 ..< 200).map { _ in CircleJoinCode.random() }
+        XCTAssertEqual(Set(codes.map(\.normalized)).count, codes.count)
+        for code in codes {
+            XCTAssertEqual(code.normalized.count, CircleJoinCode.length)
+            XCTAssertEqual(CircleJoinCode(code.formatted), code)
+        }
+    }
+
+    /// The service stores this hash instead of the code, so it must be stable.
+    func testJoinCodeHashIsSHA256OfTheNormalisedCode() throws {
+        let code = try XCTUnwrap(CircleJoinCode("0000-0000-0000"))
+        XCTAssertEqual(code.hash, "f7b11509f4d675c3c44f0dd37ca830bb02e8cfa58f04c46283c4bfcbdce1ff45")
+        XCTAssertEqual(code.hash, try XCTUnwrap(CircleJoinCode("00000000 0000")).hash)
+        XCTAssertNotEqual(code.hash, CircleJoinCode.random().hash)
+    }
+
+    func testOnlyTheRightCodeOpensTheKeyEnvelope() throws {
+        let circleID = UUID()
+        let key = CircleCrypto.makeKey()
+        let code = CircleJoinCode.random()
+
+        let envelope = try CircleCrypto.wrap(key, with: code, circleID: circleID)
+        let opened = try CircleCrypto.unwrap(envelope, with: code, circleID: circleID)
+        XCTAssertEqual(
+            opened.withUnsafeBytes { Data($0) },
+            key.withUnsafeBytes { Data($0) }
         )
+
+        // A different code, or the same envelope replayed against another
+        // circle, must fail rather than yield a usable key.
+        XCTAssertThrowsError(try CircleCrypto.unwrap(envelope, with: .random(), circleID: circleID))
+        XCTAssertThrowsError(try CircleCrypto.unwrap(envelope, with: code, circleID: UUID()))
+    }
+
+    func testInvitationSurvivesAURLRoundTrip() throws {
+        let invitation = CircleInvitation(code: .random(), circleName: "Our Table")
 
         let url = try XCTUnwrap(invitation.url)
         XCTAssertEqual(url.scheme, "https")
         XCTAssertEqual(url.host, "realronaldrump.github.io")
         XCTAssertEqual(url.path, "/restaurant-ranking/join")
         XCTAssertNil(URLComponents(url: url, resolvingAgainstBaseURL: false)?.query)
-        XCTAssertNotNil(url.fragment)
-        XCTAssertEqual(CircleInvitation(url: url), invitation)
+        // The key never travels in the link any more, only the code.
+        XCTAssertEqual(url.fragment, invitation.code.formatted)
+        XCTAssertEqual(CircleInvitation(url: url)?.code, invitation.code)
+    }
+
+    func testEveryShapeAnInvitationCanArriveInIsUnderstood() throws {
+        let code = CircleJoinCode.random()
+        let accepted = [
+            "https://realronaldrump.github.io/restaurant-ranking/join#\(code.formatted)",
+            "https://realronaldrump.github.io/restaurant-ranking/join/#\(code.normalized)",
+            "https://realronaldrump.github.io/restaurant-ranking/join?code=\(code.formatted)",
+            "bigbeautifullog://join/\(code.normalized)",
+            "bigbeautifullog://\(code.normalized)"
+        ]
+        for candidate in accepted {
+            let url = try XCTUnwrap(URL(string: candidate))
+            XCTAssertEqual(CircleInvitation(url: url)?.code, code, "failed for \(candidate)")
+        }
     }
 
     func testUnrelatedURLsAreNotTreatedAsInvitations() {
-        XCTAssertNil(CircleInvitation(url: URL(string: "https://example.com/join?code=abc&key=def")!))
-        XCTAssertNil(CircleInvitation(url: URL(string: "bigbeautifullog://join")!))
-        XCTAssertNil(CircleInvitation(url: URL(string: "https://realronaldrump.github.io/restaurant-ranking/join#not-an-invite")!))
+        XCTAssertNil(CircleInvitation(url: URL(string: "https://example.com/join#K7M42QPX9WTR")!))
+        XCTAssertNil(CircleInvitation(url: URL(string: "https://realronaldrump.github.io/restaurant-ranking/join")!))
+        XCTAssertNil(CircleInvitation(url: URL(string: "https://realronaldrump.github.io/restaurant-ranking/join#not-a-code")!))
+        XCTAssertNil(CircleInvitation(url: URL(string: "https://realronaldrump.github.io/restaurant-ranking/privacy.html#K7M42QPX9WTR")!))
     }
-
 }
 
 @MainActor
 final class InvitationRoutingTests: XCTestCase {
-    func testIncomingInvitationReplacesAnAlreadyPresentedSheet() async throws {
+    /// An invitation must win over whatever else was on screen, and must still
+    /// be pending afterwards so the interface can present it whenever it is
+    /// ready. Losing this is what made a tapped link open the app and then
+    /// appear to do nothing at all.
+    func testIncomingInvitationTakesOverFromAnyOtherSheet() throws {
         let persistence = MemoryInvitationPersistence()
         let router = AppRouter(invitationPersistence: persistence)
-        router.sheet = .shareCircle
-        let invitation = CircleInvitation(
-            circleID: UUID(), personID: UUID(), circleName: "Shared Table",
-            code: CircleCrypto.makeInviteCode(), key: CircleCrypto.encode(CircleCrypto.makeKey())
-        )
+        router.sheet = .circle
+        let invitation = CircleInvitation(code: .random(), circleName: "Shared Table")
 
         XCTAssertTrue(router.receiveInvitation(try XCTUnwrap(invitation.url)))
-        try await Task.sleep(for: .milliseconds(450))
 
-        guard case let .joinCircle(presented) = router.sheet else {
-            return XCTFail("Expected the invitation to become the single active sheet")
-        }
-        XCTAssertEqual(presented, invitation)
-        XCTAssertEqual(persistence.pendingInvitation, invitation)
+        XCTAssertNil(router.sheet)
+        XCTAssertEqual(router.pendingInvitation?.code, invitation.code)
+        XCTAssertEqual(persistence.pendingInvitation?.code, invitation.code)
     }
 
     func testPendingInvitationSurvivesLaunchBootstrapUntilExplicitlyCleared() throws {
         let persistence = MemoryInvitationPersistence()
-        let invitation = CircleInvitation(
-            circleID: UUID(), personID: UUID(), circleName: "Kelsey's Circle",
-            code: CircleCrypto.makeInviteCode(), key: CircleCrypto.encode(CircleCrypto.makeKey())
-        )
+        let invitation = CircleInvitation(code: .random(), circleName: "Kelsey's Circle")
         let receivingRouter = AppRouter(invitationPersistence: persistence)
         XCTAssertTrue(receivingRouter.receiveInvitation(try XCTUnwrap(invitation.url)))
 
         let relaunchedRouter = AppRouter(invitationPersistence: persistence)
         relaunchedRouter.restorePendingInvitation()
-        guard case let .joinCircle(restored) = relaunchedRouter.sheet else {
-            return XCTFail("Expected the cold-launch router to restore the invitation")
-        }
-        XCTAssertEqual(restored, invitation)
+        XCTAssertEqual(relaunchedRouter.pendingInvitation?.code, invitation.code)
 
-        relaunchedRouter.completeInvitation(invitation)
+        relaunchedRouter.completeInvitation(try XCTUnwrap(relaunchedRouter.pendingInvitation))
+        XCTAssertNil(relaunchedRouter.pendingInvitation)
         XCTAssertNil(persistence.pendingInvitation)
     }
 }
@@ -139,25 +190,6 @@ private final class MemoryInvitationPersistence: InvitationPersistence {
     var pendingInvitation: CircleInvitation?
     func store(_ invitation: CircleInvitation) throws { pendingInvitation = invitation }
     func remove() { pendingInvitation = nil }
-}
-
-final class CircleSyncPreferenceTests: XCTestCase {
-    func testPauseStatePersistsWithoutDiscardingCircleEnrollmentState() throws {
-        let suiteName = "CircleSyncPreferenceTests-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-        let circleID = UUID()
-
-        var preferences = CircleSyncPreferences(defaults: defaults)
-        XCTAssertFalse(preferences.isPaused(circleID))
-
-        preferences.setPaused(true, for: circleID)
-        preferences = CircleSyncPreferences(defaults: defaults)
-        XCTAssertTrue(preferences.isPaused(circleID))
-
-        preferences.setPaused(false, for: circleID)
-        XCTAssertFalse(preferences.isPaused(circleID))
-    }
 }
 
 // MARK: - Payload encoding

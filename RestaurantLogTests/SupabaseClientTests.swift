@@ -28,24 +28,61 @@ final class SupabaseClientTests: XCTestCase {
         XCTAssertEqual(json["encrypted_name"], "sealed")
     }
 
-    func testInviteRedemptionBindsTheExpectedCircleAndPerson() async throws {
-        SupabaseURLProtocol.respond { [circleID] _ in
-            (200, try! JSONEncoder().encode(circleID))
-        }
+    func testJoinCodeCreationUploadsOnlyTheHashAndTheSealedEnvelope() async throws {
+        SupabaseURLProtocol.respond { _ in (200, Data("null".utf8)) }
         let client = makeClient()
+        let code = CircleJoinCode.random()
+        let envelope = CircleCrypto.KeyEnvelope(sealed: "sealed-key", salt: "salt")
 
-        let redeemed = try await client.redeemInvite(
-            code: "one-time-code",
-            expectedCircleID: circleID,
-            expectedPersonID: personID
-        )
+        try await client.createJoinCode(circleID: circleID, codeHash: code.hash, envelope: envelope)
 
-        XCTAssertEqual(redeemed, circleID)
         let request = try XCTUnwrap(SupabaseURLProtocol.requests.first)
+        XCTAssertEqual(request.url?.path, "/rest/v1/rpc/create_join_code")
         let body = try XCTUnwrap(request.httpBody)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: String])
-        XCTAssertEqual(json["expected_circle"], circleID.uuidString)
-        XCTAssertEqual(json["expected_person"], personID.uuidString)
+        XCTAssertEqual(json["target_circle"], circleID.uuidString)
+        XCTAssertEqual(json["code_digest"], code.hash)
+        XCTAssertEqual(json["key_envelope"], "sealed-key")
+        XCTAssertEqual(json["key_salt"], "salt")
+        // The code itself must never reach the service in any field.
+        let raw = try XCTUnwrap(String(data: body, encoding: .utf8))
+        XCTAssertFalse(raw.contains(code.normalized))
+        XCTAssertFalse(raw.contains(code.formatted))
+    }
+
+    func testRedeemingAJoinCodeReturnsTheCircleAndItsSealedKey() async throws {
+        let response = """
+        [{"circle_id":"\(circleID.uuidString)","key_envelope":"sealed-key","key_salt":"salt"}]
+        """
+        SupabaseURLProtocol.respond { _ in (200, Data(response.utf8)) }
+        let client = makeClient()
+
+        let redeemed = try await client.redeemJoinCode(codeHash: "digest", personID: personID)
+
+        XCTAssertEqual(redeemed.circleID, circleID)
+        XCTAssertEqual(redeemed.envelope.sealed, "sealed-key")
+        XCTAssertEqual(redeemed.envelope.salt, "salt")
+        let request = try XCTUnwrap(SupabaseURLProtocol.requests.first)
+        XCTAssertEqual(request.url?.path, "/rest/v1/rpc/redeem_join_code")
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try XCTUnwrap(request.httpBody)) as? [String: String]
+        )
+        XCTAssertEqual(json["code_digest"], "digest")
+        XCTAssertEqual(json["target_person"], personID.uuidString)
+    }
+
+    /// Membership must never look successful when the service returned nothing,
+    /// or the app would store a key for a circle it cannot read.
+    func testRedeemingRejectsAnEmptyResponse() async throws {
+        SupabaseURLProtocol.respond { _ in (200, Data("[]".utf8)) }
+        let client = makeClient()
+
+        do {
+            _ = try await client.redeemJoinCode(codeHash: "digest", personID: personID)
+            XCTFail("Expected an empty redemption to fail")
+        } catch {
+            XCTAssertEqual(error as? SyncTransportError, .malformedResponse)
+        }
     }
 
     func testServiceDeletionEmptiesStorageBeforeDeletingTheCircle() async throws {

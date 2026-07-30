@@ -19,7 +19,7 @@ Privacy policy: <https://realronaldrump.github.io/restaurant-ranking/privacy.htm
 
 - SwiftUI interface with per-tab `NavigationStack` navigation.
 - Core Data via `NSPersistentContainer` as the local source of truth.
-- End-to-end encrypted delta sync to Postgres for circle collaboration and shared visit rating (`RestaurantLog/Sync`).
+- End-to-end encrypted delta sync to Postgres (`RestaurantLog/Sync`). One dining log per account: signing in publishes it, and a join code brings another person into the same log. The design is in [`docs/ACCOUNT_AND_CIRCLE_ARCHITECTURE.md`](docs/ACCOUNT_AND_CIRCLE_ARCHITECTURE.md).
 - MapKit place search and foreground-only location guessing.
 - PhotosPicker and PhotoKit backfill, processed on-device.
 - A deterministic evidence-weighted ranking engine with absolute anchors, recency decay, confidence, comparison evidence, and a ±7 detail-adjustment cap.

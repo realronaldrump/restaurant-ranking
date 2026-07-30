@@ -212,7 +212,7 @@ enum SyncError: LocalizedError, Equatable {
         case .notSignedIn:
             "Sign in to sync this circle across devices."
         case .circleKeyMissing:
-            "This device does not hold the key for that circle. Re-open the invitation to restore it."
+            "This iPhone does not hold the key for that circle. Ask somebody in it for a new join code."
         case .noActiveCircle:
             "Choose a circle before syncing."
         case let .entityMismatch(name):

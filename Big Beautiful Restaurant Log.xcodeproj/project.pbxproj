@@ -37,6 +37,7 @@
 		764C1AD8804E44B575A28505 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 905F00FDEA127F3DFD762EB5 /* SettingsView.swift */; };
 		76D3913FD17CECA856A39F2D /* LocalDeviceFixture in Resources */ = {isa = PBXBuildFile; fileRef = 1804E19B0A4BC0A32025F505 /* LocalDeviceFixture */; };
 		79C67145E86CB74F8B1F0B41 /* BeliImporterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A152C5B33C53FFBDDEC287A5 /* BeliImporterTests.swift */; };
+		79D0203C98CE3042F07BC0EF /* CircleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7A84330BC52FF047EA03BF5 /* CircleView.swift */; };
 		7DCF9FF669BF7858CECA1E36 /* SyncPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B225D7F990394A24FB2887AB /* SyncPlanner.swift */; };
 		8B5641E2B359E2FEEEF31D18 /* PhotosUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E08D49C43C4B8A3BE269D9E7 /* PhotosUI.framework */; };
 		8C74084557AA5F28E2D84C1A /* PhotoServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F85CBBF0CA380A338FD9D70 /* PhotoServices.swift */; };
@@ -135,6 +136,7 @@
 		99F807398BBEE4084B5BBA3B /* SyncSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncSnapshot.swift; sourceTree = "<group>"; };
 		A152C5B33C53FFBDDEC287A5 /* BeliImporterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeliImporterTests.swift; sourceTree = "<group>"; };
 		A3630DE59FFEB672827CF2E5 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		A7A84330BC52FF047EA03BF5 /* CircleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CircleView.swift; sourceTree = "<group>"; };
 		A8134E59B72188F498E911B0 /* RestaurantLog.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RestaurantLog.entitlements; sourceTree = "<group>"; };
 		A84FFD92CF4073ADAF8A0A8C /* SettleScoreView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettleScoreView.swift; sourceTree = "<group>"; };
 		B225D7F990394A24FB2887AB /* SyncPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncPlanner.swift; sourceTree = "<group>"; };
@@ -257,6 +259,7 @@
 		2ADFD01001B716CA9DCB27E5 /* Sharing */ = {
 			isa = PBXGroup;
 			children = (
+				A7A84330BC52FF047EA03BF5 /* CircleView.swift */,
 				2EE3B4BA71BA8B039539FCC7 /* SharedVisitRatingView.swift */,
 			);
 			path = Sharing;
@@ -645,6 +648,7 @@
 				CB78AC7A1F10FF6DC07A4430 /* BeliImporter.swift in Sources */,
 				4DB7CA47D10E07C3D03A11B1 /* CSVImporter.swift in Sources */,
 				C58856AC52943965621E1950 /* CircleCrypto.swift in Sources */,
+				79D0203C98CE3042F07BC0EF /* CircleView.swift in Sources */,
 				28673426A7ED2EBA8C4FD7A4 /* DesignSystem.swift in Sources */,
 				13747305F17C11A0D1D1B3F1 /* DiningAtlasView.swift in Sources */,
 				BF805797696BEF75EA250681 /* DiningTypes.swift in Sources */,
@@ -846,7 +850,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 15;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = CZ3N26YJ75;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -867,7 +871,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 3.0.2;
+				MARKETING_VERSION = 3.1.1;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -919,7 +923,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 15;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = CZ3N26YJ75;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -934,7 +938,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 3.0.2;
+				MARKETING_VERSION = 3.1.1;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";

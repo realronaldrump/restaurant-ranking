@@ -48,8 +48,7 @@ enum AppSheet: Identifiable, Hashable {
     case rateVisit(UUID)
     case addWant
     case compare(UUID)
-    case shareCircle
-    case joinCircle(CircleInvitation)
+    case circle
 
     var id: String {
         switch self {
@@ -58,8 +57,7 @@ enum AppSheet: Identifiable, Hashable {
         case .rateVisit(let id): "rate-\(id)"
         case .addWant: "want"
         case .compare(let id): "compare-\(id)"
-        case .shareCircle: "share"
-        case .joinCircle(let invitation): "join-\(invitation.id)"
+        case .circle: "circle"
         }
     }
 }
@@ -74,10 +72,17 @@ final class AppRouter {
     var historyPath: [AppRoute] = []
     var wantPath: [AppRoute] = []
     var morePath: [AppRoute] = []
-    private(set) var pendingInvitation: CircleInvitation?
-    @ObservationIgnored private var invitationPresentationTask: Task<Void, Never>?
+
+    /// An invitation waiting to be accepted.
+    ///
+    /// This is presentation state rather than a command: the invitation sheet
+    /// is bound straight to this value, so a link that arrives while the app is
+    /// still opening its database is shown the moment the interface exists.
+    /// The previous design pushed a sheet at whatever was on screen at the
+    /// time, which is how a cold-start invitation could open the app and then
+    /// appear to do nothing at all.
+    var pendingInvitation: CircleInvitation?
     @ObservationIgnored private let invitationPersistence: any InvitationPersistence
-    @ObservationIgnored private var pendingLocalCircleRemovalID: UUID?
 
     init(invitationPersistence: any InvitationPersistence = KeychainInvitationPersistence()) {
         self.invitationPersistence = invitationPersistence
@@ -86,67 +91,36 @@ final class AppRouter {
     @discardableResult
     func receiveInvitation(_ url: URL) -> Bool {
         guard let invitation = CircleInvitation(url: url) else { return false }
+        receiveInvitation(invitation)
+        return true
+    }
+
+    func receiveInvitation(_ invitation: CircleInvitation) {
         do {
             try invitationPersistence.store(invitation)
         } catch {
             // The in-memory handoff can still succeed during this launch. A
-            // Keychain failure must not make a valid universal link look dead.
+            // Keychain failure must not make a valid invitation look dead.
         }
-        presentInvitation(invitation)
-        return true
+        // Only one sheet can be presented at a time, and an invitation is more
+        // urgent than whatever was being edited.
+        sheet = nil
+        pendingInvitation = invitation
     }
 
     func restorePendingInvitation() {
-        guard let invitation = invitationPersistence.pendingInvitation else { return }
-        presentInvitation(invitation)
+        guard pendingInvitation == nil, let invitation = invitationPersistence.pendingInvitation else { return }
+        pendingInvitation = invitation
     }
 
     func completeInvitation(_ invitation: CircleInvitation) {
         guard pendingInvitation == invitation else { return }
-        invitationPresentationTask?.cancel()
         pendingInvitation = nil
         invitationPersistence.remove()
-        if case .joinCircle = sheet { sheet = nil }
     }
 
     func discardInvitation(_ invitation: CircleInvitation) {
         completeInvitation(invitation)
-    }
-
-    /// Dismiss circle management before deleting its Core Data graph. SwiftUI
-    /// rows in the outgoing sheet may still retain managed objects until the
-    /// presentation has completed.
-    func dismissCircleManagement(removing circleID: UUID) {
-        pendingLocalCircleRemovalID = circleID
-        sheet = nil
-    }
-
-    func takePendingLocalCircleRemoval() -> UUID? {
-        defer { pendingLocalCircleRemovalID = nil }
-        return pendingLocalCircleRemovalID
-    }
-
-    private func presentInvitation(_ invitation: CircleInvitation) {
-        pendingInvitation = invitation
-        invitationPresentationTask?.cancel()
-        if sheet == nil {
-            sheet = .joinCircle(invitation)
-            return
-        }
-        if case .joinCircle = sheet {
-            sheet = .joinCircle(invitation)
-            return
-        }
-
-        // There can only be one SwiftUI sheet presenter. Dismiss an editing or
-        // management sheet first, then present the invitation from that same
-        // root so a link opened while another sheet is visible is not dropped.
-        sheet = nil
-        invitationPresentationTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(350))
-            guard !Task.isCancelled, let self, self.pendingInvitation == invitation else { return }
-            self.sheet = .joinCircle(invitation)
-        }
     }
 
     func pathBinding(for tab: AppTab) -> Binding<[AppRoute]> {

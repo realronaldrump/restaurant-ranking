@@ -244,6 +244,25 @@ actor SupabaseClient {
         _ = try await perform(request)
     }
 
+    /// The circle's sealed name. Only a member can read the row, and only a
+    /// device holding the circle key can open the value.
+    func circleNameCipher(circleID: UUID) async throws -> String? {
+        var request = try await authorizedRequest(
+            path: "circles",
+            queryItems: [
+                URLQueryItem(name: "select", value: "name_cipher"),
+                URLQueryItem(name: "id", value: "eq.\(circleID.uuidString)")
+            ]
+        )
+        request.httpMethod = "GET"
+        let data = try await perform(request)
+        struct Row: Decodable {
+            let nameCipher: String?
+            enum CodingKeys: String, CodingKey { case nameCipher = "name_cipher" }
+        }
+        return try JSONDecoder().decode([Row].self, from: data).first?.nameCipher
+    }
+
     func createCircle(id: UUID, nameCipher: String, personID: UUID) async throws {
         var request = try await authorizedRequest(path: "rpc/create_circle", queryItems: [])
         request.httpMethod = "POST"
@@ -255,37 +274,67 @@ actor SupabaseClient {
         _ = try await perform(request)
     }
 
-    /// Registers an invitation code. Only its hash is stored server side; the
-    /// code and the circle key travel to the other member out of band.
-    func createInvite(circleID: UUID, personID: UUID, code: String, validForDays: Int = 7) async throws {
-        var request = try await authorizedRequest(path: "rpc/create_circle_invite", queryItems: [])
-        request.httpMethod = "POST"
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
+    /// Registers a join code. The service receives the code's hash and the
+    /// sealed key envelope, never the code itself, so it cannot redeem the
+    /// invitation or open the circle.
+    func createJoinCode(
+        circleID: UUID,
+        codeHash: String,
+        envelope: CircleCrypto.KeyEnvelope,
+        validForDays: Int = 7
+    ) async throws {
+        try await callVoidRPC("create_join_code", body: [
             "target_circle": circleID.uuidString,
-            "target_person": personID.uuidString,
-            "invite_code": code,
+            "code_digest": codeHash,
+            "key_envelope": envelope.sealed,
+            "key_salt": envelope.salt,
             "valid_for": "\(validForDays) days"
         ])
-        _ = try await perform(request)
     }
 
-    func redeemInvite(code: String, expectedCircleID: UUID, expectedPersonID: UUID) async throws -> UUID {
-        var request = try await authorizedRequest(path: "rpc/redeem_circle_invite", queryItems: [])
+    struct RedeemedInvite: Decodable, Sendable {
+        let circleID: UUID
+        let sealedKey: String
+        let salt: String
+
+        enum CodingKeys: String, CodingKey {
+            case circleID = "circle_id"
+            case sealedKey = "key_envelope"
+            case salt = "key_salt"
+        }
+
+        var envelope: CircleCrypto.KeyEnvelope {
+            CircleCrypto.KeyEnvelope(sealed: sealedKey, salt: salt)
+        }
+    }
+
+    /// Claims membership and collects the sealed circle key in one transaction.
+    func redeemJoinCode(codeHash: String, personID: UUID) async throws -> RedeemedInvite {
+        var request = try await authorizedRequest(path: "rpc/redeem_join_code", queryItems: [])
         request.httpMethod = "POST"
         request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "invite_code": code,
-            "expected_circle": expectedCircleID.uuidString,
-            "expected_person": expectedPersonID.uuidString
+            "code_digest": codeHash,
+            "target_person": personID.uuidString
         ])
         let data = try await perform(request)
+        guard let redeemed = try JSONDecoder().decode([RedeemedInvite].self, from: data).first else {
+            throw SyncTransportError.malformedResponse
+        }
+        return redeemed
+    }
 
-        if let decoded = try? JSONDecoder().decode(UUID.self, from: data) { return decoded }
-        guard
-            let text = String(data: data, encoding: .utf8)?
-                .trimmingCharacters(in: CharacterSet(charactersIn: "\"\n\r ")),
-            let id = UUID(uuidString: text)
-        else { throw SyncTransportError.malformedResponse }
-        return id
+    /// Cancels every outstanding invitation for a circle.
+    func revokeJoinCodes(circleID: UUID) async throws {
+        try await callVoidRPC("revoke_join_codes", body: ["target_circle": circleID.uuidString])
+    }
+
+    /// Repoints this account's membership at the member profile it actually
+    /// uses, after two devices converge on one person record.
+    func setMemberPerson(circleID: UUID, personID: UUID) async throws {
+        try await callVoidRPC("set_circle_member_person", body: [
+            "target_circle": circleID.uuidString,
+            "target_person": personID.uuidString
+        ])
     }
 
     func removeMember(circleID: UUID, userID: UUID) async throws {

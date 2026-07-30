@@ -66,48 +66,41 @@ final class RestaurantLogUITests: XCTestCase {
         for _ in 0..<10 where !footer.exists { app.swipeUp() }
 
         XCTAssertTrue(footer.waitForExistence(timeout: 3))
-        XCTAssertEqual(footer.label, "Big Beautiful Restaurant Log 3.0.2 • Released July 29, 2026")
+        XCTAssertEqual(footer.label, "Big Beautiful Restaurant Log 3.1 • Released July 30, 2026")
     }
 
-    func testCircleManagementShowsMemberStateAndRenameControl() {
+    func testSharingScreenExplainsWhoCanSeeTheLog() {
         app.tabBars.buttons["More"].tap()
         XCTAssertTrue(app.navigationBars["More"].waitForExistence(timeout: 5))
 
-        app.buttons["Manage"].tap()
+        app.buttons["open-sharing-button"].tap()
 
-        XCTAssertTrue(app.navigationBars["Your Circle"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Rename circle"].exists)
-        XCTAssertTrue(app.staticTexts["MEMBERS"].exists)
-        XCTAssertGreaterThan(app.staticTexts.matching(NSPredicate(format: "label == %@", "Local profile")).count, 0)
+        XCTAssertTrue(app.navigationBars["Sharing"].waitForExistence(timeout: 5))
+        // An unshared log says so plainly rather than presenting circle machinery.
+        XCTAssertTrue(app.staticTexts["Just you"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.textFields["join-code-field"].exists)
     }
 
-    func testCircleManagementCanCreateSwitchAndRemoveASeparateLocalCircle() {
+    /// A join code has to be usable without a link, since a link can be blocked
+    /// by anything between the two phones.
+    func testAJoinCodeCanBeTypedInTheApp() {
         app.tabBars.buttons["More"].tap()
-        app.buttons["Manage"].tap()
-        XCTAssertTrue(app.navigationBars["Your Circle"].waitForExistence(timeout: 5))
+        app.buttons["open-sharing-button"].tap()
+        XCTAssertTrue(app.navigationBars["Sharing"].waitForExistence(timeout: 5))
 
-        app.buttons["new-circle-button"].tap()
-        let name = app.alerts.textFields["Circle name"]
-        XCTAssertTrue(name.waitForExistence(timeout: 3))
-        name.typeText("Travel Table")
-        app.alerts.buttons["Create"].tap()
-
-        XCTAssertTrue(app.staticTexts["Travel Table"].waitForExistence(timeout: 3))
-        let remove = app.buttons["remove-local-circle-button"]
-        XCTAssertTrue(remove.exists)
+        let field = app.textFields["join-code-field"]
         let scrollView = app.scrollViews.firstMatch
-        for _ in 0..<10 where !remove.isHittable { scrollView.swipeUp() }
-        XCTAssertTrue(remove.isHittable)
-        remove.tap()
-        let confirmation = app.buttons["Remove Circle"]
-        XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
-        XCTAssertTrue(confirmation.isHittable)
-        confirmation.tap()
+        for _ in 0..<10 where !field.isHittable { scrollView.swipeUp() }
+        XCTAssertTrue(field.isHittable)
 
-        XCTAssertTrue(app.navigationBars["More"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Our Table"].exists)
+        let join = app.buttons["join-circle-button"]
+        XCTAssertFalse(join.isEnabled, "An incomplete code must not be submittable")
+        field.tap()
+        field.typeText("k7m42qpx9wtr")
+
+        XCTAssertEqual(field.value as? String, "K7M4-2QPX-9WTR")
+        XCTAssertTrue(join.isEnabled)
     }
-
     func testDiningAtlasShowsTheFirstVisitTrail() {
         app.tabBars.buttons["History"].tap()
         XCTAssertTrue(app.navigationBars["History"].waitForExistence(timeout: 5))
@@ -218,6 +211,29 @@ final class RestaurantLogUITests: XCTestCase {
         XCTAssertFalse(app.tabBars.firstMatch.exists)
     }
 
+    func testSettingsBackupRestoreRequiresDestructiveConfirmation() {
+        app.tabBars.buttons["More"].tap()
+        app.staticTexts["Settings & Privacy"].tap()
+
+        let restoreButton = app.buttons["Restore from Backup"]
+        for _ in 0..<6 where !restoreButton.exists { app.swipeUp() }
+        XCTAssertTrue(restoreButton.waitForExistence(timeout: 3))
+        for _ in 0..<6 where !restoreButton.isHittable { app.swipeUp() }
+        XCTAssertTrue(restoreButton.isHittable)
+        restoreButton.tap()
+
+        XCTAssertTrue(app.sheets.staticTexts["Restore from backup?"].waitForExistence(timeout: 3))
+        let chooseBackupButton = app.sheets.buttons["Choose Backup and Replace Everything"]
+        XCTAssertTrue(chooseBackupButton.exists)
+        XCTAssertTrue(app.sheets.buttons["Cancel"].exists)
+        chooseBackupButton.tap()
+
+        XCTAssertTrue(
+            app.buttons["Cancel"].waitForExistence(timeout: 3),
+            "Confirming the restore must open the system file picker."
+        )
+    }
+
     func testOnboardingSupportingTextWrapsAtAccessibilitySize() {
         app.terminate()
         app.launchArguments = [
@@ -233,13 +249,13 @@ final class RestaurantLogUITests: XCTestCase {
 
         let detail = app.staticTexts["onboarding-step-detail"]
         XCTAssertTrue(detail.waitForExistence(timeout: 3))
-        XCTAssertEqual(detail.label, "Start with your identity. You can add and tag anyone in your circle when you log visits.")
+        XCTAssertEqual(detail.label, "Your name goes on the meals you log, and your account keeps them safe. You can add the people you dine with later.")
         XCTAssertFalse(app.textFields["Partner (optional)"].exists)
 
-        let continueButton = app.buttons["Continue"]
-        XCTAssertTrue(continueButton.waitForExistence(timeout: 3))
-        for _ in 0..<4 where !continueButton.isHittable { app.swipeUp() }
-        XCTAssertTrue(continueButton.isHittable, "The scrollable step should keep its action reachable at large text sizes")
+        let signIn = app.buttons["onboarding-sign-in-button"]
+        XCTAssertTrue(signIn.waitForExistence(timeout: 3))
+        for _ in 0..<4 where !signIn.isHittable { app.swipeUp() }
+        XCTAssertTrue(signIn.isHittable, "The scrollable step should keep its action reachable at large text sizes")
     }
 
     func testOnboardingBackupRestoreRequiresDestructiveConfirmation() {
@@ -258,8 +274,8 @@ final class RestaurantLogUITests: XCTestCase {
         XCTAssertTrue(nameField.waitForExistence(timeout: 3))
         nameField.tap()
         nameField.typeText("Backup Tester")
-        let continueButton = app.buttons["Continue"]
-        for _ in 0..<4 where !continueButton.isHittable { app.swipeUp() }
+        let continueButton = app.buttons["Continue Without an Account"]
+        for _ in 0..<6 where !continueButton.isHittable { app.swipeUp() }
         continueButton.tap()
 
         let restoreAction = app.staticTexts["Restore a Full Backup"]

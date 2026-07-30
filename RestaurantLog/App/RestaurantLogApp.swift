@@ -69,11 +69,27 @@ struct RestaurantLogApp: App {
         .environment(sync)
         .environment(router)
         .environment(locationService)
-        .sheet(item: $router.sheet, onDismiss: {
-            if let circleID = router.takePendingLocalCircleRemoval() {
-                _ = store.removeCircleFromThisDevice(circleID)
-            }
-        }) { sheet in
+        // An invitation gets its own presenter, bound directly to the pending
+        // value. Whether the link arrived during launch, while the app was in
+        // the background, or while another sheet was open, it is shown as soon
+        // as there is an interface to show it in.
+        .sheet(item: $router.pendingInvitation) { invitation in
+            JoinCircleView(
+                invitation: invitation,
+                onJoined: {
+                    didCompleteGrandOpening = true
+                    router.completeInvitation(invitation)
+                },
+                onDiscard: { router.discardInvitation(invitation) }
+            )
+            .environment(router)
+            .environment(store)
+            .environment(sync)
+            .presentationBackground(BBTheme.paper)
+            .presentationDragIndicator(.visible)
+            .tint(BBTheme.oxblood)
+        }
+        .sheet(item: $router.sheet) { sheet in
             appSheet(sheet, store: store, sync: sync)
                 .environment(router)
                 .environment(store)
@@ -83,14 +99,6 @@ struct RestaurantLogApp: App {
                 .presentationDragIndicator(.visible)
                 .tint(BBTheme.oxblood)
         }
-        .fullScreenCover(isPresented: Binding(
-            get: { didCompleteGrandOpening && store.needsDeviceIdentity },
-            set: { _ in }
-        )) {
-            DeviceIdentitySelectionView()
-                .environment(store)
-                .interactiveDismissDisabled()
-        }
         .alert("Couldn’t Save or Sync", isPresented: Binding(
             get: { store.lastError != nil },
             set: { if !$0 { store.clearLastError() } }
@@ -99,9 +107,14 @@ struct RestaurantLogApp: App {
         } message: {
             Text(store.lastError ?? "Big Beautiful Log encountered an unexpected persistence error.")
         }
+        // Registration follows the log rather than a switch: whenever the
+        // circle changes identity — first launch, a join, or leaving a shared
+        // circle — it is registered and brought up to date automatically.
+        .task(id: "\(store.activeCircleID?.uuidString ?? "none")-\(sync.isSignedIn)") {
+            await connectCircle(store, sync)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .circleDidArriveFromSync)) { _ in
-            // A circle pulled from the sync service is itself completed setup;
-            // the identity gate then asks which member uses this device.
+            // A log downloaded from the account is itself completed setup.
             didCompleteGrandOpening = true
         }
         .onAppear {
@@ -116,12 +129,22 @@ struct RestaurantLogApp: App {
     @MainActor
     private func prepareApp() async {
         guard store == nil else { return }
+        // Keychain items outlive an app installation, so a test run would
+        // otherwise inherit an invitation from an earlier one and open on a
+        // sheet nothing in the test asked for.
+        if ProcessInfo.processInfo.arguments.contains("-resetForUITests") {
+            CircleKeychain.removePendingInvitation()
+        }
         // Let SwiftUI commit the branded launch view before Core Data performs
         // migrations or reconciles an existing dining history.
         await Task.yield()
         let persistence = PersistenceController.shared
         await persistence.prepare()
         let preparedStore = AppStore(persistence: persistence)
+        // One device, one dining log. Older builds could leave a second circle
+        // behind after an invitation, which stranded records where nobody else
+        // could see them.
+        preparedStore.consolidateCircles()
         let coordinator = SyncCoordinator(container: persistence.container)
         await coordinator.restoreSession()
 
@@ -131,12 +154,14 @@ struct RestaurantLogApp: App {
             coordinator?.scheduleSync(circleID: circleID)
         }
 
-        // A fresh installation that already has an account may be waiting on the
-        // first pull of an existing circle. Show that rather than empty onboarding.
+        // A fresh installation that already has an account is waiting on the
+        // first download of an existing log. Show that rather than empty
+        // onboarding, and adopt whichever circle the account belongs to.
         if preparedStore.circles.isEmpty, coordinator.isConfigured, coordinator.isSignedIn {
             launchMessage = "Looking for your dining log…"
             await coordinator.syncKnownCircles()
             preparedStore.reload()
+            preparedStore.consolidateCircles()
         }
         if !preparedStore.circles.isEmpty {
             didCompleteGrandOpening = true
@@ -144,6 +169,20 @@ struct RestaurantLogApp: App {
         store = preparedStore
         sync = coordinator
         router.restorePendingInvitation()
+        await connectCircle(preparedStore, coordinator)
+    }
+
+    /// Keeps the one log registered and syncing. There is no switch for this:
+    /// being signed in is the whole opt-in.
+    @MainActor
+    private func connectCircle(_ store: AppStore, _ sync: SyncCoordinator) async {
+        guard sync.isConfigured, sync.isSignedIn,
+              let circle = store.activeCircle,
+              let personID = store.currentPerson?.id ?? store.circleMembers.first?.id else { return }
+        await sync.activate(circleID: circle.id, name: circle.name, personID: personID)
+        // The service is the authority on which member profile this account
+        // owns, so a reinstall or a merged record repairs itself here.
+        store.adoptDeviceIdentity(preferring: sync.myMembership?.personID)
     }
 
     @ViewBuilder
@@ -167,19 +206,8 @@ struct RestaurantLogApp: App {
             } else {
                 ContentUnavailableView("Place unavailable", systemImage: "mappin.slash")
             }
-        case .shareCircle:
-            CircleSharingView()
-        case .joinCircle(let invitation):
-            JoinCircleView(
-                invitation: invitation,
-                onJoined: {
-                    didCompleteGrandOpening = true
-                    router.completeInvitation(invitation)
-                },
-                onDiscard: {
-                    router.discardInvitation(invitation)
-                }
-            )
+        case .circle:
+            CircleView()
         }
     }
 }
@@ -200,8 +228,9 @@ private struct AppLaunchView: View {
                         .foregroundStyle(BBTheme.paper)
                 }
                 VStack(spacing: 6) {
-                    Text("Big Beautiful")
+                    Text("Big Beautiful\nRestaurant Log")
                         .font(BBTheme.display(30))
+                        .multilineTextAlignment(.center)
                     Text(message)
                         .font(.callout)
                         .foregroundStyle(.secondary)

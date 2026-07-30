@@ -4,11 +4,11 @@ import UniformTypeIdentifiers
 @MainActor
 struct GrandOpeningView: View {
     @Environment(AppStore.self) private var store
+    @Environment(SyncCoordinator.self) private var sync
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var isComplete: Bool
     @State private var page = 0
     @State private var myName = ""
-    @State private var circleName = "Our Table"
     @State private var isImporting = false
     @State private var beliSelection: BeliImportSelection?
     @State private var isImportingBackup = false
@@ -23,6 +23,9 @@ struct GrandOpeningView: View {
     @State private var calibrationPairs: [ComparisonQuestion] = []
     @State private var calibrationIndex = 0
     @State private var openingAnchorAnswered = false
+    @State private var isJoining = false
+    @State private var isSigningIn = false
+    @State private var signInError: String?
 
     var body: some View {
         ZStack {
@@ -63,6 +66,9 @@ struct GrandOpeningView: View {
                 importMessage = "Imported \(summary.outingsCreated) new outings and \(summary.photosAdded) photos from Beli."
             }
         }
+        .sheet(isPresented: $isJoining) {
+            JoinCircleView(onJoined: { isComplete = true })
+        }
         .fileImporter(isPresented: $isImportingBackup, allowedContentTypes: [.restaurantLogBackup]) { result in
             importBackup(result)
         }
@@ -102,7 +108,7 @@ struct GrandOpeningView: View {
 
     /// Idempotent: creates the circle from the entered names if it does not exist yet.
     private func ensureCircle() {
-        if store.activeCircle == nil { store.bootstrap(myName: myName, circleName: circleName) }
+        if store.activeCircle == nil { store.bootstrap(myName: myName) }
     }
 
     private var welcome: some View {
@@ -127,19 +133,19 @@ struct GrandOpeningView: View {
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 18) {
                         principle("bolt.fill", "Fast logging", "Place and reaction")
-                        principle("lock.fill", "Private by default", "Stored on this iPhone")
+                        principle("lock.fill", "Private by design", "Encrypted end to end")
                         principle("list.number", "Personal rankings", "Built from your choices")
                     }
                     VStack(alignment: .leading, spacing: 12) {
                         principle("bolt.fill", "Fast logging", "Place and reaction")
-                        principle("lock.fill", "Private by default", "Optional encrypted sync")
+                        principle("lock.fill", "Private by design", "Encrypted end to end")
                         principle("list.number", "Personal rankings", "Built from your choices")
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 Button("Get Started") { page = 1 }
                     .buttonStyle(PrimaryButtonStyle())
-                Text("No account, ads, or public profile. Your log is yours.")
+                Text("No ads, no feed, no public profile. Only you can read your log.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -154,24 +160,106 @@ struct GrandOpeningView: View {
     private var people: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                pageHeading(number: "01", title: "Make it yours", detail: "Start with your identity. You can add and tag anyone in your circle when you log visits.")
+                pageHeading(
+                    number: "01",
+                    title: "Make it yours",
+                    detail: "Your name goes on the meals you log, and your account keeps them safe. You can add the people you dine with later."
+                )
                 VStack(spacing: 0) {
                     editorialField("Your name", text: $myName)
-                    Divider()
-                    editorialField("Circle name", text: $circleName, prompt: "Our Table")
                 }
                 .editorialCard(padding: 0)
-                Spacer(minLength: 12)
-                Button("Continue") {
-                    store.bootstrap(myName: myName, circleName: circleName)
-                    page = 2
+                if sync.isConfigured {
+                    signInStep
+                } else {
+                    Button("Continue") { continueFromName() }
+                        .buttonStyle(PrimaryButtonStyle())
+                        .disabled(nameIsEmpty)
                 }
-                .buttonStyle(PrimaryButtonStyle())
-                .disabled(myName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Dining with somebody who already uses this?").font(.callout.weight(.semibold))
+                    Text("Join them with their code and you will share one log, each keeping your own reactions and rankings.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Join With a Code") {
+                        store.bootstrap(myName: myName)
+                        isJoining = true
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .disabled(nameIsEmpty || isSigningIn)
+                }
+                .editorialCard()
             }
             .padding(24).padding(.bottom, 12).readablePageWidth()
         }
         .scrollDismissesKeyboard(.interactively)
+    }
+
+    /// Signing in is the step, not a suggestion: the log lives in the account,
+    /// which is what makes it survive a lost phone and what makes sharing it
+    /// possible at all. The way past this without an account only appears if
+    /// Apple's sign-in actually fails, so a person is never stranded in setup.
+    private var signInStep: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Eyebrow("Your account")
+            Text("Sign in to keep your log")
+                .font(.headline)
+            Text("Your dining history is encrypted on this iPhone and kept in your account, so a lost or replaced phone never takes it with it. Signing in is also what lets you share a log with somebody you dine with.")
+                .font(.callout).foregroundStyle(.secondary)
+            Button {
+                signInAndContinue()
+            } label: {
+                if isSigningIn {
+                    HStack { ProgressView(); Text("Signing in…") }.frame(maxWidth: .infinity)
+                } else {
+                    Label("Sign in with Apple", systemImage: "apple.logo").frame(maxWidth: .infinity)
+                }
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .disabled(nameIsEmpty || isSigningIn)
+            .accessibilityIdentifier("onboarding-sign-in-button")
+            if let signInError {
+                Text(signInError).font(.caption).foregroundStyle(BBTheme.oxblood)
+            }
+            if canContinueWithoutAccount {
+                Button("Continue Without an Account") { continueFromName() }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .disabled(nameIsEmpty)
+                Text("Your log stays on this iPhone until you sign in from Settings, and uploads itself as soon as you do.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .editorialCard()
+    }
+
+    /// Signing in is the way through this step. The way past it appears only
+    /// when Apple's sign-in has actually failed — nobody should be stuck in
+    /// setup because a service was unreachable — and in UI tests, which cannot
+    /// drive the system sign-in sheet.
+    private var canContinueWithoutAccount: Bool {
+        signInError != nil || ProcessInfo.processInfo.arguments.contains("-resetForUITests")
+    }
+
+    private func continueFromName() {
+        store.bootstrap(myName: myName)
+        page = 2
+    }
+
+    private func signInAndContinue() {
+        isSigningIn = true
+        signInError = nil
+        Task {
+            defer { isSigningIn = false }
+            if await sync.signInWithApple() {
+                continueFromName()
+            } else {
+                signInError = sync.lastError
+                    ?? "Sign in did not complete. Try again, or continue and sign in later from Settings."
+            }
+        }
+    }
+
+    private var nameIsEmpty: Bool {
+        myName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var importPage: some View {
@@ -390,7 +478,7 @@ struct GrandOpeningView: View {
     }
 
     private func finish(useSample: Bool) {
-        if store.activeCircle == nil { store.bootstrap(myName: myName, circleName: circleName) }
+        if store.activeCircle == nil { store.bootstrap(myName: myName) }
         if useSample { store.seedSampleLog() }
         Haptics.success()
         isComplete = true

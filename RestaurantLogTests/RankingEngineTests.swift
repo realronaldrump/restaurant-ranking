@@ -1547,65 +1547,85 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertEqual(Set(before.memberScores.map(\.personID)), Set([george.id, michelle.id, sam.id]))
     }
 
-    func testUnboundCircleRequiresExplicitDeviceIdentity() throws {
-        let second = try makeCircle(name: "Shared Circle", people: ["Owner", "Invited Guest"])
-
-        store.activateCircle(second.circle.id)
-
-        XCTAssertNil(store.currentPerson, "A circle joined from an invitation must not silently act as its owner")
-    }
-
-    func testDeviceIdentityIsRememberedPerCircle() throws {
-        let originalCircleID = try XCTUnwrap(store.activeCircle?.id)
-        let second = try makeCircle(name: "Shared Circle", people: ["Owner", "Invited Guest"])
-        let invitedGuest = try XCTUnwrap(second.people.first { $0.name == "Invited Guest" })
-
-        store.activateCircle(second.circle.id)
-        store.selectCurrentPerson(invitedGuest.id)
-        store.activateCircle(originalCircleID)
-        store.activateCircle(second.circle.id)
-
-        XCTAssertEqual(store.currentPerson?.id, invitedGuest.id)
-    }
-
-    func testCompletingInviteJoinActivatesDownloadedCircleAndInvitedProfile() throws {
+    /// Joining somebody's circle has to bring this iPhone's dining history with
+    /// it. A member who joins and then imports a restaurant list expects the
+    /// rest of the circle to see it, and the previous behaviour — a second,
+    /// private circle nobody else could read — is what made shared logs look
+    /// broken.
+    func testJoiningACircleCarriesThisDevicesLogIntoIt() throws {
+        let joinedCircleID = UUID()
+        let location = store.createLocation(name: "Carried Cafe", category: .coffeeTea)
+        let visit = store.logVisit(at: location, reaction: .loved)
         let originalCircleID = try XCTUnwrap(store.activeCircleID)
-        let second = try makeCircle(name: "Kelsey's Circle", people: ["Kelsey", "Davis"])
-        let davis = try XCTUnwrap(second.people.first { $0.name == "Davis" })
 
-        XCTAssertEqual(store.activeCircleID, originalCircleID)
+        let personID = try XCTUnwrap(store.adoptCircle(id: joinedCircleID, name: "Kelsey's Table"))
 
-        XCTAssertTrue(store.completeCircleJoin(circleID: second.circle.id, personID: davis.id))
-        XCTAssertEqual(store.activeCircleID, second.circle.id)
-        XCTAssertEqual(store.activeCircle?.name, "Kelsey's Circle")
-        XCTAssertEqual(store.currentPerson?.id, davis.id)
-    }
-
-    func testCreatingAndRemovingASecondCircleKeepsCircleSelectionExplicit() throws {
-        let originalCircleID = try XCTUnwrap(store.activeCircleID)
-        let second = try XCTUnwrap(store.createCircle(name: "Travel Table", ownerName: "George"))
-
-        XCTAssertEqual(store.activeCircleID, second.id)
-        XCTAssertEqual(store.activeCircle?.name, "Travel Table")
-        XCTAssertEqual(store.currentPerson?.name, "George")
-
-        XCTAssertTrue(store.removeCircleFromThisDevice(second.id))
-        XCTAssertEqual(store.activeCircleID, originalCircleID)
+        XCTAssertNotEqual(joinedCircleID, originalCircleID)
+        XCTAssertEqual(store.activeCircleID, joinedCircleID)
         XCTAssertEqual(store.circles.count, 1)
-        XCTAssertEqual(store.currentPerson?.name, "George")
+        XCTAssertEqual(store.activeCircle?.name, "Kelsey's Table")
+        XCTAssertEqual(store.currentPerson?.id, personID)
+        XCTAssertEqual(store.locations.map(\.id), [location.id])
+        XCTAssertEqual(store.visits.map(\.id), [visit.id])
+        XCTAssertEqual(store.locations.first?.circle?.id, joinedCircleID)
+        XCTAssertEqual(store.visits.first?.circle?.id, joinedCircleID)
     }
 
-    func testRemovingTheOnlyCircleLeavesAFreshUsablePersonalCircle() throws {
-        let removedID = try XCTUnwrap(store.activeCircleID)
+    /// The circle can arrive from a sync pull before the join finishes. Both
+    /// copies then have to become one log rather than two.
+    func testJoiningACircleThatAlreadyDownloadedMergesTheTwoLogs() throws {
+        let mine = store.createLocation(name: "My Place", category: .fullService)
+        let downloaded = try makeCircle(name: "Kelsey's Table", people: ["Kelsey"])
 
-        XCTAssertTrue(store.removeCircleFromThisDevice(removedID))
+        _ = try XCTUnwrap(store.adoptCircle(id: downloaded.circle.id))
 
         XCTAssertEqual(store.circles.count, 1)
-        XCTAssertNotEqual(store.activeCircleID, removedID)
-        XCTAssertEqual(store.activeCircle?.name, "My Circle")
+        XCTAssertEqual(store.activeCircleID, downloaded.circle.id)
+        XCTAssertTrue(store.locations.contains { $0.id == mine.id })
+        XCTAssertEqual(store.locations.first { $0.id == mine.id }?.circle?.id, downloaded.circle.id)
+        XCTAssertTrue(store.circleMembers.contains { $0.name == "Kelsey" })
+        XCTAssertTrue(store.circleMembers.contains { $0.name == "George" })
+    }
+
+    /// Leaving must never delete the dining log. Deleting a circle graph while
+    /// the interface still held its rows is what crashed the app.
+    func testLeavingKeepsEveryRecordUnderAFreshIdentity() throws {
+        let location = store.createLocation(name: "Kept Kitchen", category: .fullService)
+        let visit = store.logVisit(at: location, reaction: .liked)
+        let sharedCircleID = try XCTUnwrap(store.activeCircleID)
+
+        let newID = try XCTUnwrap(store.startFreshCircleIdentity())
+
+        XCTAssertNotEqual(newID, sharedCircleID)
+        XCTAssertEqual(store.circles.count, 1)
+        XCTAssertEqual(store.activeCircleID, newID)
+        XCTAssertEqual(store.locations.map(\.id), [location.id])
+        XCTAssertEqual(store.visits.map(\.id), [visit.id])
         XCTAssertEqual(store.currentPerson?.name, "George")
-        XCTAssertTrue(store.locations.isEmpty)
-        XCTAssertTrue(store.visits.isEmpty)
+    }
+
+    func testExtraCirclesFromOlderBuildsAreFoldedIntoOneLog() throws {
+        let mine = store.createLocation(name: "Mine", category: .fullService)
+        let stranded = try makeCircle(name: "Stranded", people: ["Ghost"])
+        let strandedLocation = RestaurantLocation(context: store.context)
+        strandedLocation.id = UUID()
+        strandedLocation.name = "Stranded Diner"
+        strandedLocation.categoryRaw = DiningCategory.fullService.rawValue
+        strandedLocation.createdAt = .now
+        strandedLocation.updatedAt = .now
+        strandedLocation.circle = stranded.circle
+        try persistence.save()
+        store.reload()
+        XCTAssertEqual(store.circles.count, 2)
+
+        XCTAssertTrue(store.consolidateCircles())
+
+        XCTAssertEqual(store.circles.count, 1)
+        XCTAssertEqual(Set(store.locations.map(\.name)), ["Mine", "Stranded Diner"])
+        XCTAssertTrue(store.locations.allSatisfy { $0.circle?.id == store.activeCircleID })
+        XCTAssertTrue(store.circleMembers.contains { $0.name == "Ghost" })
+        XCTAssertEqual(store.currentPerson?.name, "George")
+        XCTAssertNotNil(store.locations.first { $0.id == mine.id })
     }
 
     func testPersistenceFailuresBecomeUserVisible() async {

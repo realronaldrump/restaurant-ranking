@@ -25,7 +25,7 @@ struct MoreView: View {
                     tools: [
                         ("Backfill", "Add past visits from selected photos", "photo.stack", .backfill),
                         ("Merge Duplicates", "Combine records without losing history", "arrow.triangle.merge", .merge),
-                        ("Settings & Privacy", "Circle, permissions, encrypted sync, and backup", "gearshape", .settings)
+                        ("Settings & Privacy", "People, permissions, account, and backup", "gearshape", .settings)
                     ]
                 )
             }
@@ -38,7 +38,7 @@ struct MoreView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task(id: circleStatusTaskID) {
             guard let circleID = store.activeCircleID, sync.isSignedIn else { return }
-            await sync.refreshMembers(circleID: circleID)
+            await sync.refreshMembers(circleID: circleID, claiming: store.currentPerson?.id)
         }
     }
 
@@ -46,7 +46,7 @@ struct MoreView: View {
         VStack(alignment: .leading, spacing: 7) {
             Eyebrow("Your dining library")
             Text("More from your log").font(BBTheme.display(36))
-            Text("See the bigger picture, maintain your records, and manage your private circle.")
+            Text("See the bigger picture, maintain your records, and share the log when you want to.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -58,38 +58,22 @@ struct MoreView: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Eyebrow("Private circle")
-                    Text(store.activeCircle?.name ?? "Your Circle").font(BBTheme.display(29))
+                    Eyebrow(sync.isShared ? "Shared circle" : "Your dining log")
+                    Text(sync.isShared ? (store.activeCircle?.name ?? "Your Circle") : "Just you")
+                        .font(BBTheme.display(29))
                 }
                 Spacer()
-                if store.circles.count > 1 {
-                    Menu {
-                        ForEach(store.circles) { circle in
-                            Button {
-                                store.activateCircle(circle.id)
-                            } label: {
-                                Label(
-                                    circle.name,
-                                    systemImage: circle.id == store.activeCircleID ? "checkmark.circle.fill" : "circle"
-                                )
-                            }
-                        }
-                    } label: {
-                        Label("Switch", systemImage: "arrow.left.arrow.right.circle.fill")
-                    }
-                    .font(.callout.weight(.bold))
-                    .frame(minHeight: 44)
-                }
-                Button("Manage") { router.sheet = .shareCircle }
+                Button(sync.isShared ? "Manage" : "Share") { router.sheet = .circle }
                     .font(.callout.weight(.bold))
                     .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
+                    .accessibilityIdentifier("open-sharing-button")
             }
             HStack(spacing: -7) {
                 ForEach(store.circleMembers) { person in
                     ZStack(alignment: .bottomTrailing) {
                         Text(person.name.prefix(1).uppercased()).font(.headline).foregroundStyle(BBTheme.paper)
                             .frame(width: 48, height: 48).background(Color(hex: person.colorHex), in: Circle()).overlay(Circle().stroke(BBTheme.paper, lineWidth: 2))
-                        if membership(for: person.id) != nil {
+                        if isSyncing(person.id) {
                             Image(systemName: "checkmark.circle.fill")
                                 .font(.caption)
                                 .foregroundStyle(.white, BBTheme.oxblood)
@@ -97,24 +81,23 @@ struct MoreView: View {
                                 .accessibilityHidden(true)
                         }
                     }
-                    .accessibilityLabel(person.name + (membership(for: person.id) == nil ? ", invitation needed" : ", connected"))
+                    .accessibilityLabel(person.name + (isSyncing(person.id) ? ", syncing" : ", profile only"))
                 }
                 if store.circleMembers.count < 6 {
-                    Button { router.sheet = .shareCircle } label: {
+                    Button { router.sheet = .circle } label: {
                         Image(systemName: "plus")
                             .frame(width: 48, height: 48)
                             .background(BBTheme.surfaceMuted, in: Circle())
                             .overlay(Circle().stroke(BBTheme.paper, lineWidth: 2))
                     }
                     .buttonStyle(.pressable)
-                    .accessibilityLabel("Add a circle member")
+                    .accessibilityLabel("Share this log with somebody")
                 }
                 Spacer()
-                Text("\(store.circleMembers.count) / 6").font(.caption).foregroundStyle(.secondary)
             }
             Label(circleStatusTitle, systemImage: circleStatusSymbol)
                 .font(.callout.weight(.semibold))
-                .foregroundStyle(circleIsSynced ? BBTheme.oxblood : .secondary)
+                .foregroundStyle(sync.isSignedIn ? BBTheme.oxblood : .secondary)
             Text(circleStatusDetail)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -123,51 +106,42 @@ struct MoreView: View {
         .editorialCard()
     }
 
-    private var circleIsSynced: Bool {
-        guard let circleID = store.activeCircleID else { return false }
-        return sync.isSyncing(circleID: circleID)
-    }
-
-    private var circleHasKey: Bool {
-        guard let circleID = store.activeCircleID else { return false }
-        return sync.hasCircleKey(circleID: circleID)
-    }
-
-    private var activeMemberships: [SupabaseClient.MembershipRow] {
-        guard let circleID = store.activeCircleID else { return [] }
-        return sync.memberships(circleID: circleID)
+    private func isSyncing(_ personID: UUID) -> Bool {
+        sync.members.contains { $0.personID == personID }
     }
 
     private var circleStatusTitle: String {
-        guard sync.isConfigured else { return "Local only" }
-        guard sync.isSignedIn else { return "Local only · Sign in to connect" }
-        guard circleHasKey else { return "Local only · Finish sync setup" }
-        guard circleIsSynced else { return "Sync paused on this iPhone" }
-        return "Sync connected"
+        guard sync.isConfigured else { return "Kept on this iPhone" }
+        guard sync.isSignedIn else { return "Sign in to back up & share" }
+        if sync.isPreparing || sync.status.isBusy { return "Syncing…" }
+        if case .offline = sync.status { return "Offline · saved on this iPhone" }
+        if case .failed = sync.status { return "Sync needs attention" }
+        return sync.members.count > 1 ? "Shared & encrypted" : "Backed up & encrypted"
     }
 
     private var circleStatusDetail: String {
-        guard circleHasKey else {
-            return "This log is safe on this iPhone but is not yet shared with other devices. Tap Manage to connect it."
+        guard sync.isConfigured else {
+            return "This build has no sync service configured, so the log stays on this iPhone."
         }
-        if !circleIsSynced { return "Syncing is paused on this iPhone. Tap Manage whenever you want to resume it." }
-        let connected = activeMemberships.count
-        let local = store.circleMembers.count
-        if connected == 0 { return "Connected securely. Tap Manage to refresh member status or send an invitation." }
-        return "\(connected) of \(local) circle member\(local == 1 ? "" : "s") connected. Checkmarks identify accounts that can sync this encrypted log."
+        guard sync.isSignedIn else {
+            return "Sign in to keep an encrypted copy in your account. Until then this log exists only on this iPhone."
+        }
+        let connected = sync.members.count
+        if connected > 1 {
+            return "\(connected) people share this log. Checkmarks show who has their own copy syncing."
+        }
+        return "Nobody else can see this. Tap Share to send somebody a join code — everything here goes with them."
     }
 
     private var circleStatusSymbol: String {
-        circleIsSynced ? "lock.shield.fill" : (circleHasKey ? "pause.circle.fill" : "iphone")
+        guard sync.isSignedIn else { return "iphone" }
+        if case .failed = sync.status { return "exclamationmark.triangle.fill" }
+        if case .offline = sync.status { return "icloud.slash" }
+        return sync.members.count > 1 ? "person.2.fill" : "lock.icloud.fill"
     }
 
     private var circleStatusTaskID: String {
-        let circle = store.activeCircleID?.uuidString ?? "none"
-        return "\(circle)-\(sync.isSignedIn)-\(circleIsSynced)"
-    }
-
-    private func membership(for personID: UUID) -> SupabaseClient.MembershipRow? {
-        activeMemberships.first { $0.personID == personID }
+        "\(store.activeCircleID?.uuidString ?? "none")-\(sync.isSignedIn)"
     }
 
     private typealias Tool = (title: String, detail: String, symbol: String, route: AppRoute)

@@ -47,24 +47,37 @@ final class AppStore {
     @ObservationIgnored var didCommit: ((UUID) -> Void)?
 
     var context: NSManagedObjectContext { persistence.container.viewContext }
+    /// This device's dining log. There is exactly one; joining somebody's
+    /// circle re-identifies this one rather than adding another.
     var activeCircle: CircleEntity? {
         _ = revision
-        if let activeCircleID, let selected = circles.first(where: { $0.id == activeCircleID }) { return selected }
-        return circles.first
+        let live = circles.filter(\.isAlive)
+        if let activeCircleID, let selected = live.first(where: { $0.id == activeCircleID }) { return selected }
+        return live.first
     }
     var people: [PersonEntity] {
         allPeople
-            .filter { $0.circle?.id == activeCircle?.id }
+            .filter { $0.isAlive && $0.circle?.id == activeCircle?.id }
             .sorted(by: personComesBefore)
     }
     var circleMembers: [PersonEntity] { people.filter(\.isCircleMember) }
     var namedCompanions: [PersonEntity] { people.filter { !$0.isCircleMember } }
-    var locations: [RestaurantLocation] { allLocations.filter { $0.circle?.id == activeCircle?.id } }
-    var visits: [VisitEntity] { allVisits.filter { $0.circle?.id == activeCircle?.id } }
-    var comparisons: [ComparisonEntity] { allComparisons.filter { $0.circle?.id == activeCircle?.id } }
-    var wantEntries: [WantEntryEntity] { allWantEntries.filter { $0.circle?.id == activeCircle?.id } }
+    var locations: [RestaurantLocation] {
+        allLocations.filter { $0.isAlive && $0.circle?.id == activeCircle?.id }
+    }
+    var visits: [VisitEntity] {
+        allVisits.filter { $0.isAlive && $0.circle?.id == activeCircle?.id }
+    }
+    var comparisons: [ComparisonEntity] {
+        allComparisons.filter { $0.isAlive && $0.circle?.id == activeCircle?.id }
+    }
+    var wantEntries: [WantEntryEntity] {
+        allWantEntries.filter { $0.isAlive && $0.circle?.id == activeCircle?.id }
+    }
     var beliImportSessions: [ExternalImportSessionEntity] {
-        allImportSessions.filter { $0.circle?.id == activeCircle?.id && $0.provider == "beli" }
+        allImportSessions.filter {
+            $0.isAlive && $0.circle?.id == activeCircle?.id && $0.provider == "beli"
+        }
     }
     var photoDateSyncCandidateCount: Int {
         _ = revision
@@ -74,7 +87,6 @@ final class AppStore {
         if let devicePersonID, let selected = people.first(where: { $0.id == devicePersonID }) { return selected }
         return nil
     }
-    var needsDeviceIdentity: Bool { activeCircle != nil && currentPerson == nil }
     var otherCircleMembers: [PersonEntity] { circleMembers.filter { $0.id != currentPerson?.id } }
 
     init(persistence: PersistenceController) {
@@ -112,125 +124,184 @@ final class AppStore {
         }
     }
 
-    func bootstrap(myName: String, circleName: String = "Our Table") {
+    /// Creates the one dining log this device keeps.
+    ///
+    /// A name for it is not asked for during setup. Somebody logging their own
+    /// meals never needs to think about a circle at all; the name only becomes
+    /// visible, and editable, once they share the log with somebody.
+    func bootstrap(myName: String, circleName: String? = nil) {
         guard circles.isEmpty else { return }
+        let owner = myName.trimmedOr("Me")
         let circle = CircleEntity(context: context)
-        circle.id = UUID(); circle.name = circleName.trimmedOr("Our Table"); circle.createdAt = .now
+        circle.id = UUID()
+        circle.name = circleName?.nilIfBlank ?? Self.defaultCircleName(for: owner)
+        circle.createdAt = .now
         circles.append(circle)
-        let me = makePerson(name: myName.trimmedOr("Me"), isCircleMember: true, color: "6F1D2B", circle: circle)
+        let me = makePerson(name: owner, isCircleMember: true, color: "6F1D2B", circle: circle)
         activeCircleID = circle.id
         devicePersonID = me.id
         persistDeviceSelection()
         commit()
     }
 
-    /// Creates a separate dining log and makes it the explicit active circle.
-    /// A local circle can later be connected to the signed-in account without
-    /// mixing any of its records or rankings with existing circles.
+    /// Adopts `circleID` as the identity of this device's dining log.
+    ///
+    /// This is what makes joining somebody's circle behave the way people
+    /// expect: the restaurants, outings, rankings and imports already on this
+    /// iPhone become part of the shared log instead of being stranded in a
+    /// separate one that the other members can never see. Everything keeps its
+    /// own record identity, so the next sync pass simply publishes it.
+    ///
+    /// Returns the person this device logs as, which is also the member profile
+    /// claimed on the service.
     @discardableResult
-    func createCircle(name: String, ownerName: String) -> CircleEntity? {
-        let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cleanOwner = ownerName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanName.isEmpty, !cleanOwner.isEmpty else { return nil }
-        guard !circles.contains(where: {
-            $0.name.compare(cleanName, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
-        }) else { return nil }
+    func adoptCircle(id circleID: UUID, name: String? = nil) -> UUID? {
+        guard let current = activeCircle else {
+            // A brand-new installation joining before it has logged anything.
+            let circle = CircleEntity(context: context)
+            circle.id = circleID
+            circle.name = name?.trimmedOr("Our Table") ?? "Our Table"
+            circle.createdAt = .now
+            circles.append(circle)
+            activeCircleID = circleID
+            let me = makePerson(name: "Me", isCircleMember: true, color: "6F1D2B", circle: circle)
+            devicePersonID = me.id
+            persistDeviceSelection()
+            commit()
+            return me.id
+        }
+        if current.id != circleID {
+            if circles.contains(where: { $0.id == circleID }) {
+                // The circle was downloaded before the join finished. Move this
+                // device's log into it rather than keeping two copies.
+                activeCircleID = circleID
+            } else {
+                // Re-identifying the existing circle carries every child record
+                // across in one step, with no re-parenting and no window where
+                // a record belongs to no circle.
+                current.id = circleID
+                activeCircleID = circleID
+            }
+        }
+        if let name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let circle = circles.first(where: { $0.id == circleID }) {
+            circle.name = name
+        }
+        consolidateCircles(preferring: circleID)
 
-        let circle = CircleEntity(context: context)
-        circle.id = UUID()
-        circle.name = cleanName
-        circle.createdAt = .now
-        circles.append(circle)
-        let owner = makePerson(name: cleanOwner, isCircleMember: true, color: "6F1D2B", circle: circle)
-        activeCircleID = circle.id
-        devicePersonID = owner.id
+        guard let circle = circles.first(where: { $0.id == circleID }) else { return nil }
+        let person = currentPerson ?? circleMembers.first ?? makePerson(
+            name: "Me",
+            isCircleMember: true,
+            color: "6F1D2B",
+            circle: circle
+        )
+        devicePersonID = person.id
         persistDeviceSelection()
         commit()
-        return circle
+        return person.id
     }
 
-    /// Removes one complete local object graph without publishing tombstones.
-    /// Callers must first leave/delete the server membership and remove the
-    /// local key when the circle is synced.
+    /// Gives this device's log a brand-new circle identity. Used after leaving
+    /// a shared circle: the dining history stays exactly where it is and starts
+    /// syncing again as a private circle.
     @discardableResult
-    func removeCircleFromThisDevice(_ circleID: UUID) -> Bool {
-        guard let circle = circles.first(where: { $0.id == circleID }) else { return false }
-        var nextCircleID = circles.first(where: { $0.id != circleID })?.id
-        var nextPersonID = nextCircleID.flatMap { selectedPersonID(for: $0) }
+    func startFreshCircleIdentity() -> UUID? {
+        guard let circle = activeCircle else { return nil }
+        let previousID = circle.id
+        let newID = UUID()
+        circle.id = newID
+        devicePersonIDsByCircle.removeValue(forKey: previousID.uuidString)
+        activeCircleID = newID
+        persistDeviceSelection()
+        commit()
+        return newID
+    }
 
-        // The rest of the app requires an active local log. Deleting the final
-        // circle therefore leaves a fresh personal circle instead of a broken,
-        // permanently empty shell that can no longer reach onboarding.
-        if nextCircleID == nil {
-            let ownerName = allPeople.first(where: { $0.circle?.id == circleID && $0.id == devicePersonID })?.name
-                .trimmedOr("Me") ?? "Me"
-            let replacement = CircleEntity(context: context)
-            replacement.id = UUID()
-            replacement.name = "My Circle"
-            replacement.createdAt = .now
-            let replacementOwner = makePerson(
-                name: ownerName,
-                isCircleMember: true,
-                color: "6F1D2B",
-                circle: replacement
-            )
-            nextCircleID = replacement.id
-            nextPersonID = replacementOwner.id
+    /// Keeps the invariant the whole app depends on: one dining log per device.
+    ///
+    /// Earlier builds created a second circle whenever an invitation arrived,
+    /// which is how a member could import a restaurant list and have nobody
+    /// else ever see it. Any extra circle found here is folded into the log
+    /// that is active, and duplicate people and restaurants are reconciled by
+    /// the usual rules on the next reload.
+    @discardableResult
+    func consolidateCircles(preferring preferredID: UUID? = nil) -> Bool {
+        if let preferredID, circles.contains(where: { $0.id == preferredID }) {
+            activeCircleID = preferredID
         }
+        guard circles.count > 1, let keeper = activeCircle else { return false }
+        let absorbed = circles.filter { $0.id != keeper.id }
+        guard !absorbed.isEmpty else { return false }
+
+        for circle in absorbed {
+            for person in allPeople where person.circle?.id == circle.id { person.circle = keeper }
+            for location in allLocations where location.circle?.id == circle.id { location.circle = keeper }
+            for visit in allVisits where visit.circle?.id == circle.id { visit.circle = keeper }
+            for comparison in allComparisons where comparison.circle?.id == circle.id { comparison.circle = keeper }
+            for want in allWantEntries where want.circle?.id == circle.id { want.circle = keeper }
+            for session in allImportSessions where session.circle?.id == circle.id { session.circle = keeper }
+            for link in externalImportLinks(in: circle) { link.circle = keeper }
+            devicePersonIDsByCircle.removeValue(forKey: circle.id.uuidString)
+        }
+        // Every child now points at the keeper, so the cascade rules have
+        // nothing left to take with them.
+        context.processPendingChanges()
+        for circle in absorbed { context.delete(circle) }
+
         do {
-            context.delete(circle)
             try persistence.save()
-            devicePersonIDsByCircle.removeValue(forKey: circleID.uuidString)
-            activeCircleID = nextCircleID
-            devicePersonID = nextPersonID
-            persistDeviceSelection()
-            reload()
-            return true
         } catch {
             context.rollback()
             reload()
-            reportError("The circle could not be removed from this iPhone. \(error.localizedDescription)")
+            reportError("Your dining logs could not be combined. \(error.localizedDescription)")
             return false
         }
-    }
-
-    func activateCircle(_ circleID: UUID) {
-        guard circles.contains(where: { $0.id == circleID }) else { return }
-        activeCircleID = circleID
-        devicePersonID = selectedPersonID(for: circleID).flatMap { selectedID in
-            circleMembers.contains(where: { $0.id == selectedID }) ? selectedID : nil
-        }
-        persistDeviceSelection()
-        revision += 1
-    }
-
-    /// Finishes an invitation handoff after sync has rebuilt the downloaded
-    /// graph. Joining is not complete from the person's perspective until the
-    /// new circle is both visible and active; leaving the previous selection in
-    /// place makes a successful server redemption look like a no-op.
-    @discardableResult
-    func completeCircleJoin(circleID: UUID, personID: UUID) -> Bool {
+        // Refetch before anything reads the graph again: the deleted circles
+        // must not survive in a cached array where a view could touch them.
+        circles.removeAll()
         reload()
-        guard circles.contains(where: { $0.id == circleID }),
-              let person = allPeople.first(where: { $0.id == personID }),
-              person.circle?.id == circleID,
-              person.isCircleMember else {
-            reportError("The circle joined successfully, but its downloaded profile is not ready yet. Sync again to finish opening it.")
-            return false
-        }
-
-        activeCircleID = circleID
-        devicePersonID = personID
-        persistDeviceSelection()
-        revision += 1
+        if let activeCircleID { didCommit?(activeCircleID) }
         return true
     }
 
+    /// Points this installation at the person record it logs as.
+    ///
+    /// Meals are always logged for whoever owns the iPhone, so this is never a
+    /// question the interface asks. It is called once at setup, again after a
+    /// join, and by ``adoptDeviceIdentity(preferring:)`` when the service says
+    /// which member profile this account owns.
     func selectCurrentPerson(_ personID: UUID) {
         guard circleMembers.contains(where: { $0.id == personID }) else { return }
         devicePersonID = personID
         persistDeviceSelection()
         revision += 1
+    }
+
+    /// Recovers the link between this account and its person record.
+    ///
+    /// The service knows which member profile the signed-in account owns, so a
+    /// reinstall or a merge that renamed records repairs itself rather than
+    /// stopping to ask who is holding the phone.
+    @discardableResult
+    func adoptDeviceIdentity(preferring personID: UUID?) -> UUID? {
+        if let personID, circleMembers.contains(where: { $0.id == personID }) {
+            if devicePersonID != personID { selectCurrentPerson(personID) }
+            return personID
+        }
+        if currentPerson != nil { return devicePersonID }
+        // Nothing to disambiguate: a log with one member is that member's.
+        guard let only = circleMembers.first, circleMembers.count == 1 else { return nil }
+        selectCurrentPerson(only.id)
+        return only.id
+    }
+
+    /// Only ever seen after the log is shared, so it reads as a place at a
+    /// table rather than as a setting somebody forgot to fill in.
+    static func defaultCircleName(for ownerName: String) -> String {
+        let name = ownerName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return "Our Table" }
+        return name.hasSuffix("s") ? "\(name)' Table" : "\(name)'s Table"
     }
 
     func reportError(_ message: String) {
@@ -261,23 +332,14 @@ final class AppStore {
         resetAfterExternalStoreWrite()
         persistDeviceSelection()
         reload()
+        // A backup taken by an older build can hold several circles. This app
+        // keeps one log, so fold them together rather than restoring records
+        // into a circle the interface would never show.
+        consolidateCircles(preferring: restoredCircleID)
         let changedCircleIDs = replacedCircleIDs.union(circles.map(\.id))
         for circleID in changedCircleIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
             didCommit?(circleID)
         }
-    }
-
-    /// Makes an appended recovery circle active while retaining both the original
-    /// circle and every existing per-circle device identity.
-    func completeRecoveryCopy(activeCircleID restoredCircleID: UUID?, selections: [UUID: UUID]) {
-        for (circleID, personID) in selections {
-            devicePersonIDsByCircle[circleID.uuidString] = personID.uuidString
-        }
-        activeCircleID = restoredCircleID
-        devicePersonID = restoredCircleID.flatMap { selections[$0] }
-        resetAfterExternalStoreWrite()
-        persistDeviceSelection()
-        reload()
     }
 
     private func resetAfterExternalStoreWrite() {
@@ -378,6 +440,58 @@ final class AppStore {
         let person = makePerson(name: cleanName, isCircleMember: true, color: colors[circleMembers.count % colors.count], circle: circle)
         commit()
         return person
+    }
+
+    /// Takes somebody out of the circle.
+    ///
+    /// History is never rewritten to do it. A person who has eaten with you
+    /// keeps their outings, ratings and photos and simply stops being a member,
+    /// which also keeps them taggable on past and future visits. Only a profile
+    /// that has never been used is removed outright.
+    ///
+    /// Nothing is deleted while a view might still be holding it: the store
+    /// refetches before returning, and every collection the interface reads
+    /// filters out objects that are on their way out.
+    @discardableResult
+    func removeCircleMember(_ personID: UUID) -> Bool {
+        guard let person = allPeople.first(where: { $0.isAlive && $0.id == personID }),
+              person.circle?.id == activeCircle?.id,
+              person.isCircleMember,
+              personID != devicePersonID else { return false }
+
+        if personHasHistory(personID) {
+            person.isCircleMember = false
+            person.colorHex = "7A7166"
+            commit()
+            return true
+        }
+        context.delete(person)
+        allPeople.removeAll { !$0.isAlive }
+        do {
+            try persistence.save()
+        } catch {
+            context.rollback()
+            reload()
+            reportError("That person could not be removed. \(error.localizedDescription)")
+            return false
+        }
+        reload()
+        if let activeCircleID { didCommit?(activeCircleID) }
+        return true
+    }
+
+    /// True when removing this person outright would erase something they did.
+    func personHasHistory(_ personID: UUID) -> Bool {
+        if visits.contains(where: { visit in
+            visit.createdByID == personID
+                || visit.companionIDs.contains(personID)
+                || visit.ratingArray.contains { $0.personID == personID }
+                || visit.participantArray.contains { $0.personID == personID }
+                || visit.dishEntryArray.contains { $0.personID == personID }
+                || visit.photoArray.contains { $0.personID == personID }
+        }) { return true }
+        if comparisons.contains(where: { $0.personID == personID }) { return true }
+        return wantEntries.contains { $0.addedByID == personID }
     }
 
     @discardableResult
@@ -1498,15 +1612,20 @@ final class AppStore {
             catch { return }
             guard !Task.isCancelled else { return }
             guard let self else { return }
-            let previousCircleIDs = Set(circles.map(\.id))
+            let previousCircleIDs = Set(circles.filter(\.isAlive).map(\.id))
             reload()
-            // A circle this device has never seen can only have arrived from a
-            // sync pull, which means someone accepted an invitation here.
+            // A circle this device has never seen arrived from a sync pull,
+            // which means this account belongs to a log it had no local copy
+            // of yet. There is only ever one log, so fold it into this one.
             let arrived = circles
                 .filter { !previousCircleIDs.contains($0.id) }
                 .max(by: { $0.createdAt < $1.createdAt })
             if let arrived {
-                activateCircle(arrived.id)
+                // The downloaded circle keeps its identity, because that is the
+                // one the account and the other members already share. Anything
+                // logged on this iPhone beforehand is folded into it rather than
+                // left behind where nobody else could see it.
+                consolidateCircles(preferring: arrived.id)
                 NotificationCenter.default.post(name: .circleDidArriveFromSync, object: self)
             }
         }

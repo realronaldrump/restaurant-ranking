@@ -16,7 +16,7 @@ is the list of private logs; each circle has an owner and a roster. Removing a
 friend does not silently remove them from existing circles, and leaving a circle
 does not unfriend anyone.
 
-The version 3.0.1 invitation repair should remain a narrow release. It fixes
+The version 3.0.2 invitation repair should remain a narrow release. It fixes
 universal-link routing, activation of the joined circle, switching, leaving,
 deleting, and member removal. Profiles and friends require a new service schema,
 privacy disclosures, key exchange, and a two-account security test matrix, so

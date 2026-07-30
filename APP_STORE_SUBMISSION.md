@@ -5,13 +5,13 @@
 - Product: Big Beautiful Restaurant Log
 - Bundle identifier: `com.davis.bigbeautifulranking`
 - Sync service: Supabase project (host and anon key supplied through `Config/Supabase.local.xcconfig`)
-- Version: 3.0.1 (build 12 candidate)
+- Version: 3.0.2 (build 13)
 - Devices: iPhone only
 - Minimum OS: iOS 17.0
 
 ## App Privacy answers
 
-> **Completed for 3.0.1 on July 29, 2026.** Earlier releases answered **Data Not
+> **Completed for 3.0.2 on July 29, 2026.** Earlier releases answered **Data Not
 > Collected** because sharing ran entirely through the user's own iCloud account.
 > App Store Connect now publishes the seven data types below as linked to the
 > user, used for App Functionality, and not used for tracking.
@@ -82,10 +82,11 @@ reading user-selected imports and backups.
 
 ## Final release gates
 
-- App Store build: version 3.0.1, build 11 was uploaded and validated July 29,
-  2026, but is superseded by build 12 because its invitation UI did not activate
-  the joined circle reliably. Upload and select build 12 after the gates below.
-- TestFlight: do not use build 11 for the final soak. Assign build 12 to the
+- App Store build: earlier candidate builds are superseded because their
+  invitation UI did not activate the joined circle reliably. Version 3.0.2,
+  build 13 uploaded successfully on July 29, 2026 and is processing in App Store
+  Connect; select it after processing completes.
+- TestFlight: do not use build 11 for the final soak. Assign build 13 to the
   external **Big Beautiful Testers** group, complete the two-device soak below,
   and only then submit the App Store draft.
 - EU Digital Services Act: completed by the Account Holder and shown as
@@ -96,7 +97,7 @@ reading user-selected imports and backups.
 
 ### Two-device TestFlight soak
 
-1. Install build 12 from TestFlight on two iPhones using different Apple
+1. Install version 3.0.2, build 13 from TestFlight on two iPhones using different Apple
    Accounts.
 2. Confirm an existing user's restaurants, visits, rankings, relationships, and
    photo blobs survive the upgrade.
@@ -110,7 +111,7 @@ reading user-selected imports and backups.
 7. Turn syncing off, sign out, sign back in, and confirm the local dining log is
    preserved.
 
-## What’s New in Version 3.0.1
+## What’s New in Version 3.0.2
 
 - Added end-to-end encrypted circle syncing so shared dining logs stay current across devices.
 - Added Sign in with Apple and single-use invitations for securely joining a dining circle.
@@ -146,7 +147,7 @@ migration accompanies it.
 
 ## Permission behavior
 
-- Location: When In Use only. There is no Always authorization or background visit detection in 3.0.1.
+- Location: When In Use only. There is no Always authorization or background visit detection in 3.0.2.
 - Photos: the primary Backfill path uses PhotosPicker without library permission. The optional date-range scan requests read access.
 - Notifications: no user-visible notifications are requested.
 

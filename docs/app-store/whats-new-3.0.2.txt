@@ -1,4 +1,4 @@
-What’s New in Version 3.0.1
+What’s New in Version 3.0.2
 
 • Add end-to-end encrypted circle syncing so shared dining logs stay current across devices.
 • Sign in with Apple and use single-use invitations to securely join a dining circle.

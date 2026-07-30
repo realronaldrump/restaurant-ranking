@@ -66,7 +66,7 @@ final class RestaurantLogUITests: XCTestCase {
         for _ in 0..<10 where !footer.exists { app.swipeUp() }
 
         XCTAssertTrue(footer.waitForExistence(timeout: 3))
-        XCTAssertEqual(footer.label, "Big Beautiful Restaurant Log 3.0.1 • Released July 29, 2026")
+        XCTAssertEqual(footer.label, "Big Beautiful Restaurant Log 3.0.2 • Released July 29, 2026")
     }
 
     func testCircleManagementShowsMemberStateAndRenameControl() {

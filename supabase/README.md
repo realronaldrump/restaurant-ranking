@@ -17,7 +17,7 @@ with a per-circle key this project never holds.
 ## 2. Apply the migrations
 
 Apply every file in `supabase/migrations/` in numerical order. At the time of
-the 3.0.1 release that is:
+the 3.0.2 release that is:
 
 ```
 supabase/migrations/0001_circles_and_records.sql

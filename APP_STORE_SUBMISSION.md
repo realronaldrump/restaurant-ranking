@@ -5,16 +5,18 @@
 - Product: Big Beautiful Restaurant Log
 - Bundle identifier: `com.davis.bigbeautifulranking`
 - Sync service: Supabase project (host and anon key supplied through `Config/Supabase.local.xcconfig`)
-- Version: 3.0.2 (build 13)
+- Version: 3.1.1 (build 15)
 - Devices: iPhone only
 - Minimum OS: iOS 17.0
 
 ## App Privacy answers
 
-> **Completed for 3.0.2 on July 29, 2026.** Earlier releases answered **Data Not
-> Collected** because sharing ran entirely through the user's own iCloud account.
-> App Store Connect now publishes the seven data types below as linked to the
-> user, used for App Functionality, and not used for tracking.
+> **Completed for 3.0.2 on July 29, 2026 and unchanged for 3.1.1.** Earlier
+> releases answered **Data Not Collected** because sharing ran entirely through
+> the user's own iCloud account. App Store Connect publishes the seven data types
+> below as linked to the user, used for App Functionality, and not used for
+> tracking. 3.1.1 collects nothing new: it changes how a person is invited, not
+> what leaves the device.
 
 The developer cannot read dining records: every payload and photo is encrypted on
 device with a key the service never receives. Apple's App Privacy questions are
@@ -49,10 +51,11 @@ used only for App Functionality, and not used for tracking.
 
 Also confirm before upload:
 - `ITSAppUsesNonExemptEncryption` is currently `false`. The app encrypts user
-  content with AES-GCM through Apple's CryptoKit. Apps using only encryption
-  provided by the operating system are generally exempt, which is why the value
-  is unchanged — confirm this against Apple's current export-compliance guidance
-  for this release rather than assuming.
+  content with AES-GCM through Apple's CryptoKit and, from 3.1.1, derives an
+  invitation's wrapping key with PBKDF2-HMAC-SHA256 through Apple's CommonCrypto.
+  Both are operating-system-provided, so the exemption reasoning is unchanged —
+  confirm it against Apple's current export-compliance guidance for this release
+  rather than assuming.
 
 - Tracking: No
 - Third-party advertising: No
@@ -62,9 +65,9 @@ Also confirm before upload:
 - Third-party SDKs: ZIPFoundation, used only to read user-selected Beli ZIP exports. It contains no advertising, analytics, tracking, accounts, or network service. The sync client is hand-written over `URLSession`; no networking or backend SDK is linked.
 
 The bundled privacy manifest declares no tracking and declares `CA92.1` for
-app-scoped `UserDefaults`, which stores only device-local circle identity,
-selected circle, onboarding completion, haptic preference, appearance, and the
-sync watermark/baseline. It also declares `DDA9.1` for file timestamps used when
+app-scoped `UserDefaults`, which stores only the device's circle and person
+identifiers, onboarding completion, haptic preference, appearance, and the sync
+watermark/baseline. It also declares `DDA9.1` for file timestamps used when
 reading user-selected imports and backups.
 
 ## Required App Store Connect fields
@@ -82,13 +85,16 @@ reading user-selected imports and backups.
 
 ## Final release gates
 
-- App Store build: earlier candidate builds are superseded because their
-  invitation UI did not activate the joined circle reliably. Version 3.0.2,
-  build 13 uploaded successfully on July 29, 2026 and is processing in App Store
-  Connect; select it after processing completes.
-- TestFlight: do not use build 11 for the final soak. Assign build 13 to the
-  external **Big Beautiful Testers** group, complete the two-device soak below,
-  and only then submit the App Store draft.
+- App Store build: version 3.1.1, build 15. It supersedes build 13, whose
+  invitation links could open the app and then do nothing, and which could crash
+  while a circle was being deleted.
+- **Apply `supabase/migrations/0010_join_codes.sql` before this build reaches
+  anybody.** Join codes cannot be created or redeemed without it. The migration
+  is additive and leaves the 3.0.2 functions in place, so build 13 keeps working
+  until it is replaced. Applied to the production project on July 30, 2026;
+  verified by the six-row check in `supabase/README.md`.
+- TestFlight: assign build 15 to the external **Big Beautiful Testers** group,
+  complete the two-device soak below, and only then submit the App Store draft.
 - EU Digital Services Act: completed by the Account Holder and shown as
   **Active** for all 27 applicable countries or regions on July 29, 2026.
 - After the soak passes, open **App Review → Draft Submission** and choose
@@ -97,30 +103,54 @@ reading user-selected imports and backups.
 
 ### Two-device TestFlight soak
 
-1. Install version 3.0.2, build 13 from TestFlight on two iPhones using different Apple
-   Accounts.
-2. Confirm an existing user's restaurants, visits, rankings, relationships, and
-   photo blobs survive the upgrade.
-3. Create a new invitation, join from the second phone, and wait for the first
-   download to finish.
-4. Create and edit a clearly named temporary visit on each phone, add a photo,
-   choose **Sync Now**, and confirm both devices converge without duplicates.
-5. Make a conflicting edit and deletion of the temporary visit and confirm the
+Two iPhones on different Apple Accounts. Steps 3 to 5 are the ones 3.1.1 exists
+to fix, so do not sign off without them.
+
+1. Install version 3.1.1, build 15 on both phones.
+2. On the upgrading phone, confirm the existing restaurants, visits, rankings,
+   relationships, and photos survive, and that a log left behind in a second
+   circle by an older build has been folded into the one log.
+3. On phone A: **More → Share → Create a Join Code**. On phone B, enter the code
+   under **Got a join code?**. Confirm B ends up with A's restaurants and
+   outings, and that A sees B in the roster.
+4. Repeat the join on a fresh install using the *link* rather than the code,
+   from a cold start: force-quit the app first, tap the link, and confirm the
+   Join Circle sheet appears rather than the app simply opening.
+5. Before joining on B, log a distinctive restaurant there. After joining,
+   confirm that restaurant appears on A. This is the regression that made a
+   shared circle look empty.
+6. Create and edit a clearly named temporary visit on each phone, add a photo,
+   and confirm both devices converge without duplicates.
+7. Make a conflicting edit and deletion of the temporary visit and confirm the
    edited version is preserved.
-6. Remove and re-invite the test member and confirm access changes correctly.
-7. Turn syncing off, sign out, sign back in, and confirm the local dining log is
-   preserved.
+8. Tag the other member on an outing and confirm the pending-entry prompt
+   appears on their home screen and that their entry syncs back.
+9. On the owner phone, remove the member. Confirm the member's device stops
+   syncing, keeps its local copy, and that their outings remain in the owner's
+   log.
+10. Re-invite with a new code and confirm the rejoin works.
+11. Leave the circle from the member phone. Confirm no crash, that the dining log
+    is intact, and that it resumes syncing privately under a new circle.
+12. Sign out and back in on both phones and confirm each log is still complete.
 
-## What’s New in Version 3.0.2
+## What’s New in Version 3.1.1
 
-- Added end-to-end encrypted circle syncing so shared dining logs stay current across devices.
-- Added Sign in with Apple and single-use invitations for securely joining a dining circle.
-- Added clear connection status, first-sync progress, connected-member app versions, and recent activity.
-- Added easy circle renaming and direct member management from Settings and the More tab.
-- Added a clear circle switcher plus explicit controls to leave, delete, or remove a circle from one iPhone.
-- Fixed invitation links so a successful join activates the shared circle instead of leaving the previous log onscreen.
-- Improved reliability for simultaneous edits, deletions, large first syncs, and encrypted photo transfers.
-- Preserved dining history and photos from previously accepted iCloud circles during the upgrade.
+- Rebuilt sharing around a join code you can read out, text, or tap. Invitation
+  links that opened the app and did nothing are fixed, including from a cold
+  start.
+- Joining now brings your dining log with you, so both people see the same
+  restaurants and outings while keeping their own reactions and rankings.
+- Fixed a crash that could happen while a circle was being deleted.
+- Removed the sync switches. Signing in keeps your log in your account, and
+  there is no longer a local-only mode, a paused state, or a second circle to
+  keep track of.
+- Setup no longer asks for a circle name. Sharing appears only when you want it.
+- Made it one tap for the owner to remove somebody from a circle, keeping
+  everything that person logged.
+- Leaving a circle now keeps your whole dining log and carries on syncing
+  privately.
+- Circle keys now travel in your iCloud Keychain, so a replacement iPhone can
+  read your log again after signing in.
 
 ## Capabilities to configure in the Apple Developer portal
 
@@ -137,6 +167,8 @@ reading user-selected imports and backups.
    `supabase/README.md`.
 7. Verify `https://realronaldrump.github.io/.well-known/apple-app-site-association`
    serves JSON without a redirect and contains the production Team ID and bundle ID.
+   The `bigbeautifullog://` URL scheme registered in `project.yml` is the fallback
+   when that file cannot be reached, so an invitation is never a dead link.
 8. Test an invitation between two physical devices signed into different Apple
    Accounts: create, send, join, edit on both, delete on one, and confirm photos
    arrive on the second device.
@@ -147,10 +179,20 @@ migration accompanies it.
 
 ## Permission behavior
 
-- Location: When In Use only. There is no Always authorization or background visit detection in 3.0.2.
+- Location: When In Use only. There is no Always authorization or background visit detection in 3.1.1.
 - Photos: the primary Backfill path uses PhotosPicker without library permission. The optional date-range scan requests read access.
 - Notifications: no user-visible notifications are requested.
 
 ## Review notes
 
-Signing in is required only to share a log with another person; everything else works without an account. A reviewer can choose “Preview with a sample Salt Lake log” during the Grand Opening to inspect every primary screen without signing in or entering personal data.
+The dining log is kept in the person's own account, so setup asks for a name and
+then offers Sign in with Apple. **A reviewer does not need an account to inspect
+the app:** tapping **Sign in with Apple** and cancelling the system sheet reveals
+**Continue Without an Account**, which completes setup with the log kept on the
+device. From the final setup screen, **Preview with a sample Salt Lake log**
+fills every primary screen with sample data.
+
+Sharing a log with another person does require signing in, because the
+invitation delivers an encryption key to a second account. No personal
+information beyond the Apple-provided identifier and a display name is
+requested, and Hide My Email is fully supported.

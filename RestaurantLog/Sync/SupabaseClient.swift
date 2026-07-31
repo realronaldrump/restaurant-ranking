@@ -57,6 +57,22 @@ actor SupabaseClient {
             case kind, id, payload, deleted
             case deviceID = "device_id"
         }
+
+        /// PostgREST bulk inserts require every object in the JSON array to
+        /// have the same keys. `encodeIfPresent` (which synthesized Codable
+        /// uses for an optional) would omit `payload` from tombstones, making
+        /// a batch containing live records and deletions non-uniform. Keep the
+        /// key present as JSON `null` so the database can evaluate the
+        /// live-row/tombstone invariant for each row independently.
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(circleID, forKey: .circleID)
+            try container.encode(kind, forKey: .kind)
+            try container.encode(id, forKey: .id)
+            try container.encode(payload, forKey: .payload)
+            try container.encode(deleted, forKey: .deleted)
+            try container.encode(deviceID, forKey: .deviceID)
+        }
     }
 
     struct MembershipRow: Decodable, Identifiable, Sendable {

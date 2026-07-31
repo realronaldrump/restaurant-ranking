@@ -30,6 +30,7 @@ supabase/migrations/0007_membership_presence.sql
 supabase/migrations/0008_deletion_authorization_order.sql
 supabase/migrations/0009_verified_membership_lifecycle.sql
 supabase/migrations/0010_join_codes.sql
+supabase/migrations/20260731180047_disambiguate_redeem_join_code_conflict.sql
 ```
 
 With the CLI:

@@ -230,7 +230,7 @@ struct SettingsView: View {
                 }
             }
             Section("Privacy") {
-                Text("The app works locally without an account. With circle syncing on, Sign in with Apple identifiers and encrypted content are stored by the sync service; the circle key never leaves member devices, so the service cannot read dining records or photos. Map search uses Apple Maps. There are no ads, analytics, or tracking.")
+                Text("Signing in with Apple keeps your log in your account. Records and photos are encrypted on this iPhone first, and the key never leaves the devices in your circle, so the sync service stores content it cannot read. Map search uses Apple Maps. There are no ads, analytics, or tracking.")
                 NavigationLink("Read the full privacy policy") { PrivacyPolicyView() }
                 if let privacyURL = URL(string: "https://realronaldrump.github.io/restaurant-ranking/privacy.html") {
                     Link("Privacy policy on the web", destination: privacyURL)
@@ -532,12 +532,12 @@ struct PrivacyPolicyView: View {
             VStack(alignment: .leading, spacing: 16) {
                 Eyebrow("Effective July 29, 2026")
                 Text("Private by design.").font(BBTheme.display(37))
-                Text("Big Beautiful Restaurant Log has no advertising, analytics, data broker, or tracking SDK. The app works locally without an account. Optional circle syncing uses a developer-operated Supabase service and Sign in with Apple.")
+                Text("Big Beautiful Restaurant Log has no advertising, analytics, data broker, or tracking SDK. Your dining log is kept in your account through Sign in with Apple and a developer-operated Supabase service, and it is encrypted on this iPhone before any of it is uploaded.")
                 Text("When syncing is on, member names, dining records, notes, and photos are encrypted on this iPhone before upload. The service stores ciphertext linked to a Sign in with Apple account and an app-generated device identifier, but never receives the circle key and cannot read the dining content. The service retains the account email Apple provides for authentication.")
                 Text("Map searches are sent to Apple through MapKit. Coordinates saved in the dining log may be included in encrypted sync records; the sync service cannot read them. Photos are processed on-device, and app-stored copies have embedded location metadata removed before encrypted upload.")
                 Text("If you import a Beli export, the ZIP is read on-device. The app contacts Apple Maps to help match restaurants and downloads only the Beli photo links included in that export when you explicitly start the import. Beli profile, social, device, follow, and comment data is not retained.")
                 Text("Location is foreground-only and optional. Photo Library access is optional; the standard picker works without full-library permission. Permissions can be revoked at any time in iOS Settings.")
-                Text("Settings lets you turn syncing off, sign out, remove a member, delete an owned circle’s encrypted service copy and photos, or delete the sync account and all service data it owns. These actions do not silently delete the on-device dining log.")
+                Text("Settings lets you sign out, remove somebody from your circle, leave a circle, or delete your account and every piece of service data it owns. None of these silently delete the dining log on this iPhone.")
                 if let privacyURL = URL(string: "https://realronaldrump.github.io/restaurant-ranking/privacy.html") {
                     Link("Read the complete policy and privacy choices", destination: privacyURL)
                         .font(.headline)

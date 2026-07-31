@@ -175,6 +175,35 @@ final class SupabaseClientTests: XCTestCase {
         XCTAssertEqual(json["client_version"], "3.0.2 (13)")
     }
 
+    func testPushingRecordsEncodesLivePayloadAndTombstoneStateTogether() async throws {
+        SupabaseURLProtocol.respond { _ in (201, Data()) }
+        let client = makeClient()
+        let liveID = UUID(uuidString: "55555555-5555-5555-5555-555555555555")!
+        let tombstoneID = UUID(uuidString: "66666666-6666-6666-6666-666666666666")!
+
+        try await client.pushRecords([
+            .init(circleID: circleID, kind: "visit", id: liveID, payload: "sealed", deleted: false, deviceID: userID),
+            .init(circleID: circleID, kind: "visit", id: tombstoneID, payload: nil, deleted: true, deviceID: userID)
+        ])
+
+        let request = try XCTUnwrap(SupabaseURLProtocol.requests.first)
+        XCTAssertEqual(request.url?.path, "/rest/v1/records")
+        let rows = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(request.httpBody)) as? [[String: Any]])
+        XCTAssertEqual(rows.count, 2)
+
+        let live = try XCTUnwrap(rows.first { ($0["id"] as? String) == liveID.uuidString })
+        XCTAssertEqual(live["payload"] as? String, "sealed")
+        XCTAssertEqual(live["deleted"] as? Bool, false)
+
+        let tombstone = try XCTUnwrap(rows.first { ($0["id"] as? String) == tombstoneID.uuidString })
+        XCTAssertTrue(tombstone["payload"] is NSNull)
+        XCTAssertEqual(tombstone["deleted"] as? Bool, true)
+
+        XCTAssertEqual(Set(rows.flatMap(\.keys)), [
+            "circle_id", "kind", "id", "payload", "deleted", "device_id"
+        ])
+    }
+
     func testOwnerRemovalUsesVerifiedRPCInsteadOfSilentRLSDelete() async throws {
         SupabaseURLProtocol.respond { _ in (200, Data("true".utf8)) }
         let client = makeClient()

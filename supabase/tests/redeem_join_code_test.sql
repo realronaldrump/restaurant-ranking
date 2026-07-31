@@ -74,15 +74,16 @@ SELECT results_eq(
     'redeeming inserts the joiner membership'
 );
 
--- The app deliberately cannot read invitation hashes. Inspect the internal
--- redemption marker as the test owner, then resume the caller role for retry.
-RESET ROLE;
+-- The app deliberately cannot read invitation hashes. The authenticated
+-- joiner may still inspect the non-secret redemption marker through the member
+-- policy, which keeps this assertion in the same caller context as the RPC.
 
 SELECT results_eq(
     $$
         SELECT redeemed_by
         FROM public.circle_invites
-        WHERE code_hash = repeat('a', 64)
+        WHERE circle_id = '20000000-0000-0000-0000-000000000001'
+          AND created_by = '10000000-0000-0000-0000-000000000001'
     $$,
     $$
         VALUES ('10000000-0000-0000-0000-000000000002'::uuid)

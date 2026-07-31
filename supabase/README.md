@@ -46,6 +46,16 @@ platform-managed grants that an application migration is not permitted to
 change. Migration 0005 makes every object created by the app's migration role
 fail closed by default.
 
+**Production migration-history note (July 31, 2026).** The linked production
+project has the complete schema and the corrected join-code function, but its
+`supabase_migrations.schema_migrations` ledger contains the earlier
+timestamped/dashboard migration names rather than the repository filenames
+`0009`, `0010`, and `20260731180047`. Do not run `supabase db push` against that
+project until the history is reconciled with a controlled migration repair or a
+new baseline; otherwise the CLI may try to replay objects that already exist.
+This bookkeeping issue does not affect the current app while the verified
+production schema remains in place.
+
 ## 3. Enable Sign in with Apple
 
 The app uses Apple's native Authentication Services flow, not browser OAuth.

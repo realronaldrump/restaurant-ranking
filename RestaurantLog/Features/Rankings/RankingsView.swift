@@ -109,6 +109,10 @@ struct RankingsView: View {
                 }
                 .accessibilityLabel("How return scores work")
             }
+            Text("Higher scores mean you’re more likely to go back.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             if store.circleMembers.count > 1 {
                 scopePicker
                     .padding(5)
@@ -303,11 +307,17 @@ struct RankingsView: View {
                 .font(BBTheme.score(29))
                 .foregroundStyle(BBTheme.cream)
                 .contentTransition(.numericText())
-            Text("RETURN SCORE")
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+            Text("RETURN\nSCORE")
                 .font(.caption2.weight(.semibold))
                 .tracking(0.4)
                 .foregroundStyle(BBTheme.cream.opacity(0.72))
+                .multilineTextAlignment(dynamicTypeSize.isAccessibilitySize ? .leading : .trailing)
+                .lineLimit(2)
+                .fixedSize(horizontal: true, vertical: false)
         }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private func compactRankingRowContent(_ row: RankingRowModel) -> some View {
@@ -315,7 +325,6 @@ struct RankingsView: View {
             rankMark(row)
             rankingIdentity(row)
                 .layoutPriority(2)
-            Spacer(minLength: 5)
             rankingScore(row)
         }
     }
@@ -351,18 +360,26 @@ struct RankingsView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(row.location.name)
                 .font(BBTheme.display(25))
-                .lineLimit(2)
+                .lineLimit(3)
                 .minimumScaleFactor(0.85)
+                .allowsTightening(true)
                 .layoutPriority(2)
             rankingMetadata(row)
             if row.split { RankChip(text: "Opinions vary") }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func rankingMetadata(_ row: RankingRowModel) -> some View {
-        HStack(spacing: 6) {
-            Text(row.location.category.shortTitle)
-            if let cuisine = row.location.cuisines.first { Text("· \(cuisine)") }
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(row.location.category.shortTitle)
+                if let cuisine = row.location.cuisines.first { Text("· \(cuisine)") }
+            }
+            if row.opinionCount > 1, let spread = row.scoreSpread {
+                Text("\(row.opinionCount) opinions · \(spread.formatted(.number.precision(.fractionLength(0))))-point range")
+                    .font(.caption2)
+            }
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -371,22 +388,13 @@ struct RankingsView: View {
     }
 
     private func rankingScore(_ row: RankingRowModel) -> some View {
-        VStack(alignment: .trailing, spacing: 2) {
-            Text("\(listScore(row))")
-                .font(BBTheme.score(23))
-                .foregroundStyle(BBTheme.oxblood)
-                .contentTransition(.numericText())
-            Text("RETURN SCORE")
-                .font(.caption2.weight(.semibold))
-                .tracking(0.4)
-                .foregroundStyle(.secondary)
-            if row.opinionCount > 1, let spread = row.scoreSpread {
-                Text("\(row.opinionCount) opinions · \(spread.formatted(.number.precision(.fractionLength(0)))) spread")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.trailing)
-            }
-        }
+        Text("\(listScore(row))")
+            .font(BBTheme.score(23))
+            .foregroundStyle(BBTheme.oxblood)
+            .contentTransition(.numericText())
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .frame(minWidth: 44, alignment: .trailing)
     }
 
     private func evidenceButton(_ row: RankingRowModel) -> some View {

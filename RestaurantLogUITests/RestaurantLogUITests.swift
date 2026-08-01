@@ -42,6 +42,42 @@ final class RestaurantLogUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Merge Duplicates"].exists)
     }
 
+    func testLongRestaurantNameDoesNotCollapseRankingScoreColumn() {
+        app.terminate()
+        app.launchArguments = [
+            "-resetForUITests",
+            "-seedSampleData",
+            "-seedRankingLayoutStressData"
+        ]
+        app.launch()
+        XCTAssertTrue(app.buttons["log-meal-button"].waitForExistence(timeout: 12))
+
+        app.tabBars.buttons["Rankings"].tap()
+        XCTAssertTrue(app.navigationBars["Rankings"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Higher scores mean you’re more likely to go back."].exists)
+
+        let restaurantName = "Mi Mexico Family Mexican Restaurant - Glenwood"
+        let row = app.buttons.matching(
+            NSPredicate(format: "label CONTAINS[c] %@", restaurantName)
+        ).firstMatch
+        for _ in 0..<5 where !row.isHittable { app.swipeUp() }
+
+        XCTAssertTrue(row.exists)
+        let tabBar = app.tabBars.firstMatch
+        for _ in 0..<5 where row.frame.maxY > tabBar.frame.minY { app.swipeUp() }
+        XCTAssertTrue(row.label.localizedCaseInsensitiveContains("return score"))
+        XCTAssertLessThan(
+            row.frame.height,
+            150,
+            "A long restaurant name must wrap without turning the score into a vertical column."
+        )
+
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "Long restaurant ranking row"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+    }
+
     func testAppearancePreferenceChangesAndPersists() {
         openAppearanceSettings()
 

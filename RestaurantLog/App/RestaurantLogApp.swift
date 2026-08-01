@@ -164,6 +164,12 @@ struct RestaurantLogApp: App {
             didCompleteGrandOpening = true
             isOnboardingSessionActive = false
         }
+        if ProcessInfo.processInfo.arguments.contains("-seedRankingLayoutStressData") {
+            _ = preparedStore.seedFamiliarRestaurant(
+                name: "Mi Mexico Family Mexican Restaurant - Glenwood",
+                reaction: .liked
+            )
+        }
         let coordinator = SyncCoordinator(container: persistence.container)
         await coordinator.restoreSession()
 

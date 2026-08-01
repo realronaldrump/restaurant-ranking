@@ -29,9 +29,8 @@ struct StatsView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 24) {
                 VStack(alignment: .leading, spacing: 7) {
-                    Eyebrow("Your dining history")
-                    Text("The shape of your log").font(BBTheme.display(37))
-                    Text("Patterns, favorites, and disagreements across every visit you’ve kept.")
+                    Text("Statistics").font(BBTheme.display(37))
+                    Text(isShared ? "Totals for the whole circle, plus your own reactions and where people disagree." : "Totals across every outing you have logged.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -53,9 +52,9 @@ struct StatsView: View {
 
     private func metricGrid(_ snapshot: StatsSnapshot) -> some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 10)], spacing: 10) {
-            metric("\(snapshot.visitCount)", "meals recorded")
-            metric("\(snapshot.locationCount)", "establishments")
-            metric("\(snapshot.dishCount)", "dishes remembered")
+            metric("\(snapshot.visitCount)", "outings")
+            metric("\(snapshot.locationCount)", "restaurants")
+            metric("\(snapshot.dishCount)", "dishes")
             metric("\(snapshot.cityCount)", "cities")
         }
     }
@@ -71,12 +70,12 @@ struct StatsView: View {
 
     private func reactionDistribution(_ snapshot: StatsSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 13) {
-            EditorialSectionHeader("The verdicts", eyebrow: "Personal reactions")
+            EditorialSectionHeader("Your reactions")
             ForEach(Reaction.allCases) { reaction in
                 let count = snapshot.reactionCounts[reaction] ?? 0
                 VStack(spacing: 7) {
                     HStack {
-                        Label(reaction.rawValue, systemImage: reaction.symbol)
+                        Label(reaction.title, systemImage: reaction.symbol)
                             .font(.callout.weight(.semibold))
                         Spacer()
                         Text("\(count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -85,7 +84,7 @@ struct StatsView: View {
                         .tint(BBTheme.oxblood)
                 }
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel("\(reaction.rawValue), \(count) of \(snapshot.ratingCount) ratings")
+                .accessibilityLabel("\(reaction.title), \(count) of \(snapshot.ratingCount) reactions")
             }
         }.editorialCard()
     }
@@ -93,12 +92,12 @@ struct StatsView: View {
     @ViewBuilder private func contested(_ split: [CircleLocationScore]) -> some View {
         if !split.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
-                EditorialSectionHeader("Most contested", eyebrow: "Split decisions")
+                EditorialSectionHeader("Where you disagree")
                 ForEach(split.prefix(5)) { item in
                     let ordered = item.memberScores.sorted { $0.score.score < $1.score.score }
                     let lowest = ordered.first
                     let highest = ordered.last
-                    Button { router.morePath.append(.location(item.id)) } label: {
+                    Button { router.morePath.append(.location(item.id, rankingScope: .circle)) } label: {
                         HStack(spacing: 12) {
                             IconTile(symbol: "arrow.left.and.right", emphasized: true)
                             VStack(alignment: .leading) {
@@ -108,7 +107,7 @@ struct StatsView: View {
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                             Spacer(minLength: 8)
-                            Text("\(lowest?.score.displayScore ?? "—")–\(highest?.score.displayScore ?? "—")")
+                            Text("\(lowest.map { "\($0.score.listScore)" } ?? "—")–\(highest.map { "\($0.score.listScore)" } ?? "—")")
                                 .font(BBTheme.score(19)).foregroundStyle(BBTheme.oxblood)
                         }
                         .frame(minHeight: 62)
@@ -124,9 +123,9 @@ struct StatsView: View {
     @ViewBuilder private func categoryLeaders(_ leaders: [StatsCategoryLeader]) -> some View {
         if !leaders.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
-                EditorialSectionHeader("Category leaders", eyebrow: "Top rated")
+                EditorialSectionHeader("Top in each category")
                 ForEach(leaders) { leader in
-                    Button { router.morePath.append(.location(leader.score.id)) } label: {
+                    Button { router.morePath.append(.location(leader.score.id, rankingScope: store.currentPerson.map { .person($0.id) })) } label: {
                         HStack(spacing: 12) {
                             IconTile(symbol: leader.category.symbol)
                             VStack(alignment: .leading) {
@@ -134,7 +133,7 @@ struct StatsView: View {
                                 Text(leader.score.location.name).font(.headline)
                             }
                             Spacer(minLength: 8)
-                            Text(leader.score.displayScore).font(BBTheme.score(22))
+                            Text("\(leader.score.listScore)").font(BBTheme.score(22))
                             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
                         }
                         .frame(minHeight: 62)
@@ -149,14 +148,14 @@ struct StatsView: View {
     private func memoryStats(_ snapshot: StatsSnapshot) -> some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 12) {
-                memoryMetric("\(snapshot.returnVisitCount)", "RETURN VISITS")
+                memoryMetric("\(snapshot.returnVisitCount)", "REPEAT OUTINGS")
                 Divider()
-                memoryMetric("\(snapshot.memoryCount)", "MEMORIES KEPT")
+                memoryMetric("\(snapshot.memoryCount)", "MEMORIES")
             }
             VStack(spacing: 12) {
-                memoryMetric("\(snapshot.returnVisitCount)", "RETURN VISITS")
+                memoryMetric("\(snapshot.returnVisitCount)", "REPEAT OUTINGS")
                 Divider()
-                memoryMetric("\(snapshot.memoryCount)", "MEMORIES KEPT")
+                memoryMetric("\(snapshot.memoryCount)", "MEMORIES")
             }
         }
         .editorialCard()
@@ -210,6 +209,8 @@ struct StatsView: View {
             memoryCount: memoryCount
         )
     }
+
+    private var isShared: Bool { store.circleMembers.count > 1 }
 
     private func disagreementDescription(
         lowest: PersonLocationScore?,

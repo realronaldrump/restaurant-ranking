@@ -1,6 +1,6 @@
 # Privacy Policy
 
-**Effective July 29, 2026**
+**Effective August 1, 2026**
 
 Big Beautiful Restaurant Log is designed to keep dining history private. There is no advertising, analytics, data broker, or tracking SDK. The app works locally without an account. Optional circle syncing uses a developer-operated service, described below, that stores dining records only in encrypted form and cannot read them.
 

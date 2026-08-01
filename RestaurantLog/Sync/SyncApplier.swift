@@ -126,6 +126,7 @@ enum SyncApplier {
             object.name = value.name
             object.isMe = value.isMe
             object.isCircleMember = value.isCircleMember
+            object.isArchived = value.isArchived
             object.colorHex = value.colorHex
             object.createdAt = value.createdAt
             object.circle = circle
@@ -144,9 +145,16 @@ enum SyncApplier {
             object.phone = value.phone
             object.urlString = value.urlString
             object.hoursText = value.hoursText
-            object.latitude = value.latitude
-            object.longitude = value.longitude
-            object.hasCoordinates = value.hasCoordinates
+            if value.hasCoordinates,
+               StoredCoordinatePolicy.isValid(latitude: value.latitude, longitude: value.longitude) {
+                object.latitude = value.latitude
+                object.longitude = value.longitude
+                object.hasCoordinates = true
+            } else {
+                object.latitude = 0
+                object.longitude = 0
+                object.hasCoordinates = false
+            }
             object.isClosed = value.isClosed
             object.sourceIdentifier = value.sourceIdentifier
             object.cuisines = value.cuisines
@@ -180,9 +188,16 @@ enum SyncApplier {
             object.priceBand = value.priceBand
             object.occasion = value.occasion
             object.memory = value.memory
-            object.latitude = value.latitude
-            object.longitude = value.longitude
-            object.hasCoordinates = value.hasCoordinates
+            if value.hasCoordinates,
+               StoredCoordinatePolicy.isValid(latitude: value.latitude, longitude: value.longitude) {
+                object.latitude = value.latitude
+                object.longitude = value.longitude
+                object.hasCoordinates = true
+            } else {
+                object.latitude = 0
+                object.longitude = 0
+                object.hasCoordinates = false
+            }
             object.createdAt = value.createdAt
             object.isShared = value.isShared
             object.createdByID = value.createdByID
@@ -216,6 +231,28 @@ enum SyncApplier {
             object.wouldOrderAgain = value.wouldOrderAgain
             object.hasWouldOrderAgain = value.hasWouldOrderAgain
             object.createdAt = value.createdAt
+            object.visit = visit
+
+        case .dinerEntryReaction:
+            let value = try decode(AppBackupArchive.DinerEntryReactionRecord.self)
+            try validateIdentity(value.id)
+            guard value.authorPersonID != value.targetPersonID else {
+                throw SyncError.entityMismatch("diner entry reaction people")
+            }
+            let visit = try requiredLink(VisitEntity.self, value.visitID)
+            _ = try requiredLink(PersonEntity.self, value.authorPersonID)
+            _ = try requiredLink(PersonEntity.self, value.targetPersonID)
+            guard visit.rating(for: value.targetPersonID) != nil else { throw DeferredReference() }
+            let object: DinerEntryReactionEntity = try upsertObject(
+                DinerEntryReactionEntity.self,
+                id: value.id,
+                in: context
+            )
+            object.authorPersonID = value.authorPersonID
+            object.targetPersonID = value.targetPersonID
+            object.kind = value.kind
+            object.createdAt = value.createdAt
+            object.updatedAt = value.updatedAt
             object.visit = visit
 
         case .dishEntry:
@@ -356,7 +393,7 @@ enum SyncApplier {
             NSPredicate(format: "circle.id == %@", circleID as CVarArg)
         case .dish:
             NSPredicate(format: "location.circle.id == %@", circleID as CVarArg)
-        case .participant, .rating, .dishEntry, .photo:
+        case .participant, .rating, .dinerEntryReaction, .dishEntry, .photo:
             NSPredicate(format: "visit.circle.id == %@", circleID as CVarArg)
         }
     }
@@ -376,6 +413,7 @@ enum SyncApplier {
         case let value as VisitEntity: value.circle?.id
         case let value as VisitParticipantEntity: value.visit?.circle?.id
         case let value as RatingEntity: value.visit?.circle?.id
+        case let value as DinerEntryReactionEntity: value.visit?.circle?.id
         case let value as DishEntryEntity: value.visit?.circle?.id
         case let value as PhotoEntity: value.visit?.circle?.id
         case let value as ComparisonEntity: value.circle?.id
@@ -428,6 +466,7 @@ enum SyncApplier {
         case .visit: "VisitEntity"
         case .participant: "VisitParticipantEntity"
         case .rating: "RatingEntity"
+        case .dinerEntryReaction: "DinerEntryReactionEntity"
         case .dish: "DishEntity"
         case .dishEntry: "DishEntryEntity"
         case .photo: "PhotoEntity"

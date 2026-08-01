@@ -443,6 +443,143 @@ final class SyncBaselineTests: XCTestCase {
         XCTAssertEqual(restored.watermark, 42)
         XCTAssertEqual(restored.keyedFingerprints, [key: "abc"])
     }
+
+    func testOlderBaselineDecodesWithNoCompletedPhotoCleanup() throws {
+        let circleID = UUID()
+        let legacy = Data(#"{"circleID":"\#(circleID.uuidString)","watermark":42,"fingerprints":{},"uploadedPhotoIDs":[],"downloadedPhotoIDs":[]}"#.utf8)
+
+        let restored = try JSONDecoder().decode(SyncBaseline.self, from: legacy)
+
+        XCTAssertTrue(restored.cleanedPhotoIDs.isEmpty)
+    }
+
+    func testCompletedPhotoCleanupIsNotPlannedAgainUntilThePhotoIsLive() {
+        let deleted = UUID()
+        let newDeletion = UUID()
+
+        XCTAssertEqual(
+            SyncPhotoCleanup.pending(
+                candidates: [deleted, newDeletion],
+                completed: [deleted],
+                livePhotoIDs: []
+            ),
+            [newDeletion]
+        )
+        XCTAssertEqual(
+            SyncPhotoCleanup.completedAfterReconcilingLivePhotos(
+                completed: [deleted],
+                livePhotoIDs: [deleted]
+            ),
+            []
+        )
+    }
+
+    func testRemotePhotoTombstoneRemainsCleanupCandidateAfterLocalMetadataIsGone() {
+        let photoID = UUID()
+        let key = SyncKey(kind: .photo, id: photoID)
+        let remote = [key: DecodedSyncRecord(
+            key: key,
+            payload: nil,
+            fingerprint: nil,
+            deleted: true,
+            updatedMS: 42,
+            deviceID: nil
+        )]
+        let retryPlan = SyncPlanner.plan(local: [:], remote: remote, baseline: [:])
+
+        XCTAssertTrue(retryPlan.isEmpty)
+        XCTAssertEqual(
+            SyncPhotoCleanup.deletionCandidates(
+                plannedKeys: retryPlan.tombstone + retryPlan.deleteLocally,
+                remote: remote
+            ),
+            [photoID]
+        )
+    }
+}
+
+final class CircleEnrollmentDecisionTests: XCTestCase {
+    private let localPersonID = UUID()
+    private let serverPersonID = UUID()
+
+    func testExistingMembershipUsesItsImmutableServerIdentityWhenLocalIdentityIsMissing() {
+        XCTAssertEqual(
+            CircleEnrollmentDecision.decide(
+                hasKey: true,
+                membershipPersonID: serverPersonID,
+                localPersonID: nil
+            ),
+            .useMembership(serverPersonID)
+        )
+    }
+
+    func testExistingMembershipRejectsADifferentLocalIdentity() {
+        XCTAssertEqual(
+            CircleEnrollmentDecision.decide(
+                hasKey: true,
+                membershipPersonID: serverPersonID,
+                localPersonID: localPersonID
+            ),
+            .identityConflict
+        )
+    }
+
+    func testExistingMembershipWithoutAKeyNeedsAJoinCode() {
+        XCTAssertEqual(
+            CircleEnrollmentDecision.decide(
+                hasKey: false,
+                membershipPersonID: serverPersonID,
+                localPersonID: localPersonID
+            ),
+            .missingKey
+        )
+    }
+
+    func testAKeyWithoutMembershipMustRotateInsteadOfResurrectingACircle() {
+        XCTAssertEqual(
+            CircleEnrollmentDecision.decide(
+                hasKey: true,
+                membershipPersonID: nil,
+                localPersonID: localPersonID
+            ),
+            .needsFreshCircleIdentity
+        )
+    }
+
+    func testBrandNewCircleCanBeCreatedForTheCurrentPerson() {
+        XCTAssertEqual(
+            CircleEnrollmentDecision.decide(
+                hasKey: false,
+                membershipPersonID: nil,
+                localPersonID: localPersonID
+            ),
+            .create(localPersonID)
+        )
+    }
+}
+
+final class CircleRecoveryCandidateTests: XCTestCase {
+    func testFreshInstallPrefersASharedCircleOverLegacyPrivateOrphans() throws {
+        let shared = CircleRecoveryCandidate(
+            circleID: UUID(), memberCount: 2, lastActivity: Date(timeIntervalSince1970: 100)
+        )
+        let newerOrphan = CircleRecoveryCandidate(
+            circleID: UUID(), memberCount: 1, lastActivity: Date(timeIntervalSince1970: 200)
+        )
+
+        XCTAssertEqual(CircleRecoveryCandidate.preferred(from: [newerOrphan, shared]), shared)
+    }
+
+    func testFreshInstallUsesMostRecentlyActiveCircleWhenNoneAreShared() throws {
+        let older = CircleRecoveryCandidate(
+            circleID: UUID(), memberCount: 1, lastActivity: Date(timeIntervalSince1970: 100)
+        )
+        let newer = CircleRecoveryCandidate(
+            circleID: UUID(), memberCount: 1, lastActivity: Date(timeIntervalSince1970: 200)
+        )
+
+        XCTAssertEqual(CircleRecoveryCandidate.preferred(from: [newer, older]), newer)
+    }
 }
 
 // MARK: - Configuration
@@ -539,6 +676,9 @@ final class SyncSnapshotTests: XCTestCase {
         let circleID = try XCTUnwrap(store.activeCircleID)
         let location = store.createLocation(name: "Cafe Cappuccino", category: .fullService)
         let visit = store.logVisit(at: location, reaction: .loved)
+        let michelle = try XCTUnwrap(store.otherCircleMembers.first)
+        _ = store.addRating(to: visit, personID: michelle.id, reaction: .liked)
+        XCTAssertTrue(store.setCoonReaction(.unexpectedlyWonderful, to: michelle.id, in: visit))
         store.addPhoto(fullData: Data([0x01, 0x02]), thumbnailData: Data([0x03]), to: visit)
         store.toggleWant(store.createLocation(name: "Someday Diner", category: .fullService))
         store.recordAnchor(for: location, value: 88)
@@ -553,6 +693,7 @@ final class SyncSnapshotTests: XCTestCase {
         XCTAssertTrue(snapshot.records.keys.contains { $0.kind == .circle })
         XCTAssertTrue(snapshot.records.keys.contains { $0.kind == .location })
         XCTAssertTrue(snapshot.records.keys.contains { $0.kind == .visit })
+        XCTAssertTrue(snapshot.records.keys.contains { $0.kind == .dinerEntryReaction })
         XCTAssertTrue(snapshot.records.keys.contains { $0.kind == .photo })
         XCTAssertEqual(snapshot.photoIDs.count, 1)
 

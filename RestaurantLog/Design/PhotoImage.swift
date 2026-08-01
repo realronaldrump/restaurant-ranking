@@ -2,6 +2,20 @@ import ImageIO
 import SwiftUI
 
 @MainActor
+struct PhotoImageSnapshot: Identifiable {
+    let id: UUID
+    let thumbnailData: Data?
+    let fullData: Data?
+
+    init?(photo: PhotoEntity) {
+        guard photo.isAlive else { return nil }
+        id = photo.id
+        thumbnailData = photo.thumbnailData
+        fullData = photo.fullData
+    }
+}
+
+@MainActor
 enum PhotoImageCache {
     private static let cache: NSCache<NSString, UIImage> = {
         let cache = NSCache<NSString, UIImage>()
@@ -51,9 +65,14 @@ enum PhotoImageCache {
 /// and when `displayPixels` is set a sharper rendition is decoded off the main thread.
 @MainActor
 struct PhotoImage: View {
-    let photo: PhotoEntity
-    var displayPixels: CGFloat = 0
+    private let photo: PhotoImageSnapshot?
+    private let displayPixels: CGFloat
     @State private var image: UIImage?
+
+    init(photo: PhotoEntity, displayPixels: CGFloat = 0) {
+        self.photo = PhotoImageSnapshot(photo: photo)
+        self.displayPixels = displayPixels
+    }
 
     var body: some View {
         Group {
@@ -68,11 +87,13 @@ struct PhotoImage: View {
     }
 
     private var loadID: String {
-        "\(photo.id.uuidString)-\(Int(displayPixels))"
+        guard let photo else { return "unavailable-\(Int(displayPixels))" }
+        return "\(photo.id.uuidString)-\(Int(displayPixels))"
     }
 
     private func loadImage() async {
         image = nil
+        guard let photo else { return }
         let thumbnailKey = "thumb-\(photo.id.uuidString)"
         if let hit = PhotoImageCache.cached(thumbnailKey) {
             image = hit

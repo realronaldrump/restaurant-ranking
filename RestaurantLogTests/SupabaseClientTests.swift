@@ -126,6 +126,35 @@ final class SupabaseClientTests: XCTestCase {
         ])
     }
 
+    /// Supabase Storage's legacy API reports a missing object as HTTP 400 even
+    /// though the structured error is `not_found`. Deleting an already deleted
+    /// photo is success, not a sync failure.
+    func testDeletingAMissingPhotoIsIdempotentForLegacyStorageResponses() async throws {
+        SupabaseURLProtocol.respond { request in
+            XCTAssertEqual(request.httpMethod, "DELETE")
+            return (400, Data(#"{"statusCode":"404","error":"not_found","message":"Object not found"}"#.utf8))
+        }
+        let client = makeClient()
+
+        try await client.deletePhoto(circleID: circleID, objectKey: "photo.full")
+
+        XCTAssertEqual(SupabaseURLProtocol.requests.count, 1)
+    }
+
+    func testDeletingAPhotoStillSurfacesUnrelatedBadRequests() async throws {
+        SupabaseURLProtocol.respond { _ in
+            (400, Data(#"{"statusCode":"400","error":"invalid_request","message":"Invalid object key"}"#.utf8))
+        }
+        let client = makeClient()
+
+        do {
+            try await client.deletePhoto(circleID: circleID, objectKey: "photo.full")
+            XCTFail("Expected a malformed deletion request to fail")
+        } catch let error as SyncTransportError {
+            XCTAssertEqual(error, .requestFailed(400, "Invalid object key"))
+        }
+    }
+
     func testCurrentAccountMembershipQueryCannotReturnPeerRows() async throws {
         SupabaseURLProtocol.respond { _ in (200, Data("[]".utf8)) }
         let client = makeClient()
@@ -265,6 +294,79 @@ final class SupabaseClientTests: XCTestCase {
                 userID: userID
             )
         )
+    }
+}
+
+@MainActor
+final class SyncCoordinatorLifecycleTests: XCTestCase {
+    private let userID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+    private let ownerCircleID = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+    private let memberCircleID = UUID(uuidString: "44444444-4444-4444-4444-444444444444")!
+
+    override func tearDown() {
+        SupabaseURLProtocol.reset()
+        super.tearDown()
+    }
+
+    func testResetRetiresEveryOwnedAndJoinedCircleBeforeSucceeding() async throws {
+        let memberships = """
+        [
+          {"circle_id":"\(ownerCircleID.uuidString)","user_id":"\(userID.uuidString)","person_id":"33333333-3333-3333-3333-333333333333","role":"owner","joined_at":"2026-08-01T15:00:00Z","last_seen_at":null,"app_version":"3.2 (20)"},
+          {"circle_id":"\(memberCircleID.uuidString)","user_id":"\(userID.uuidString)","person_id":"55555555-5555-5555-5555-555555555555","role":"member","joined_at":"2026-08-01T15:01:00Z","last_seen_at":null,"app_version":"3.2 (20)"}
+        ]
+        """
+        SupabaseURLProtocol.respond { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", "/rest/v1/circle_members"):
+                return (200, Data(memberships.utf8))
+            case ("POST", "/rest/v1/rpc/begin_circle_deletion"):
+                return (200, Data("null".utf8))
+            case ("POST", "/storage/v1/object/list/circle-photos"):
+                return (200, Data("[]".utf8))
+            case ("POST", "/rest/v1/rpc/finish_circle_deletion"):
+                return (200, Data("null".utf8))
+            case ("POST", "/rest/v1/rpc/leave_circle"):
+                return (200, Data("null".utf8))
+            default:
+                return (500, Data("unexpected request".utf8))
+            }
+        }
+        let configuration = SyncConfiguration(
+            baseURL: URL(string: "https://project.supabase.co")!,
+            anonKey: "public-anon-key"
+        )
+        let sessionConfiguration = URLSessionConfiguration.ephemeral
+        sessionConfiguration.protocolClasses = [SupabaseURLProtocol.self]
+        let client = SupabaseClient(
+            configuration: configuration,
+            session: URLSession(configuration: sessionConfiguration),
+            initialSession: .init(
+                accessToken: "access",
+                refreshToken: "refresh",
+                expiresAt: .now.addingTimeInterval(3_600),
+                userID: userID
+            )
+        )
+        let persistence = PersistenceController(inMemory: true)
+        let coordinator = SyncCoordinator(
+            container: persistence.container,
+            configuration: configuration,
+            client: client
+        )
+        await coordinator.restoreSession()
+
+        let resetSucceeded = await coordinator.resetSyncedCircles()
+        XCTAssertTrue(resetSucceeded)
+
+        XCTAssertEqual(SupabaseURLProtocol.requests.map(\.url?.path), [
+            "/rest/v1/circle_members",
+            "/rest/v1/rpc/begin_circle_deletion",
+            "/storage/v1/object/list/circle-photos",
+            "/rest/v1/rpc/finish_circle_deletion",
+            "/rest/v1/rpc/leave_circle"
+        ])
+        XCTAssertTrue(coordinator.isSignedIn)
+        XCTAssertNil(coordinator.lastError)
     }
 }
 

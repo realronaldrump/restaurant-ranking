@@ -19,13 +19,31 @@ struct CSVImportSummary: Sendable {
 }
 
 enum CSVImporter {
+    struct ParseLimits: Sendable {
+        let maxRows: Int
+        let maxFieldsPerRow: Int
+        let maxFieldCharacters: Int
+
+        static let unbounded = ParseLimits(
+            maxRows: .max,
+            maxFieldsPerRow: .max,
+            maxFieldCharacters: .max
+        )
+    }
+
+    enum ParseLimitError: Error, Equatable {
+        case tooManyRows
+        case tooManyFields
+        case fieldTooLarge
+    }
+
     enum ImportError: LocalizedError {
         case unreadable, noHeader, noRestaurantColumn
         var errorDescription: String? {
             switch self {
             case .unreadable: "The file could not be read as UTF-8 or UTF-16 text."
             case .noHeader: "The CSV has no header row."
-            case .noRestaurantColumn: "The CSV needs a restaurant, establishment, place, or name column."
+            case .noRestaurantColumn: "The CSV needs a restaurant, place, or name column."
             }
         }
     }
@@ -72,39 +90,75 @@ enum CSVImporter {
     }
 
     static func parseRows(_ text: String) -> [[String]] {
+        (try? parseRows(text, limits: .unbounded)) ?? []
+    }
+
+    static func parseRows(_ text: String, limits: ParseLimits) throws -> [[String]] {
         var rows: [[String]] = []
         var row: [String] = []
         var field = ""
+        var fieldCharacterCount = 0
         var quoted = false
         var index = text.startIndex
+
+        func appendToField(_ character: Character) throws {
+            guard fieldCharacterCount < limits.maxFieldCharacters else {
+                throw ParseLimitError.fieldTooLarge
+            }
+            field.append(character)
+            fieldCharacterCount += 1
+        }
+
+        func finishField() throws {
+            guard row.count < limits.maxFieldsPerRow else {
+                throw ParseLimitError.tooManyFields
+            }
+            row.append(field)
+            field.removeAll(keepingCapacity: true)
+            fieldCharacterCount = 0
+        }
+
+        func finishRow() throws {
+            try finishField()
+            if row.contains(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
+                guard rows.count < limits.maxRows else {
+                    throw ParseLimitError.tooManyRows
+                }
+                rows.append(row)
+            }
+            row.removeAll(keepingCapacity: true)
+        }
+
         while index < text.endIndex {
             let character = text[index]
             let nextIndex = text.index(after: index)
             if character == "\"" {
                 if quoted, nextIndex < text.endIndex, text[nextIndex] == "\"" {
-                    field.append("\"")
+                    try appendToField("\"")
                     index = text.index(after: nextIndex)
                     continue
                 } else { quoted.toggle() }
             } else if character == ",", !quoted {
-                row.append(field); field = ""
+                try finishField()
             } else if (character == "\n" || character == "\r"), !quoted {
-                row.append(field); rows.append(row); row = []; field = ""
+                try finishRow()
                 if character == "\r", nextIndex < text.endIndex, text[nextIndex] == "\n" {
                     index = text.index(after: nextIndex)
                     continue
                 }
             } else if character == "\r", quoted {
-                field.append("\n")
+                try appendToField("\n")
                 if nextIndex < text.endIndex, text[nextIndex] == "\n" {
                     index = text.index(after: nextIndex)
                     continue
                 }
-            } else { field.append(character) }
+            } else {
+                try appendToField(character)
+            }
             index = nextIndex
         }
-        if !field.isEmpty || !row.isEmpty { row.append(field); rows.append(row) }
-        return rows.filter { $0.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } }
+        if !field.isEmpty || !row.isEmpty { try finishRow() }
+        return rows
     }
 
     private static func normalize(_ value: String) -> String {

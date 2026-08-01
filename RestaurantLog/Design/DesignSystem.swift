@@ -29,7 +29,24 @@ enum AppearancePreference: String, CaseIterable, Identifiable {
 enum BBTheme {
     static let paper = Color("Paper")
     static let ink = Color("Ink")
-    static let oxblood = Color("Oxblood")
+    /// Oxblood used as ink, strokes, and small accents. It lightens in dark
+    /// mode so it remains legible on the paper background.
+    static let oxbloodInk = Color("Oxblood")
+    /// Oxblood used as a filled surface. Unlike the ink token, this remains
+    /// deep in dark mode so cream text keeps sufficient contrast and the
+    /// editorial identity does not turn into a bright pink control language.
+    static let oxbloodFill = adaptive(
+        light: UIColor(red: 0.435, green: 0.114, blue: 0.169, alpha: 1),
+        dark: UIColor(red: 0.365, green: 0.075, blue: 0.125, alpha: 1)
+    )
+    /// Semantic destructive fill. It deliberately differs from the brand fill
+    /// so a dangerous action is communicated by more than wording alone.
+    static let destructiveFill = adaptive(
+        light: UIColor(red: 0.610, green: 0.105, blue: 0.125, alpha: 1),
+        dark: UIColor(red: 0.690, green: 0.150, blue: 0.175, alpha: 1)
+    )
+    /// Compatibility alias for existing text/accent call sites.
+    static let oxblood = oxbloodInk
     /// The light-paper tone as a fixed color, for text and motifs that sit on
     /// fixed dark fills (artwork gradients) and must stay legible in dark mode.
     static let cream = Color(red: 0.957, green: 0.922, blue: 0.867)
@@ -68,17 +85,31 @@ enum BBTheme {
     }
 
     static func display(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
-        .system(size: scaled(size, cap: 1.4), weight: weight, design: .serif)
+        .system(size: scaled(size, minimumBodyScaleRatio: 0.86), weight: weight, design: .serif)
     }
     static func score(_ size: CGFloat) -> Font {
-        .system(size: scaled(size, cap: 1.3), weight: .medium, design: .serif).monospacedDigit()
+        .system(size: scaled(size, minimumBodyScaleRatio: 0.82), weight: .medium, design: .serif).monospacedDigit()
     }
     static let eyebrow = Font.system(.caption, design: .rounded, weight: .bold).smallCaps()
 
-    /// Display and score sizes follow the user's Dynamic Type setting, capped
-    /// so the biggest headlines stay headlines instead of filling the screen.
-    private static func scaled(_ size: CGFloat, cap: CGFloat) -> CGFloat {
-        min(UIFontMetrics(forTextStyle: .title2).scaledValue(for: size), size * cap)
+    /// The largest an editorial size may grow, as a multiple of its base size.
+    /// Body text keeps climbing past this at accessibility sizes, which is the
+    /// point: the ceiling lets headlines stop growing before they swallow the
+    /// screen while the floor keeps them ahead of body copy until then.
+    private static let maximumDisplayScale: CGFloat = 1.9
+
+    /// Large editorial type follows Dynamic Type without falling behind body
+    /// text at accessibility sizes, and without running away either.
+    ///
+    /// The proportional floor preserves the hierarchy that a plain title metric
+    /// loses once body text scales past it; the ceiling is what actually bounds
+    /// growth, because the floor rises with the body scale (roughly 3x at the
+    /// largest accessibility size) and would otherwise dominate unopposed.
+    private static func scaled(_ size: CGFloat, minimumBodyScaleRatio: CGFloat) -> CGFloat {
+        let titleScaled = UIFontMetrics(forTextStyle: .title2).scaledValue(for: size)
+        let bodyScale = UIFontMetrics(forTextStyle: .body).scaledValue(for: 17) / 17
+        let floor = size * bodyScale * minimumBodyScaleRatio
+        return min(size * maximumDisplayScale, max(titleScaled, floor))
     }
 
     private static func adaptive(light: UIColor, dark: UIColor) -> Color {
@@ -147,6 +178,7 @@ extension View {
     func editorialForm() -> some View {
         scrollContentBackground(.hidden)
             .background(PaperBackground())
+            .foregroundStyle(BBTheme.ink)
             .tint(BBTheme.oxblood)
             .toolbarBackground(BBTheme.paper.opacity(0.96), for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
@@ -179,19 +211,19 @@ struct PrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.headline)
-            .foregroundStyle(BBTheme.paper)
+            .foregroundStyle(BBTheme.cream)
             .padding(.horizontal, 18)
             .frame(maxWidth: .infinity)
             .frame(minHeight: 56)
             .background(
-                configuration.isPressed ? BBTheme.oxblood.opacity(0.78) : BBTheme.oxblood,
+                configuration.isPressed ? BBTheme.oxbloodFill.opacity(0.78) : BBTheme.oxbloodFill,
                 in: RoundedRectangle(cornerRadius: BBTheme.Radius.control, style: .continuous)
             )
             .overlay {
                 RoundedRectangle(cornerRadius: BBTheme.Radius.control, style: .continuous)
-                    .stroke(BBTheme.oxblood.opacity(0.9), lineWidth: 1)
+                    .stroke(BBTheme.oxbloodFill.opacity(0.9), lineWidth: 1)
             }
-            .shadow(color: BBTheme.oxblood.opacity(configuration.isPressed ? 0 : 0.16), radius: 10, y: 5)
+            .shadow(color: BBTheme.oxbloodFill.opacity(configuration.isPressed ? 0 : 0.16), radius: 10, y: 5)
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.985 : 1)
             .opacity(isEnabled ? 1 : 0.4)
             .animation(reduceMotion ? nil : .spring(duration: 0.22), value: configuration.isPressed)
@@ -223,6 +255,458 @@ struct SecondaryButtonStyle: ButtonStyle {
     }
 }
 
+// MARK: - Editorial prompts
+
+/// The app-owned counterpart to a system alert or confirmation dialog.
+/// System-owned permission prompts, document pickers, and sign-in surfaces
+/// intentionally remain native iOS UI.
+@MainActor
+struct EditorialPrompt {
+    enum Tone {
+        case information
+        case decision
+        case destructive
+        case error
+
+        fileprivate var symbol: String {
+            switch self {
+            case .information: "info.circle.fill"
+            case .decision: "checkmark.seal.fill"
+            case .destructive: "exclamationmark.triangle.fill"
+            case .error: "exclamationmark.octagon.fill"
+            }
+        }
+    }
+
+    struct Action: Identifiable {
+        enum Role {
+            case primary
+            case secondary
+            case destructive
+            case cancel
+        }
+
+        let id: String
+        let title: String
+        let symbol: String?
+        let role: Role
+        let isEnabled: Bool
+        fileprivate let perform: @MainActor () -> Void
+
+        init(
+            _ title: String,
+            id: String? = nil,
+            symbol: String? = nil,
+            role: Role = .secondary,
+            isEnabled: Bool = true,
+            perform: @escaping @MainActor () -> Void = {}
+        ) {
+            self.id = id ?? title.lowercased().replacingOccurrences(of: " ", with: "-")
+            self.title = title
+            self.symbol = symbol
+            self.role = role
+            self.isEnabled = isEnabled
+            self.perform = perform
+        }
+
+        static func primary(
+            _ title: String,
+            symbol: String? = nil,
+            isEnabled: Bool = true,
+            perform: @escaping @MainActor () -> Void
+        ) -> Self {
+            .init(title, symbol: symbol, role: .primary, isEnabled: isEnabled, perform: perform)
+        }
+
+        static func secondary(
+            _ title: String,
+            symbol: String? = nil,
+            perform: @escaping @MainActor () -> Void
+        ) -> Self {
+            .init(title, symbol: symbol, role: .secondary, perform: perform)
+        }
+
+        static func destructive(
+            _ title: String,
+            symbol: String? = nil,
+            perform: @escaping @MainActor () -> Void
+        ) -> Self {
+            .init(title, symbol: symbol, role: .destructive, perform: perform)
+        }
+
+        static func cancel(
+            _ title: String = "Cancel",
+            perform: @escaping @MainActor () -> Void = {}
+        ) -> Self {
+            .init(title, role: .cancel, perform: perform)
+        }
+    }
+
+    struct Field {
+        let label: String
+        let text: Binding<String>
+        let capitalization: TextInputAutocapitalization
+        let submitLabel: SubmitLabel
+
+        init(
+            _ label: String,
+            text: Binding<String>,
+            capitalization: TextInputAutocapitalization = .sentences,
+            submitLabel: SubmitLabel = .done
+        ) {
+            self.label = label
+            self.text = text
+            self.capitalization = capitalization
+            self.submitLabel = submitLabel
+        }
+    }
+
+    let title: String
+    let message: String?
+    let tone: Tone
+    let field: Field?
+    let actions: [Action]
+
+    init(
+        _ title: String,
+        message: String? = nil,
+        tone: Tone = .decision,
+        field: Field? = nil,
+        actions: [Action] = []
+    ) {
+        self.title = title
+        self.message = message
+        self.tone = tone
+        self.field = field
+        self.actions = actions
+    }
+
+    static func information(
+        _ title: String,
+        message: String,
+        dismissTitle: String = "Done",
+        onDismiss: @escaping @MainActor () -> Void = {}
+    ) -> Self {
+        .init(
+            title,
+            message: message,
+            tone: .information,
+            actions: [.primary(dismissTitle, symbol: "checkmark", perform: onDismiss)]
+        )
+    }
+
+    static func error(
+        _ title: String,
+        message: String,
+        dismissTitle: String = "OK",
+        onDismiss: @escaping @MainActor () -> Void = {}
+    ) -> Self {
+        .init(
+            title,
+            message: message,
+            tone: .error,
+            actions: [.primary(dismissTitle, perform: onDismiss)]
+        )
+    }
+
+    static func destructive(
+        _ title: String,
+        message: String,
+        actionTitle: String,
+        actionSymbol: String? = nil,
+        cancelTitle: String = "Cancel",
+        perform: @escaping @MainActor () -> Void
+    ) -> Self {
+        .init(
+            title,
+            message: message,
+            tone: .destructive,
+            actions: [
+                .destructive(actionTitle, symbol: actionSymbol, perform: perform),
+                .cancel(cancelTitle)
+            ]
+        )
+    }
+}
+
+@MainActor
+private struct EditorialPromptBooleanModifier: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Binding var isPresented: Bool
+    @State private var snapshot: EditorialPrompt?
+    let makePrompt: @MainActor () -> EditorialPrompt
+
+    func body(content: Content) -> some View {
+        ZStack {
+            content
+                .allowsHitTesting(!isPresented)
+                .accessibilityHidden(isPresented)
+            if isPresented {
+                let prompt = snapshot ?? makePrompt()
+                EditorialPromptHost(prompt: prompt) {
+                    snapshot = nil
+                    isPresented = false
+                }
+                .zIndex(10)
+                .transition(.opacity.combined(with: .scale(scale: 0.975)))
+            }
+        }
+        .animation(reduceMotion ? nil : .spring(duration: 0.3, bounce: 0.12), value: isPresented)
+        .onChange(of: isPresented) { _, presented in
+            snapshot = presented ? makePrompt() : nil
+        }
+    }
+}
+
+@MainActor
+private struct EditorialPromptItemModifier<Item>: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Binding var item: Item?
+    @State private var snapshot: Item?
+    let makePrompt: @MainActor (Item) -> EditorialPrompt
+
+    func body(content: Content) -> some View {
+        let presentedItem = snapshot ?? item
+        ZStack {
+            content
+                .allowsHitTesting(presentedItem == nil)
+                .accessibilityHidden(presentedItem != nil)
+            if let presentedItem {
+                EditorialPromptHost(prompt: makePrompt(presentedItem)) {
+                    snapshot = nil
+                    self.item = nil
+                }
+                .zIndex(10)
+                .transition(.opacity.combined(with: .scale(scale: 0.975)))
+            }
+        }
+        .animation(reduceMotion ? nil : .spring(duration: 0.3, bounce: 0.12), value: presentedItem != nil)
+        .onChange(of: item != nil) { _, presented in
+            snapshot = presented ? item : nil
+        }
+    }
+}
+
+@MainActor
+private struct EditorialPromptHost: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
+    @AccessibilityFocusState private var titleIsFocused: Bool
+    @FocusState private var fieldIsFocused: Bool
+    @State private var didChooseAction = false
+
+    let prompt: EditorialPrompt
+    let dismiss: @MainActor () -> Void
+
+    private var normalizedActions: [EditorialPrompt.Action] {
+        var result = prompt.actions
+        if result.isEmpty {
+            result = [.primary("Done", perform: {})]
+        }
+        if result.contains(where: { $0.role == .destructive }),
+           !result.contains(where: { $0.role == .cancel }) {
+            result.append(.cancel())
+        }
+        return result
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                Color.black.opacity(colorScheme == .dark ? 0.62 : 0.42)
+                    .ignoresSafeArea()
+                    .accessibilityHidden(true)
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        header
+
+                        if let message = prompt.message {
+                            Text(message)
+                                .font(.body)
+                                .foregroundStyle(BBTheme.ink.opacity(0.78))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        if let field = prompt.field {
+                            TextField(field.label, text: field.text)
+                                .textInputAutocapitalization(field.capitalization)
+                                .submitLabel(field.submitLabel)
+                                .textFieldStyle(.plain)
+                                .font(.body)
+                                .padding(.horizontal, 14)
+                                .frame(minHeight: 52)
+                                .background(BBTheme.surface, in: RoundedRectangle(cornerRadius: BBTheme.Radius.control, style: .continuous))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: BBTheme.Radius.control, style: .continuous)
+                                        .stroke(fieldIsFocused ? BBTheme.oxbloodInk : BBTheme.strongHairline, lineWidth: fieldIsFocused ? 2 : 1)
+                                }
+                                .focused($fieldIsFocused)
+                        }
+
+                        VStack(spacing: 10) {
+                            ForEach(normalizedActions) { action in
+                                Button {
+                                    choose(action)
+                                } label: {
+                                    HStack(spacing: 9) {
+                                        if let symbol = action.symbol {
+                                            Image(systemName: symbol)
+                                        }
+                                        Text(action.title)
+                                            .multilineTextAlignment(.center)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(EditorialPromptActionStyle(role: action.role))
+                                .disabled(!action.isEnabled || didChooseAction)
+                                .accessibilityIdentifier("editorial-prompt-action-\(action.id)")
+                            }
+                        }
+                    }
+                    .padding(22)
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(maxWidth: 520)
+                .frame(maxHeight: max(260, proxy.size.height - 44))
+                .background(BBTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .stroke(BBTheme.strongHairline, lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.28), radius: 30, y: 16)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 22)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("editorial-prompt")
+        .accessibilityAction(.escape) { cancel() }
+        .onAppear {
+            if prompt.field == nil {
+                titleIsFocused = true
+            } else {
+                fieldIsFocused = true
+            }
+        }
+        .animation(reduceMotion ? nil : .spring(duration: 0.28, bounce: 0.12), value: didChooseAction)
+    }
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Text(prompt.title)
+                .font(BBTheme.display(29))
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityFocused($titleIsFocused)
+                .accessibilityIdentifier("editorial-prompt-title")
+            Spacer(minLength: 8)
+            Image(systemName: prompt.tone.symbol)
+                .font(.system(size: 23, weight: .semibold))
+                .foregroundStyle(toneColor)
+                .frame(width: 48, height: 48)
+                .background(toneColor.opacity(0.10), in: Circle())
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var toneColor: Color {
+        switch prompt.tone {
+        case .destructive, .error: BBTheme.destructiveFill
+        case .information, .decision: BBTheme.oxbloodInk
+        }
+    }
+
+    private func choose(_ action: EditorialPrompt.Action) {
+        guard !didChooseAction else { return }
+        didChooseAction = true
+        let perform = action.perform
+        dismiss()
+        Task { @MainActor in
+            await Task.yield()
+            perform()
+        }
+    }
+
+    private func cancel() {
+        if let action = normalizedActions.first(where: { $0.role == .cancel }) {
+            choose(action)
+        } else if let action = normalizedActions.last {
+            choose(action)
+        } else {
+            dismiss()
+        }
+    }
+}
+
+private struct EditorialPromptActionStyle: ButtonStyle {
+    let role: EditorialPrompt.Action.Role
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.headline)
+            .foregroundStyle(foreground)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, minHeight: 54)
+            .background(background(configuration.isPressed), in: RoundedRectangle(cornerRadius: BBTheme.Radius.control, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: BBTheme.Radius.control, style: .continuous)
+                    .stroke(border, lineWidth: 1)
+            }
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.985 : 1)
+            .opacity(isEnabled ? 1 : 0.42)
+            .animation(reduceMotion ? nil : .spring(duration: 0.2), value: configuration.isPressed)
+    }
+
+    private var foreground: Color {
+        switch role {
+        case .primary, .destructive: BBTheme.cream
+        case .secondary, .cancel: BBTheme.ink
+        }
+    }
+
+    private func background(_ isPressed: Bool) -> Color {
+        let base: Color = switch role {
+        case .primary: BBTheme.oxbloodFill
+        case .destructive: BBTheme.destructiveFill
+        case .secondary: BBTheme.surface
+        case .cancel: BBTheme.surfaceMuted.opacity(0.55)
+        }
+        return base.opacity(isPressed ? 0.76 : 1)
+    }
+
+    private var border: Color {
+        switch role {
+        case .primary: BBTheme.oxbloodFill
+        case .destructive: BBTheme.destructiveFill
+        case .secondary, .cancel: BBTheme.hairline
+        }
+    }
+}
+
+extension View {
+    @MainActor
+    func editorialPrompt(
+        isPresented: Binding<Bool>,
+        content: @escaping @MainActor () -> EditorialPrompt
+    ) -> some View {
+        modifier(EditorialPromptBooleanModifier(isPresented: isPresented, makePrompt: content))
+    }
+
+    @MainActor
+    func editorialPrompt<Item>(
+        item: Binding<Item?>,
+        content: @escaping @MainActor (Item) -> EditorialPrompt
+    ) -> some View {
+        modifier(EditorialPromptItemModifier(item: item, makePrompt: content))
+    }
+}
+
 struct Eyebrow: View {
     let text: String
     var color: Color = BBTheme.oxblood
@@ -236,7 +720,7 @@ struct EditorialSectionHeader: View {
     let action: (() -> Void)?
     let actionTitle: String
 
-    init(_ title: String, eyebrow: String? = nil, actionTitle: String = "See All", action: (() -> Void)? = nil) {
+    init(_ title: String, eyebrow: String? = nil, actionTitle: String = "See all", action: (() -> Void)? = nil) {
         self.title = title; self.eyebrow = eyebrow; self.action = action; self.actionTitle = actionTitle
     }
 
@@ -250,9 +734,9 @@ struct EditorialSectionHeader: View {
             if let action {
                 Button(actionTitle, action: action)
                     .font(.callout.weight(.semibold))
-                    .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
+                    .frame(minWidth: 44, minHeight: 46, alignment: .trailing)
                     .contentShape(Rectangle())
-                    .accessibilityHint("Opens (title.lowercased())")
+                    .accessibilityHint("Opens \(title.lowercased())")
             }
         }
     }
@@ -263,20 +747,26 @@ struct ScoreMark: View {
     var caption: String? = nil
     var size: CGFloat = 56
     var provisional = false
+    var showsDecimal = false
+    var alignment: HorizontalAlignment = .trailing
+
+    private var formattedScore: String {
+        score.formatted(.number.precision(.fractionLength(showsDecimal ? 1 : 0)))
+    }
 
     var body: some View {
-        VStack(alignment: .trailing, spacing: 1) {
-            Text(score.formatted(.number.precision(.fractionLength(1))))
+        VStack(alignment: alignment, spacing: 1) {
+            Text(formattedScore)
                 .font(BBTheme.score(size))
                 .foregroundStyle(BBTheme.oxblood)
                 .contentTransition(.numericText())
                 .minimumScaleFactor(0.7)
-                .accessibilityLabel("Score \(score.formatted(.number.precision(.fractionLength(1)))) out of 100")
+                .accessibilityLabel("Return score \(formattedScore) out of 100\(provisional ? ", early score" : "")")
             if caption != nil || provisional {
                 HStack(spacing: 4) {
                     if let caption { Text(caption) }
                     if caption != nil, provisional { Text("·") }
-                    if provisional { Text("PROVISIONAL").fontWeight(.bold).tracking(0.4) }
+                    if provisional { Text("EARLY SCORE").fontWeight(.bold).tracking(0.25) }
                 }
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -296,8 +786,8 @@ struct RankChip: View {
             .font(.caption.weight(.semibold))
             .lineLimit(1)
             .padding(.horizontal, 10).padding(.vertical, 6)
-            .foregroundStyle(emphasized ? BBTheme.paper : BBTheme.ink)
-            .background(emphasized ? BBTheme.oxblood : BBTheme.ink.opacity(0.06), in: Capsule())
+            .foregroundStyle(emphasized ? BBTheme.cream : BBTheme.ink)
+            .background(emphasized ? BBTheme.oxbloodFill : BBTheme.ink.opacity(0.06), in: Capsule())
     }
 }
 
@@ -345,7 +835,10 @@ struct ReactionPicker: View {
                     HStack(spacing: 10) {
                         Image(systemName: reaction.symbol)
                             .frame(width: 24, height: 24)
-                        Text(reaction.rawValue).font(.body.weight(.semibold))
+                        Text(reaction.title)
+                            .font(.body.weight(.semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.78)
                         Spacer(minLength: 0)
                         Image(systemName: selected == reaction ? "checkmark.circle.fill" : "circle")
                             .font(.callout)
@@ -353,14 +846,14 @@ struct ReactionPicker: View {
                     }
                     .padding(.horizontal, 14)
                     .frame(minHeight: 56)
-                    .foregroundStyle(selected == reaction ? BBTheme.paper : BBTheme.ink)
+                    .foregroundStyle(selected == reaction ? BBTheme.cream : BBTheme.ink)
                     .background(
-                        selected == reaction ? BBTheme.oxblood : BBTheme.surface,
+                        selected == reaction ? BBTheme.oxbloodFill : BBTheme.surface,
                         in: RoundedRectangle(cornerRadius: BBTheme.Radius.control, style: .continuous)
                     )
                     .overlay {
                         RoundedRectangle(cornerRadius: BBTheme.Radius.control, style: .continuous)
-                            .stroke(selected == reaction ? BBTheme.oxblood : BBTheme.hairline)
+                            .stroke(selected == reaction ? BBTheme.oxbloodFill : BBTheme.hairline)
                     }
                 }
                 .buttonStyle(.pressable)
@@ -368,6 +861,20 @@ struct ReactionPicker: View {
                 .accessibilityValue(selected == reaction ? "Selected" : "Not selected")
             }
         }
+    }
+}
+
+struct CoonReactionArtwork: View {
+    let reaction: CoonReaction
+    var size: CGFloat = 72
+
+    var body: some View {
+        Image(reaction.assetName)
+            .resizable()
+            .interpolation(.high)
+            .scaledToFit()
+            .frame(width: size, height: size)
+            .accessibilityLabel(reaction.title)
     }
 }
 
@@ -385,9 +892,9 @@ struct FilterChip: View {
             }
             .padding(.horizontal, 14)
             .frame(minHeight: 44)
-            .foregroundStyle(selected ? BBTheme.paper : BBTheme.ink)
-            .background(selected ? BBTheme.oxblood : BBTheme.surface, in: Capsule())
-            .overlay { Capsule().stroke(selected ? BBTheme.oxblood : BBTheme.hairline, lineWidth: 1) }
+            .foregroundStyle(selected ? BBTheme.cream : BBTheme.ink)
+            .background(selected ? BBTheme.oxbloodFill : BBTheme.surface, in: Capsule())
+            .overlay { Capsule().stroke(selected ? BBTheme.oxbloodFill : BBTheme.hairline, lineWidth: 1) }
             .contentShape(Capsule())
         }
         .buttonStyle(.pressable)
@@ -402,9 +909,9 @@ struct IconTile: View {
     var body: some View {
         Image(systemName: symbol)
             .font(.system(.body, design: .rounded, weight: .semibold))
-            .foregroundStyle(emphasized ? BBTheme.paper : BBTheme.oxblood)
+            .foregroundStyle(emphasized ? BBTheme.cream : BBTheme.oxblood)
             .frame(width: 46, height: 46)
-            .background(emphasized ? BBTheme.oxblood : BBTheme.oxblood.opacity(0.09), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(emphasized ? BBTheme.oxbloodFill : BBTheme.oxblood.opacity(0.09), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .accessibilityHidden(true)
     }
 }

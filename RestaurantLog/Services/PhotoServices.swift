@@ -1,4 +1,5 @@
 import CoreLocation
+import CoreTransferable
 import ImageIO
 import Photos
 import PhotosUI
@@ -14,6 +15,104 @@ enum BackfillImportPolicy {
     static let thumbnailMaxPixelSize = 480
     static let clusterTimeInterval: TimeInterval = 2 * 60 * 60
     static let clusterDistanceMeters: CLLocationDistance = 500 * 0.3048
+}
+
+enum PhotoMemoryPolicy {
+    static let maximumConcurrentProcessing = 3
+    static let maximumSourceFileBytes = 32 * 1_024 * 1_024
+    static let maximumPreparedPhotoBytes = 8 * 1_024 * 1_024
+    static let maximumPreparedOutputBytes = 64 * 1_024 * 1_024
+    static let maximumSourcePixels = 64_000_000
+
+    static func clampedConcurrency(_ requested: Int) -> Int {
+        min(max(1, requested), maximumConcurrentProcessing)
+    }
+
+    static func acceptsSourceFile(byteCount: Int64) -> Bool {
+        byteCount >= 0 && byteCount <= Int64(maximumSourceFileBytes)
+    }
+
+    static func acceptsAsset(pixelWidth: Int, pixelHeight: Int) -> Bool {
+        guard pixelWidth > 0, pixelHeight > 0 else { return false }
+        let (pixels, overflowed) = pixelWidth.multipliedReportingOverflow(by: pixelHeight)
+        return !overflowed && pixels <= maximumSourcePixels
+    }
+
+    static func canRetainPreparedPhoto(
+        currentBytes: Int,
+        fullBytes: Int,
+        thumbnailBytes: Int
+    ) -> Bool {
+        guard currentBytes >= 0, fullBytes >= 0, thumbnailBytes >= 0 else { return false }
+        let (photoBytes, photoOverflowed) = fullBytes.addingReportingOverflow(thumbnailBytes)
+        guard !photoOverflowed, photoBytes <= maximumPreparedPhotoBytes else { return false }
+        let (totalBytes, totalOverflowed) = currentBytes.addingReportingOverflow(photoBytes)
+        return !totalOverflowed && totalBytes <= maximumPreparedOutputBytes
+    }
+}
+
+private enum BoundedPhotoFileError: Error {
+    case oversized
+    case unreadable
+}
+
+private struct BoundedPhotoFile: Transferable {
+    let url: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .image) { received in
+            let destination = FileManager.default.temporaryDirectory
+                .appendingPathComponent("restaurant-photo-\(UUID().uuidString)")
+            try BoundedPhotoFileIO.copy(received.file, to: destination)
+            return BoundedPhotoFile(url: destination)
+        }
+    }
+}
+
+private enum BoundedPhotoFileIO {
+    static func copy(_ source: URL, to destination: URL) throws {
+        if let size = try? source.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+           !PhotoMemoryPolicy.acceptsSourceFile(byteCount: Int64(size)) {
+            throw BoundedPhotoFileError.oversized
+        }
+
+        guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
+            throw BoundedPhotoFileError.unreadable
+        }
+        do {
+            let input = try FileHandle(forReadingFrom: source)
+            let output = try FileHandle(forWritingTo: destination)
+            defer {
+                try? input.close()
+                try? output.close()
+            }
+            var totalBytes: Int64 = 0
+            while let chunk = try input.read(upToCount: 64 * 1_024), !chunk.isEmpty {
+                let (nextTotal, overflowed) = totalBytes.addingReportingOverflow(Int64(chunk.count))
+                guard !overflowed, PhotoMemoryPolicy.acceptsSourceFile(byteCount: nextTotal) else {
+                    throw BoundedPhotoFileError.oversized
+                }
+                try output.write(contentsOf: chunk)
+                totalBytes = nextTotal
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: destination)
+            throw error
+        }
+    }
+
+    static func mappedData(from url: URL) throws -> Data {
+        let values = try url.resourceValues(forKeys: [.fileSizeKey])
+        guard let size = values.fileSize,
+              PhotoMemoryPolicy.acceptsSourceFile(byteCount: Int64(size)) else {
+            throw BoundedPhotoFileError.oversized
+        }
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+        guard PhotoMemoryPolicy.acceptsSourceFile(byteCount: Int64(data.count)) else {
+            throw BoundedPhotoFileError.oversized
+        }
+        return data
+    }
 }
 
 enum MealPhotoDraftPolicy {
@@ -87,8 +186,9 @@ enum ImageSanitizer {
         fallbackDate: Date?,
         maxConcurrent: Int = 3
     ) async -> [BackfillPhoto] {
-        let batchSize = max(1, maxConcurrent)
+        let batchSize = PhotoMemoryPolicy.clampedConcurrency(maxConcurrent)
         var orderedResults: [(index: Int, photo: BackfillPhoto)] = []
+        var retainedBytes = 0
 
         for batchStart in stride(from: 0, to: items.count, by: batchSize) {
             let batchEnd = min(items.count, batchStart + batchSize)
@@ -97,19 +197,27 @@ enum ImageSanitizer {
                 for (offset, item) in batch.enumerated() {
                     let index = batchStart + offset
                     group.addTask {
-                        guard let data = try? await item.loadTransferable(type: Data.self) else {
+                        guard let transferred = try? await item.loadTransferable(type: BoundedPhotoFile.self) else {
                             return (index, nil)
                         }
-                        return (index, await processOffMain(data, date: fallbackDate))
+                        defer { try? FileManager.default.removeItem(at: transferred.url) }
+                        return (index, await processOffMain(fileURL: transferred.url, date: fallbackDate))
                     }
                 }
                 var values: [(Int, BackfillPhoto?)] = []
                 for await value in group { values.append(value) }
                 return values
             }
-            orderedResults.append(contentsOf: results.compactMap { index, photo in
-                photo.map { (index: index, photo: $0) }
-            })
+            for (index, photo) in results.sorted(by: { $0.0 < $1.0 }) {
+                guard let photo,
+                      PhotoMemoryPolicy.canRetainPreparedPhoto(
+                        currentBytes: retainedBytes,
+                        fullBytes: photo.fullData.count,
+                        thumbnailBytes: photo.thumbnailData?.count ?? 0
+                      ) else { continue }
+                retainedBytes += photo.fullData.count + (photo.thumbnailData?.count ?? 0)
+                orderedResults.append((index: index, photo: photo))
+            }
         }
 
         return orderedResults.sorted { $0.index < $1.index }.map(\.photo)
@@ -123,9 +231,15 @@ enum ImageSanitizer {
         }.value
     }
 
+    static func processOffMain(fileURL: URL, date fallbackDate: Date? = .now) async -> BackfillPhoto? {
+        guard let data = try? BoundedPhotoFileIO.mappedData(from: fileURL) else { return nil }
+        return await processOffMain(data, date: fallbackDate)
+    }
+
     /// Pass a nil fallback for historical backfill imports. That prevents a
     /// metadata-free old photo from silently becoming a visit dated "now".
     static func process(_ data: Data, date fallbackDate: Date? = .now) -> BackfillPhoto? {
+        guard PhotoMemoryPolicy.acceptsSourceFile(byteCount: Int64(data.count)) else { return nil }
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         let metadata = (CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]) ?? [:]
         let captureDate = captureDate(metadata)
@@ -142,6 +256,11 @@ enum ImageSanitizer {
             from: source,
             maxPixelSize: BackfillImportPolicy.thumbnailMaxPixelSize
         ).flatMap { encoded($0, quality: 0.76) }
+        guard PhotoMemoryPolicy.canRetainPreparedPhoto(
+            currentBytes: 0,
+            fullBytes: full.count,
+            thumbnailBytes: thumbnail?.count ?? 0
+        ) else { return nil }
         return BackfillPhoto(
             id: UUID(), fullData: full, thumbnailData: thumbnail,
             date: date, coordinate: coordinate, captureDate: captureDate
@@ -265,8 +384,10 @@ enum PhotoLibraryScanner {
         var output: [BackfillPhoto] = []
         for index in 0..<assets.count {
             let asset = assets.object(at: index)
-            if let data = await imageData(for: asset),
-               let photo = await ImageSanitizer.processOffMain(data, date: asset.creationDate ?? .now) {
+            guard PhotoMemoryPolicy.acceptsAsset(pixelWidth: asset.pixelWidth, pixelHeight: asset.pixelHeight),
+                  let fileURL = await imageFile(for: asset) else { continue }
+            defer { try? FileManager.default.removeItem(at: fileURL) }
+            if let photo = await ImageSanitizer.processOffMain(fileURL: fileURL, date: asset.creationDate ?? .now) {
                 let assetCoordinate = asset.location?.coordinate
                 let corrected = BackfillPhoto(
                     id: photo.id, fullData: photo.fullData, thumbnailData: photo.thumbnailData,
@@ -281,13 +402,27 @@ enum PhotoLibraryScanner {
         return output
     }
 
-    private static func imageData(for asset: PHAsset) async -> Data? {
+    private static func imageFile(for asset: PHAsset) async -> URL? {
         await withCheckedContinuation { continuation in
-            let options = PHImageRequestOptions()
+            guard let resource = PHAssetResource.assetResources(for: asset).first(where: {
+                UTType($0.uniformTypeIdentifier)?.conforms(to: .image) == true
+            }) else {
+                continuation.resume(returning: nil)
+                return
+            }
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("restaurant-library-photo-\(UUID().uuidString)")
+            let options = PHAssetResourceRequestOptions()
             options.isNetworkAccessAllowed = true
-            options.deliveryMode = .highQualityFormat
-            PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, _, _, _ in
-                continuation.resume(returning: data)
+            PHAssetResourceManager.default().writeData(for: resource, toFile: url, options: options) { error in
+                guard error == nil,
+                      let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+                      PhotoMemoryPolicy.acceptsSourceFile(byteCount: Int64(size)) else {
+                    try? FileManager.default.removeItem(at: url)
+                    continuation.resume(returning: nil)
+                    return
+                }
+                continuation.resume(returning: url)
             }
         }
     }

@@ -15,4 +15,22 @@ final class CSVImporterTests: XCTestCase {
         let rows = CSVImporter.parseRows("Name,Note\nPlace,\"The \"\"best\"\" patio\"\n")
         XCTAssertEqual(rows[1][1], "The \"best\" patio")
     }
+
+    func testBoundedParserStopsBeforeRetainingRowsPastItsLimit() {
+        let csv = "Name\nOne\nTwo\nThree\n"
+        let limits = CSVImporter.ParseLimits(maxRows: 3, maxFieldsPerRow: 8, maxFieldCharacters: 128)
+
+        XCTAssertThrowsError(try CSVImporter.parseRows(csv, limits: limits)) { error in
+            XCTAssertEqual(error as? CSVImporter.ParseLimitError, .tooManyRows)
+        }
+    }
+
+    func testBoundedParserStopsAnOversizedQuotedField() {
+        let csv = "Name,Note\nPlace,\"12345\"\n"
+        let limits = CSVImporter.ParseLimits(maxRows: 3, maxFieldsPerRow: 8, maxFieldCharacters: 4)
+
+        XCTAssertThrowsError(try CSVImporter.parseRows(csv, limits: limits)) { error in
+            XCTAssertEqual(error as? CSVImporter.ParseLimitError, .fieldTooLarge)
+        }
+    }
 }

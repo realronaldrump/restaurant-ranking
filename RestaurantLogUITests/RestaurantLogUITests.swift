@@ -28,14 +28,18 @@ final class RestaurantLogUITests: XCTestCase {
 
         app.tabBars.buttons["History"].tap()
         XCTAssertTrue(app.navigationBars["History"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.segmentedControls.buttons["Everyone"].exists)
+        XCTAssertTrue(app.buttons["History filter, All outings"].exists)
 
-        app.tabBars.buttons["Want to Try"].tap()
-        XCTAssertTrue(app.navigationBars["Want to Try"].waitForExistence(timeout: 5))
+        app.tabBars.buttons["Settle"].tap()
+        XCTAssertTrue(app.navigationBars["Settle the Score"].waitForExistence(timeout: 5))
 
         app.tabBars.buttons["More"].tap()
         XCTAssertTrue(app.navigationBars["More"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Statistics"].exists)
-        XCTAssertTrue(app.staticTexts["Backfill"].exists)
+        XCTAssertTrue(app.staticTexts["Want to Try"].exists)
+        XCTAssertTrue(app.staticTexts["Find outings in photos"].exists)
+        XCTAssertFalse(app.staticTexts["Merge Duplicates"].exists)
     }
 
     func testAppearancePreferenceChangesAndPersists() {
@@ -66,7 +70,12 @@ final class RestaurantLogUITests: XCTestCase {
         for _ in 0..<10 where !footer.exists { app.swipeUp() }
 
         XCTAssertTrue(footer.waitForExistence(timeout: 3))
-        XCTAssertEqual(footer.label, "Big Beautiful Restaurant Log 3.1.3 • Released July 30, 2026")
+        XCTAssertNotNil(
+            footer.label.range(
+                of: #"^Big Beautiful Restaurant Log 3\.2 \(build [0-9]+\) • Released August 1, 2026$"#,
+                options: .regularExpression
+            )
+        )
     }
 
     func testSharingScreenExplainsWhoCanSeeTheLog() {
@@ -75,9 +84,12 @@ final class RestaurantLogUITests: XCTestCase {
 
         app.buttons["open-sharing-button"].tap()
 
-        XCTAssertTrue(app.navigationBars["Sharing"].waitForExistence(timeout: 5))
-        // An unshared log says so plainly rather than presenting circle machinery.
-        XCTAssertTrue(app.staticTexts["Just you"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.navigationBars["Circle"].waitForExistence(timeout: 5))
+        // Dining profiles are distinct from people who can open a synced copy.
+        let accessStatus = app.staticTexts["sharing-access-status"]
+        XCTAssertTrue(accessStatus.waitForExistence(timeout: 3))
+        XCTAssertEqual(accessStatus.label, "Only this iPhone has a copy")
+        XCTAssertFalse(app.staticTexts["Just you"].exists)
         XCTAssertTrue(app.textFields["join-code-field"].exists)
     }
 
@@ -86,7 +98,7 @@ final class RestaurantLogUITests: XCTestCase {
     func testAJoinCodeCanBeTypedInTheApp() {
         app.tabBars.buttons["More"].tap()
         app.buttons["open-sharing-button"].tap()
-        XCTAssertTrue(app.navigationBars["Sharing"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Circle"].waitForExistence(timeout: 5))
 
         let field = app.textFields["join-code-field"]
         let scrollView = app.scrollViews.firstMatch
@@ -101,7 +113,7 @@ final class RestaurantLogUITests: XCTestCase {
         XCTAssertEqual(field.value as? String, "K7M4-2QPX-9WTR")
         XCTAssertTrue(join.isEnabled)
     }
-    func testDiningAtlasShowsTheFirstVisitTrail() {
+    func testDiningAtlasShowsTheFirstOutingTrail() {
         app.tabBars.buttons["History"].tap()
         XCTAssertTrue(app.navigationBars["History"].waitForExistence(timeout: 5))
 
@@ -109,7 +121,10 @@ final class RestaurantLogUITests: XCTestCase {
 
         XCTAssertTrue(app.navigationBars["Dining Atlas"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.maps.firstMatch.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["9 places on the record"].exists)
+        let legend = app.descendants(matching: .any)["atlas-first-outings-legend"]
+        XCTAssertTrue(legend.exists)
+        XCTAssertEqual(legend.label, "First outings. Pins are ordered by first outing.")
+        XCTAssertTrue(app.staticTexts["9 restaurants mapped"].exists)
         XCTAssertTrue(app.staticTexts["Normal Ice Cream"].exists)
 
         let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
@@ -131,19 +146,38 @@ final class RestaurantLogUITests: XCTestCase {
 
         let manual = app.buttons["manual-place-choice"]
         XCTAssertTrue(manual.waitForExistence(timeout: 4))
+        for _ in 0..<6 where !manual.isHittable { app.scrollViews.firstMatch.swipeUp() }
+        XCTAssertTrue(manual.isHittable)
         manual.tap()
-
-        let michelle = app.buttons["Michelle"]
-        XCTAssertTrue(michelle.waitForExistence(timeout: 3))
-        michelle.tap()
 
         let reaction = app.buttons["reaction-Liked It"]
         XCTAssertTrue(reaction.waitForExistence(timeout: 3))
         reaction.tap()
+        XCTAssertFalse(app.scrollViews["log-payoff"].exists, "Choosing a reaction should not save before confirmation")
+
+        let scrollView = app.scrollViews.firstMatch
+        let optionalDetails = app.buttons["Add people or change details"]
+        XCTAssertTrue(optionalDetails.waitForExistence(timeout: 3))
+        for _ in 0..<5 where !optionalDetails.isHittable { scrollView.swipeUp() }
+        XCTAssertTrue(optionalDetails.isHittable)
+        optionalDetails.tap()
+
+        let michelle = app.buttons["Michelle"]
+        XCTAssertTrue(michelle.waitForExistence(timeout: 3))
+        for _ in 0..<5 where !michelle.isHittable { scrollView.swipeUp() }
+        XCTAssertTrue(michelle.isHittable)
+        michelle.tap()
+
+        let saveOuting = app.buttons["save-outing"]
+        for _ in 0..<5 where !saveOuting.isHittable { scrollView.swipeDown() }
+        XCTAssertTrue(saveOuting.isHittable)
+        XCTAssertTrue(saveOuting.isEnabled)
+        saveOuting.tap()
 
         XCTAssertTrue(app.scrollViews["log-payoff"].waitForExistence(timeout: 4))
         XCTAssertTrue(app.staticTexts["Codex Test Kitchen"].exists)
-        XCTAssertTrue(app.buttons["Add Dishes, Photos & Details"].exists)
+        XCTAssertTrue(app.staticTexts["OUTING SAVED"].exists)
+        XCTAssertTrue(app.buttons["Add outing details"].exists)
         app.buttons["Done"].tap()
 
         app.tabBars.buttons["History"].tap()
@@ -169,27 +203,33 @@ final class RestaurantLogUITests: XCTestCase {
         XCTAssertTrue(visit.waitForExistence(timeout: 5))
         visit.tap()
 
-        let deleteButton = app.buttons["Delete Entire Outing"]
+        let deleteButton = app.buttons["Delete entire outing"]
         for _ in 0..<8 where !deleteButton.isHittable { app.swipeUp() }
         XCTAssertTrue(deleteButton.isHittable)
         deleteButton.tap()
-        app.sheets.buttons["Delete Outing"].tap()
+        XCTAssertTrue(app.otherElements["editorial-prompt"].waitForExistence(timeout: 3))
+        let confirmDelete = app.buttons["Delete outing"]
+        XCTAssertTrue(confirmDelete.exists)
+        confirmDelete.tap()
 
         XCTAssertEqual(app.state, .runningForeground)
         XCTAssertTrue(app.navigationBars["History"].waitForExistence(timeout: 5))
     }
 
     func testRemovingWantedRestaurantDoesNotCrash() {
-        app.tabBars.buttons["Want to Try"].tap()
-        app.buttons["Add a Place"].tap()
+        app.tabBars.buttons["More"].tap()
+        app.staticTexts["Want to Try"].tap()
+        XCTAssertTrue(app.navigationBars["Want to Try"].waitForExistence(timeout: 5))
+        app.buttons["Add a restaurant"].firstMatch.tap()
 
         let restaurant = app.staticTexts["The Copper Onion"].firstMatch
         XCTAssertTrue(restaurant.waitForExistence(timeout: 5))
         restaurant.tap()
         XCTAssertTrue(restaurant.waitForExistence(timeout: 5))
 
-        restaurant.press(forDuration: 1)
-        app.buttons["Remove from Want to Try"].tap()
+        let remove = app.buttons["Remove The Copper Onion from this log"]
+        XCTAssertTrue(remove.waitForExistence(timeout: 3))
+        remove.tap()
 
         XCTAssertTrue(app.staticTexts["Nothing saved yet"].waitForExistence(timeout: 5))
         XCTAssertEqual(app.state, .runningForeground)
@@ -197,7 +237,7 @@ final class RestaurantLogUITests: XCTestCase {
 
     func testResetAppReturnsToOnboarding() {
         app.tabBars.buttons["More"].tap()
-        app.staticTexts["Settings & Privacy"].tap()
+        app.staticTexts["Open settings"].tap()
 
         let resetButton = app.buttons["reset-app-button"]
         for _ in 0..<6 where !resetButton.exists { app.swipeUp() }
@@ -205,27 +245,30 @@ final class RestaurantLogUITests: XCTestCase {
         for _ in 0..<6 where !resetButton.isHittable { app.swipeUp() }
         XCTAssertTrue(resetButton.isHittable)
         resetButton.tap()
-        app.alerts.buttons["Erase Everything"].tap()
+        XCTAssertTrue(app.otherElements["editorial-prompt"].waitForExistence(timeout: 3))
+        let eraseEverything = app.buttons["Erase everything"]
+        XCTAssertTrue(eraseEverything.exists)
+        eraseEverything.tap()
 
-        XCTAssertTrue(app.buttons["Get Started"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Get started"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.tabBars.firstMatch.exists)
     }
 
     func testSettingsBackupRestoreRequiresDestructiveConfirmation() {
         app.tabBars.buttons["More"].tap()
-        app.staticTexts["Settings & Privacy"].tap()
+        app.staticTexts["Open settings"].tap()
 
-        let restoreButton = app.buttons["Restore from Backup"]
-        for _ in 0..<6 where !restoreButton.exists { app.swipeUp() }
+        let restoreButton = app.buttons["restore-backup-button"]
+        for _ in 0..<10 where !restoreButton.isHittable { app.swipeUp(velocity: .slow) }
         XCTAssertTrue(restoreButton.waitForExistence(timeout: 3))
-        for _ in 0..<6 where !restoreButton.isHittable { app.swipeUp() }
         XCTAssertTrue(restoreButton.isHittable)
         restoreButton.tap()
 
-        XCTAssertTrue(app.sheets.staticTexts["Restore from backup?"].waitForExistence(timeout: 3))
-        let chooseBackupButton = app.sheets.buttons["Choose Backup and Replace Everything"]
+        XCTAssertTrue(app.otherElements["editorial-prompt"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Restore from backup?"].exists)
+        let chooseBackupButton = app.buttons["Choose backup and replace everything"]
         XCTAssertTrue(chooseBackupButton.exists)
-        XCTAssertTrue(app.sheets.buttons["Cancel"].exists)
+        XCTAssertTrue(app.buttons["Cancel"].exists)
         chooseBackupButton.tap()
 
         XCTAssertTrue(
@@ -243,13 +286,13 @@ final class RestaurantLogUITests: XCTestCase {
         ]
         app.launch()
 
-        let getStarted = app.buttons["Get Started"]
+        let getStarted = app.buttons["Get started"]
         XCTAssertTrue(getStarted.waitForExistence(timeout: 8))
         getStarted.tap()
 
         let detail = app.staticTexts["onboarding-step-detail"]
         XCTAssertTrue(detail.waitForExistence(timeout: 3))
-        XCTAssertEqual(detail.label, "Your name goes on the meals you log, and your account keeps them safe. You can add the people you dine with later.")
+        XCTAssertEqual(detail.label, "Your name goes on the outings you log. You can add the people you dine with later.")
         XCTAssertFalse(app.textFields["Partner (optional)"].exists)
 
         let signIn = app.buttons["onboarding-sign-in-button"]
@@ -266,7 +309,7 @@ final class RestaurantLogUITests: XCTestCase {
         ]
         app.launch()
 
-        let getStarted = app.buttons["Get Started"]
+        let getStarted = app.buttons["Get started"]
         XCTAssertTrue(getStarted.waitForExistence(timeout: 8))
         getStarted.tap()
 
@@ -274,23 +317,24 @@ final class RestaurantLogUITests: XCTestCase {
         XCTAssertTrue(nameField.waitForExistence(timeout: 3))
         nameField.tap()
         nameField.typeText("Backup Tester")
-        let continueButton = app.buttons["Continue Without an Account"]
+        let continueButton = app.buttons["Continue without signing in"]
         for _ in 0..<6 where !continueButton.isHittable { app.swipeUp() }
         continueButton.tap()
 
-        let restoreAction = app.staticTexts["Restore a Full Backup"]
+        let restoreAction = app.staticTexts["Restore a full backup"]
         XCTAssertTrue(restoreAction.waitForExistence(timeout: 3))
         restoreAction.tap()
 
-        XCTAssertTrue(app.sheets.staticTexts["Restore from backup?"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.sheets.buttons["Choose Backup and Replace Everything"].exists)
-        XCTAssertTrue(app.sheets.buttons["Cancel"].exists)
+        XCTAssertTrue(app.otherElements["editorial-prompt"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Restore from backup?"].exists)
+        XCTAssertTrue(app.buttons["Choose backup and replace everything"].exists)
+        XCTAssertTrue(app.buttons["Cancel"].exists)
     }
 
     private func openAppearanceSettings() {
         app.tabBars.buttons["More"].tap()
         XCTAssertTrue(app.navigationBars["More"].waitForExistence(timeout: 5))
-        app.staticTexts["Settings & Privacy"].tap()
+        app.staticTexts["Open settings"].tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
     }
 }

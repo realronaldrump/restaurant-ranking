@@ -23,6 +23,7 @@ struct AppBackupDocument: FileDocument {
         guard let data = configuration.file.regularFileContents else {
             throw AppBackupError.unreadable
         }
+        try AppBackupCodec.preflightSerializedByteCount(data.count)
         self.data = data
     }
 
@@ -41,6 +42,10 @@ struct AppBackupSummary: Equatable, Sendable {
 enum AppBackupError: LocalizedError, Equatable {
     case unreadable
     case invalidFormat
+    case backupTooLarge(maximumBytes: Int)
+    case photoTooLarge(maximumBytes: Int)
+    case photoLibraryTooLarge(maximumBytes: Int)
+    case tooManyRecords(maximumCount: Int)
     case unsupportedVersion(Int)
     case duplicateIdentifier(String)
     case missingReference(String)
@@ -51,7 +56,15 @@ enum AppBackupError: LocalizedError, Equatable {
         case .unreadable:
             "The backup file could not be read."
         case .invalidFormat:
-            "This is not a valid Big Beautiful backup."
+            "This is not a valid Big Beautiful Restaurant Log backup."
+        case let .backupTooLarge(maximumBytes):
+            "This backup is too large to process safely on this iPhone. Choose a backup smaller than \(Self.formattedByteCount(maximumBytes))."
+        case let .photoTooLarge(maximumBytes):
+            "A photo in this backup is too large to process safely. Each stored photo must be smaller than \(Self.formattedByteCount(maximumBytes))."
+        case let .photoLibraryTooLarge(maximumBytes):
+            "The photos in this backup are too large to process safely on this iPhone. Their combined size must be smaller than \(Self.formattedByteCount(maximumBytes))."
+        case let .tooManyRecords(maximumCount):
+            "This backup contains too many records to restore safely on this iPhone. A backup can contain at most \(maximumCount.formatted()) records."
         case let .unsupportedVersion(version):
             "This backup uses format version \(version), which this version of Big Beautiful Restaurant Log cannot restore. Update the app and try again."
         case let .duplicateIdentifier(kind):
@@ -62,11 +75,34 @@ enum AppBackupError: LocalizedError, Equatable {
             "The app could not find a local database for the restored log."
         }
     }
+
+    private static func formattedByteCount(_ count: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(count), countStyle: .file)
+    }
+}
+
+struct AppBackupLimits: Equatable, Sendable {
+    /// These limits intentionally leave headroom for the decoded object graph,
+    /// Core Data objects, and JSON's base64 expansion to coexist on an iPhone.
+    static let standard = AppBackupLimits(
+        maximumSerializedBytes: 64 * 1_024 * 1_024,
+        maximumPhotoBytes: 8 * 1_024 * 1_024,
+        maximumTotalPhotoBytes: 40 * 1_024 * 1_024,
+        maximumRecordsPerCollection: 25_000,
+        maximumTotalRecords: 100_000
+    )
+
+    let maximumSerializedBytes: Int
+    let maximumPhotoBytes: Int
+    let maximumTotalPhotoBytes: Int
+    let maximumRecordsPerCollection: Int
+    let maximumTotalRecords: Int
 }
 
 struct AppBackupArchive: Codable, Sendable {
     static let signature = "big-beautiful-restaurant-log"
-    static let currentFormatVersion = 1
+    static let minimumSupportedFormatVersion = 1
+    static let currentFormatVersion = 2
 
     var signature: String
     var formatVersion: Int
@@ -82,6 +118,7 @@ struct AppBackupArchive: Codable, Sendable {
     var visits: [VisitRecord]
     var participants: [ParticipantRecord]? = nil
     var ratings: [RatingRecord]
+    var dinerEntryReactions: [DinerEntryReactionRecord]? = nil
     var dishes: [DishRecord]
     var dishEntries: [DishEntryRecord]
     var photos: [PhotoRecord]
@@ -110,6 +147,7 @@ struct AppBackupArchive: Codable, Sendable {
         var name: String
         var isMe: Bool
         var isCircleMember: Bool
+        var isArchived: Bool
         var colorHex: String
         var createdAt: Date
         var circleID: UUID?
@@ -181,6 +219,16 @@ struct AppBackupArchive: Codable, Sendable {
         var personID: UUID
         var status: VisitParticipationStatus
         var memory: String?
+        var createdAt: Date
+        var updatedAt: Date
+        var visitID: UUID?
+    }
+
+    struct DinerEntryReactionRecord: Codable, Sendable {
+        var id: UUID
+        var authorPersonID: UUID
+        var targetPersonID: UUID
+        var kind: CoonReaction
         var createdAt: Date
         var updatedAt: Date
         var visitID: UUID?
@@ -271,30 +319,61 @@ struct AppBackupArchive: Codable, Sendable {
     }
 }
 
+extension AppBackupArchive.PersonRecord {
+    private enum CodingKeys: String, CodingKey {
+        case id, name, isMe, isCircleMember, isArchived, colorHex, createdAt, circleID
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        isMe = try values.decode(Bool.self, forKey: .isMe)
+        isCircleMember = try values.decode(Bool.self, forKey: .isCircleMember)
+        // Backups and sync payloads from builds before companion deletion did
+        // not carry this field; those profiles are active by definition.
+        isArchived = try values.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false
+        colorHex = try values.decode(String.self, forKey: .colorHex)
+        createdAt = try values.decode(Date.self, forKey: .createdAt)
+        circleID = try values.decodeIfPresent(UUID.self, forKey: .circleID)
+    }
+}
+
 enum AppBackupCodec {
     private struct ArchiveHeader: Decodable {
         let signature: String
         let formatVersion: Int
     }
 
-    static func encode(_ archive: AppBackupArchive) throws -> Data {
+    static func encode(
+        _ archive: AppBackupArchive,
+        limits: AppBackupLimits = .standard
+    ) throws -> Data {
+        try validateResourceLimits(archive, limits: limits)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .millisecondsSince1970
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        return try encoder.encode(archive)
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(archive)
+        try preflightSerializedByteCount(data.count, limits: limits)
+        return data
     }
 
-    static func decode(_ data: Data) throws -> AppBackupArchive {
+    static func decode(
+        _ data: Data,
+        limits: AppBackupLimits = .standard
+    ) throws -> AppBackupArchive {
         do {
+            try preflightSerializedByteCount(data.count, limits: limits)
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .millisecondsSince1970
             let header = try decoder.decode(ArchiveHeader.self, from: data)
             guard header.signature == AppBackupArchive.signature else { throw AppBackupError.invalidFormat }
-            guard header.formatVersion == AppBackupArchive.currentFormatVersion else {
+            guard (AppBackupArchive.minimumSupportedFormatVersion ... AppBackupArchive.currentFormatVersion)
+                .contains(header.formatVersion) else {
                 throw AppBackupError.unsupportedVersion(header.formatVersion)
             }
             let archive = try decoder.decode(AppBackupArchive.self, from: data)
-            try validate(archive)
+            try validate(archive, limits: limits)
             return archive
         } catch let error as AppBackupError {
             throw error
@@ -303,27 +382,77 @@ enum AppBackupCodec {
         }
     }
 
+    /// Checks a selected document's metadata before allocating its contents,
+    /// then checks the bytes again to close file-provider/TOCTOU races.
+    static func readBackupData(
+        from url: URL,
+        limits: AppBackupLimits = .standard
+    ) throws -> Data {
+        let resourceValues: URLResourceValues
+        do {
+            resourceValues = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        } catch {
+            throw AppBackupError.unreadable
+        }
+        guard resourceValues.isRegularFile != false else { throw AppBackupError.unreadable }
+
+        let attributeSize: Int? = {
+            guard resourceValues.fileSize == nil,
+                  let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+                  let number = attributes[.size] as? NSNumber else { return nil }
+            return number.intValue
+        }()
+        guard let fileSize = resourceValues.fileSize ?? attributeSize else {
+            throw AppBackupError.unreadable
+        }
+        try preflightSerializedByteCount(fileSize, limits: limits)
+
+        let data: Data
+        do {
+            data = try Data(contentsOf: url, options: .mappedIfSafe)
+        } catch {
+            throw AppBackupError.unreadable
+        }
+        try preflightSerializedByteCount(data.count, limits: limits)
+        return data
+    }
+
+    static func preflightSerializedByteCount(
+        _ byteCount: Int,
+        limits: AppBackupLimits = .standard
+    ) throws {
+        guard byteCount >= 0, byteCount <= limits.maximumSerializedBytes else {
+            throw AppBackupError.backupTooLarge(maximumBytes: limits.maximumSerializedBytes)
+        }
+    }
+
     /// Fails closed on anything that would produce a broken graph: an unknown
     /// signature or version, duplicate identifiers, or a reference that points
     /// outside its own circle.
-    static func validate(_ archive: AppBackupArchive) throws {
+    static func validate(
+        _ archive: AppBackupArchive,
+        limits: AppBackupLimits = .standard
+    ) throws {
         guard archive.signature == AppBackupArchive.signature else { throw AppBackupError.invalidFormat }
-        guard archive.formatVersion == AppBackupArchive.currentFormatVersion else {
+        guard (AppBackupArchive.minimumSupportedFormatVersion ... AppBackupArchive.currentFormatVersion)
+            .contains(archive.formatVersion) else {
             throw AppBackupError.unsupportedVersion(archive.formatVersion)
         }
+        try validateResourceLimits(archive, limits: limits)
 
         let circleIDs = try uniqueIDs(archive.circles.map(\.id), kind: "circle")
         _ = try uniqueIDs(archive.people.map(\.id), kind: "person")
         let brandIDs = try uniqueIDs(archive.brands.map(\.id), kind: "brand")
         _ = try uniqueIDs(archive.locations.map(\.id), kind: "restaurant")
-        _ = try uniqueIDs(archive.visits.map(\.id), kind: "visit")
+        _ = try uniqueIDs(archive.visits.map(\.id), kind: "outing")
         _ = try uniqueIDs((archive.participants ?? []).map(\.id), kind: "participant")
         _ = try uniqueIDs(archive.ratings.map(\.id), kind: "rating")
+        _ = try uniqueIDs((archive.dinerEntryReactions ?? []).map(\.id), kind: "diner entry reaction")
         _ = try uniqueIDs(archive.dishes.map(\.id), kind: "dish")
         _ = try uniqueIDs(archive.dishEntries.map(\.id), kind: "dish entry")
         _ = try uniqueIDs(archive.photos.map(\.id), kind: "photo")
         _ = try uniqueIDs(archive.comparisons.map(\.id), kind: "comparison")
-        _ = try uniqueIDs(archive.wantEntries.map(\.id), kind: "wish-list entry")
+        _ = try uniqueIDs(archive.wantEntries.map(\.id), kind: "Want to Try entry")
         _ = try uniqueIDs((archive.externalImportLinks ?? []).map(\.id), kind: "external import link")
         let importSessionIDs = try uniqueIDs((archive.externalImportSessions ?? []).map(\.id), kind: "external import session")
         _ = try uniqueIDs(archive.deviceSelections.map(\.circleID), kind: "device selection")
@@ -336,10 +465,10 @@ enum AppBackupCodec {
         })
         let locationIDs = Set(locationCircleIDs.keys)
         let visitCircleIDs = try Dictionary(uniqueKeysWithValues: archive.visits.map { visit in
-            (visit.id, try require(visit.circleID, in: circleIDs, detail: "visit’s circle is missing"))
+            (visit.id, try require(visit.circleID, in: circleIDs, detail: "outing’s circle is missing"))
         })
         let visitLocationIDs = try Dictionary(uniqueKeysWithValues: archive.visits.map { visit in
-            (visit.id, try require(visit.locationID, in: locationIDs, detail: "visit’s restaurant is missing"))
+            (visit.id, try require(visit.locationID, in: locationIDs, detail: "outing’s restaurant is missing"))
         })
         let visitIDs = Set(visitCircleIDs.keys)
         let dishLocationIDs = try Dictionary(uniqueKeysWithValues: archive.dishes.map { dish in
@@ -363,53 +492,83 @@ enum AppBackupCodec {
             }
         }
         for visit in archive.visits {
-            let circleID = visitCircleIDs[visit.id]!
-            let locationID = visitLocationIDs[visit.id]!
+            guard let circleID = visitCircleIDs[visit.id],
+                  let locationID = visitLocationIDs[visit.id] else {
+                throw AppBackupError.missingReference("outing references are missing")
+            }
             guard locationCircleIDs[locationID] == circleID else {
-                throw AppBackupError.missingReference("visit and restaurant belong to different circles")
+                throw AppBackupError.missingReference("outing and restaurant belong to different circles")
             }
             guard personCircleIDs[visit.createdByID] == circleID else {
-                throw AppBackupError.missingReference("visit creator is missing from its circle")
+                throw AppBackupError.missingReference("outing creator is missing from its circle")
             }
             guard visit.companionIDs.allSatisfy({ personCircleIDs[$0] == circleID }) else {
-                throw AppBackupError.missingReference("visit companion is missing from its circle")
+                throw AppBackupError.missingReference("outing participant is missing from its circle")
             }
             guard Set(visit.companionIDs).count == visit.companionIDs.count else {
-                throw AppBackupError.missingReference("visit contains a duplicate companion")
+                throw AppBackupError.missingReference("outing contains a duplicate participant")
             }
         }
+        var ratingKeys: Set<String> = []
         for rating in archive.ratings {
-            let visitID = try require(rating.visitID, in: visitIDs, detail: "rating’s visit is missing")
+            let visitID = try require(rating.visitID, in: visitIDs, detail: "rating’s outing is missing")
             guard personCircleIDs[rating.personID] == visitCircleIDs[visitID] else {
-                throw AppBackupError.missingReference("rating person is missing from the visit’s circle")
+                throw AppBackupError.missingReference("rating person is missing from the outing’s circle")
+            }
+            ratingKeys.insert("\(visitID.uuidString)-\(rating.personID.uuidString)")
+        }
+        var dinerEntryReactionKeys: Set<String> = []
+        for reaction in archive.dinerEntryReactions ?? [] {
+            let visitID = try require(
+                reaction.visitID,
+                in: visitIDs,
+                detail: "diner entry reaction’s outing is missing"
+            )
+            guard let circleID = visitCircleIDs[visitID] else {
+                throw AppBackupError.missingReference("diner entry reaction’s outing is missing")
+            }
+            guard reaction.authorPersonID != reaction.targetPersonID,
+                  personCircleIDs[reaction.authorPersonID] == circleID,
+                  personCircleIDs[reaction.targetPersonID] == circleID else {
+                throw AppBackupError.missingReference("diner entry reaction person is missing from the outing’s circle")
+            }
+            guard ratingKeys.contains("\(visitID.uuidString)-\(reaction.targetPersonID.uuidString)") else {
+                throw AppBackupError.missingReference("diner entry reaction’s target rating is missing")
+            }
+            let key = "\(visitID.uuidString)-\(reaction.authorPersonID.uuidString)-\(reaction.targetPersonID.uuidString)"
+            guard dinerEntryReactionKeys.insert(key).inserted else {
+                throw AppBackupError.missingReference("diner entry contains a duplicate reaction author")
             }
         }
         var participantKeys: Set<String> = []
         for participant in archive.participants ?? [] {
-            let visitID = try require(participant.visitID, in: visitIDs, detail: "participant’s visit is missing")
+            let visitID = try require(participant.visitID, in: visitIDs, detail: "participant’s outing is missing")
             guard personCircleIDs[participant.personID] == visitCircleIDs[visitID] else {
-                throw AppBackupError.missingReference("participant person is missing from the visit’s circle")
+                throw AppBackupError.missingReference("participant person is missing from the outing’s circle")
             }
             let key = "\(visitID.uuidString)-\(participant.personID.uuidString)"
             guard participantKeys.insert(key).inserted else {
-                throw AppBackupError.missingReference("visit contains a duplicate participant")
+                throw AppBackupError.missingReference("outing contains a duplicate participant")
             }
         }
         for entry in archive.dishEntries {
             let dishID = try require(entry.dishID, in: dishIDs, detail: "dish entry’s dish is missing")
-            let visitID = try require(entry.visitID, in: visitIDs, detail: "dish entry’s visit is missing")
-            let visitCircleID = visitCircleIDs[visitID]!
-            guard locationCircleIDs[dishLocationIDs[dishID]!] == visitCircleID else {
-                throw AppBackupError.missingReference("dish entry and visit belong to different circles")
+            let visitID = try require(entry.visitID, in: visitIDs, detail: "dish entry’s outing is missing")
+            guard let visitCircleID = visitCircleIDs[visitID],
+                  let dishLocationID = dishLocationIDs[dishID] else {
+                throw AppBackupError.missingReference("dish entry references are missing")
+            }
+            guard locationCircleIDs[dishLocationID] == visitCircleID else {
+                throw AppBackupError.missingReference("dish entry and outing belong to different circles")
             }
             guard personCircleIDs[entry.personID] == visitCircleID else {
-                throw AppBackupError.missingReference("dish entry person is missing from the visit’s circle")
+                throw AppBackupError.missingReference("dish entry person is missing from the outing’s circle")
             }
         }
         for photo in archive.photos {
-            let visitID = try require(photo.visitID, in: visitIDs, detail: "photo’s visit is missing")
+            let visitID = try require(photo.visitID, in: visitIDs, detail: "photo’s outing is missing")
             if let personID = photo.personID, personCircleIDs[personID] != visitCircleIDs[visitID] {
-                throw AppBackupError.missingReference("photo contributor is missing from the visit’s circle")
+                throw AppBackupError.missingReference("photo contributor is missing from the outing’s circle")
             }
         }
         for comparison in archive.comparisons {
@@ -426,13 +585,13 @@ enum AppBackupCodec {
             }
         }
         for want in archive.wantEntries {
-            let circleID = try require(want.circleID, in: circleIDs, detail: "wish-list entry’s circle is missing")
-            let locationID = try require(want.locationID, in: locationIDs, detail: "wish-list restaurant is missing")
+            let circleID = try require(want.circleID, in: circleIDs, detail: "Want to Try entry’s circle is missing")
+            let locationID = try require(want.locationID, in: locationIDs, detail: "Want to Try restaurant is missing")
             guard locationCircleIDs[locationID] == circleID else {
-                throw AppBackupError.missingReference("wish-list restaurant belongs to a different circle")
+                throw AppBackupError.missingReference("Want to Try restaurant belongs to a different circle")
             }
             guard personCircleIDs[want.addedByID] == circleID else {
-                throw AppBackupError.missingReference("wish-list person is missing from its circle")
+                throw AppBackupError.missingReference("Want to Try person is missing from its circle")
             }
         }
         let importSessionCircleIDs = try Dictionary(uniqueKeysWithValues: (archive.externalImportSessions ?? []).map { session in
@@ -446,6 +605,81 @@ enum AppBackupCodec {
                 }
             }
         }
+    }
+
+    static func validateResourceUsage(
+        recordCounts: [Int],
+        photoPayloadByteCounts: [Int],
+        limits: AppBackupLimits = .standard
+    ) throws {
+        var totalRecords = 0
+        for count in recordCounts {
+            guard count >= 0, count <= limits.maximumRecordsPerCollection else {
+                throw AppBackupError.tooManyRecords(maximumCount: limits.maximumRecordsPerCollection)
+            }
+            let (nextTotal, overflowed) = totalRecords.addingReportingOverflow(count)
+            guard !overflowed, nextTotal <= limits.maximumTotalRecords else {
+                throw AppBackupError.tooManyRecords(maximumCount: limits.maximumTotalRecords)
+            }
+            totalRecords = nextTotal
+        }
+
+        var totalPhotoBytes = 0
+        for byteCount in photoPayloadByteCounts {
+            guard byteCount >= 0, byteCount <= limits.maximumPhotoBytes else {
+                throw AppBackupError.photoTooLarge(maximumBytes: limits.maximumPhotoBytes)
+            }
+            let (nextTotal, overflowed) = totalPhotoBytes.addingReportingOverflow(byteCount)
+            guard !overflowed, nextTotal <= limits.maximumTotalPhotoBytes else {
+                throw AppBackupError.photoLibraryTooLarge(maximumBytes: limits.maximumTotalPhotoBytes)
+            }
+            totalPhotoBytes = nextTotal
+        }
+    }
+
+    static func photoPayloadByteCount(thumbnailData: Data?, fullData: Data?) throws -> Int {
+        let (byteCount, overflowed) = (thumbnailData?.count ?? 0)
+            .addingReportingOverflow(fullData?.count ?? 0)
+        guard !overflowed else {
+            throw AppBackupError.photoTooLarge(maximumBytes: AppBackupLimits.standard.maximumPhotoBytes)
+        }
+        return byteCount
+    }
+
+    private static func validateResourceLimits(
+        _ archive: AppBackupArchive,
+        limits: AppBackupLimits
+    ) throws {
+        let participantCount = archive.participants?.count ?? 0
+        let dinerEntryReactionCount = archive.dinerEntryReactions?.count ?? 0
+        let externalImportSessionCount = archive.externalImportSessions?.count ?? 0
+        let externalImportLinkCount = archive.externalImportLinks?.count ?? 0
+        let recordCounts: [Int] = [
+            archive.deviceSelections.count,
+            archive.circles.count,
+            archive.people.count,
+            archive.brands.count,
+            archive.locations.count,
+            archive.visits.count,
+            participantCount,
+            archive.ratings.count,
+            dinerEntryReactionCount,
+            archive.dishes.count,
+            archive.dishEntries.count,
+            archive.photos.count,
+            archive.comparisons.count,
+            archive.wantEntries.count,
+            externalImportSessionCount,
+            externalImportLinkCount,
+        ]
+        let photoPayloadByteCounts = try archive.photos.map {
+            try photoPayloadByteCount(thumbnailData: $0.thumbnailData, fullData: $0.fullData)
+        }
+        try validateResourceUsage(
+            recordCounts: recordCounts,
+            photoPayloadByteCounts: photoPayloadByteCounts,
+            limits: limits
+        )
     }
 
     private static func uniqueIDs(_ ids: [UUID], kind: String) throws -> Set<UUID> {
@@ -463,10 +697,12 @@ enum AppBackupCodec {
 
 enum AppBackupService {
     @MainActor
-    static func makeArchive(from store: AppStore) async throws -> AppBackupArchive {
+    static func makeArchive(
+        from store: AppStore,
+        limits: AppBackupLimits = .standard
+    ) async throws -> AppBackupArchive {
         try store.persistence.save()
         let context = store.persistence.container.newBackgroundContext()
-        context.mergePolicy = NSMergePolicy(merge: .mergeByPropertyObjectTrumpMergePolicyType)
         let exportedAt = Date.now
         let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
         let hapticsEnabled = UserDefaults.standard.object(forKey: "hapticsEnabled") as? Bool ?? true
@@ -478,6 +714,32 @@ enum AppBackupService {
         }.sorted { $0.circleID.uuidString < $1.circleID.uuidString }
 
         let archive = try await context.perform {
+            context.mergePolicy = NSMergePolicy(merge: .mergeByPropertyObjectTrumpMergePolicyType)
+            // Count first so a pathological store cannot allocate an enormous
+            // managed-object graph merely to discover that it is not exportable.
+            try AppBackupCodec.validateResourceUsage(
+                recordCounts: [
+                    deviceSelections.count,
+                    try count(CircleEntity.self, in: context),
+                    try count(PersonEntity.self, in: context),
+                    try count(BrandEntity.self, in: context),
+                    try count(RestaurantLocation.self, in: context),
+                    try count(VisitEntity.self, in: context),
+                    try count(VisitParticipantEntity.self, in: context),
+                    try count(RatingEntity.self, in: context),
+                    try count(DinerEntryReactionEntity.self, in: context),
+                    try count(DishEntity.self, in: context),
+                    try count(DishEntryEntity.self, in: context),
+                    try count(PhotoEntity.self, in: context),
+                    try count(ComparisonEntity.self, in: context),
+                    try count(WantEntryEntity.self, in: context),
+                    try count(ExternalImportSessionEntity.self, in: context),
+                    try count(ExternalImportLinkEntity.self, in: context),
+                ],
+                photoPayloadByteCounts: [],
+                limits: limits
+            )
+
             let circles: [CircleEntity] = try fetch(in: context)
             let people: [PersonEntity] = try fetch(in: context)
             let brands: [BrandEntity] = try fetch(in: context)
@@ -485,6 +747,7 @@ enum AppBackupService {
             let visits: [VisitEntity] = try fetch(in: context)
             let participants: [VisitParticipantEntity] = try fetch(in: context)
             let ratings: [RatingEntity] = try fetch(in: context)
+            let dinerEntryReactions: [DinerEntryReactionEntity] = try fetch(in: context)
             let dishes: [DishEntity] = try fetch(in: context)
             let dishEntries: [DishEntryEntity] = try fetch(in: context)
             let photos: [PhotoEntity] = try fetch(in: context)
@@ -492,6 +755,43 @@ enum AppBackupService {
             let wantEntries: [WantEntryEntity] = try fetch(in: context)
             let externalImportSessions: [ExternalImportSessionEntity] = try fetch(in: context)
             let externalImportLinks: [ExternalImportLinkEntity] = try fetch(in: context)
+
+            // Reject an export before duplicating photo blobs into the archive
+            // or asking JSONEncoder to base64-expand them.
+            var photoPayloadByteCounts: [Int] = []
+            photoPayloadByteCounts.reserveCapacity(photos.count)
+            for photo in photos {
+                photoPayloadByteCounts.append(try AppBackupCodec.photoPayloadByteCount(
+                    thumbnailData: photo.thumbnailData,
+                    fullData: photo.fullData
+                ))
+                // Release each blob after measuring it. If the aggregate is
+                // over budget, validation below can fail without every blob
+                // remaining resident in the context at once.
+                context.refresh(photo, mergeChanges: false)
+            }
+            try AppBackupCodec.validateResourceUsage(
+                recordCounts: [
+                    deviceSelections.count,
+                    circles.count,
+                    people.count,
+                    brands.count,
+                    locations.count,
+                    visits.count,
+                    participants.count,
+                    ratings.count,
+                    dinerEntryReactions.count,
+                    dishes.count,
+                    dishEntries.count,
+                    photos.count,
+                    comparisons.count,
+                    wantEntries.count,
+                    externalImportSessions.count,
+                    externalImportLinks.count,
+                ],
+                photoPayloadByteCounts: photoPayloadByteCounts,
+                limits: limits
+            )
 
             let archive = AppBackupArchive(
                 signature: AppBackupArchive.signature,
@@ -504,7 +804,7 @@ enum AppBackupService {
                 circles: circles.map { .init(id: $0.id, name: $0.name, createdAt: $0.createdAt) },
                 people: people.map {
                     .init(id: $0.id, name: $0.name, isMe: $0.isMe, isCircleMember: $0.isCircleMember,
-                          colorHex: $0.colorHex, createdAt: $0.createdAt, circleID: $0.circle?.id)
+                          isArchived: $0.isArchived, colorHex: $0.colorHex, createdAt: $0.createdAt, circleID: $0.circle?.id)
                 },
                 brands: brands.map { .init(id: $0.id, name: $0.name, createdAt: $0.createdAt) },
                 locations: locations.map {
@@ -532,6 +832,14 @@ enum AppBackupService {
                           atmosphere: $0.atmosphere, value: $0.value, hazyMemory: $0.hazyMemory,
                           wouldOrderAgain: $0.wouldOrderAgain, hasWouldOrderAgain: $0.hasWouldOrderAgain,
                           createdAt: $0.createdAt, visitID: $0.visit?.id)
+                },
+                dinerEntryReactions: dinerEntryReactions.map {
+                    .init(
+                        id: $0.id, authorPersonID: $0.authorPersonID,
+                        targetPersonID: $0.targetPersonID, kind: $0.kind,
+                        createdAt: $0.createdAt, updatedAt: $0.updatedAt,
+                        visitID: $0.visit?.id
+                    )
                 },
                 dishes: dishes.map {
                     .init(id: $0.id, name: $0.name, role: $0.role, createdAt: $0.createdAt,
@@ -576,7 +884,7 @@ enum AppBackupService {
                           sessionID: $0.session?.id)
                 }
             )
-            try AppBackupCodec.validate(archive)
+            try AppBackupCodec.validate(archive, limits: limits)
             return archive
         }
         return archive
@@ -584,14 +892,18 @@ enum AppBackupService {
 
     @discardableResult
     @MainActor
-    static func restore(_ archive: AppBackupArchive, into store: AppStore) async throws -> AppBackupSummary {
+    static func restore(
+        _ archive: AppBackupArchive,
+        into store: AppStore,
+        limits: AppBackupLimits = .standard
+    ) async throws -> AppBackupSummary {
         try await Task.detached(priority: .userInitiated) {
-            try AppBackupCodec.validate(archive)
+            try AppBackupCodec.validate(archive, limits: limits)
         }.value
         let context = store.persistence.container.newBackgroundContext()
-        context.mergePolicy = NSMergePolicy(merge: .mergeByPropertyObjectTrumpMergePolicyType)
 
         try await context.perform {
+            context.mergePolicy = NSMergePolicy(merge: .mergeByPropertyObjectTrumpMergePolicyType)
             guard let destinationStore = context.persistentStoreCoordinator?.persistentStores.first
             else { throw AppBackupError.noDestinationStore }
 
@@ -636,7 +948,7 @@ enum AppBackupService {
         for record in archive.people {
             let object = PersonEntity(context: context); context.assign(object, to: destinationStore)
             object.id = record.id; object.name = record.name; object.isMe = record.isMe
-            object.isCircleMember = record.isCircleMember; object.colorHex = record.colorHex
+            object.isCircleMember = record.isCircleMember; object.isArchived = record.isArchived; object.colorHex = record.colorHex
             object.createdAt = record.createdAt; object.circle = record.circleID.flatMap { circles[$0] }
         }
         var locations: [UUID: RestaurantLocation] = [:]
@@ -645,8 +957,13 @@ enum AppBackupService {
             object.id = record.id; object.name = record.name; object.category = record.category
             object.address = record.address; object.city = record.city; object.phone = record.phone
             object.urlString = record.urlString; object.hoursText = record.hoursText
-            object.latitude = record.latitude; object.longitude = record.longitude
-            object.hasCoordinates = record.hasCoordinates; object.isClosed = record.isClosed
+            if record.hasCoordinates,
+               StoredCoordinatePolicy.isValid(latitude: record.latitude, longitude: record.longitude) {
+                object.latitude = record.latitude; object.longitude = record.longitude; object.hasCoordinates = true
+            } else {
+                object.latitude = 0; object.longitude = 0; object.hasCoordinates = false
+            }
+            object.isClosed = record.isClosed
             object.sourceIdentifier = record.sourceIdentifier; object.cuisines = record.cuisines; object.tags = record.tags
             object.createdAt = record.createdAt; object.updatedAt = record.updatedAt
             object.circle = record.circleID.flatMap { circles[$0] }; object.brand = record.brandID.flatMap { brands[$0] }
@@ -666,7 +983,12 @@ enum AppBackupService {
             object.id = record.id; object.date = record.date; object.visitType = record.visitType
             object.dateKnowledge = record.dateKnowledge ?? .known
             object.priceBand = record.priceBand; object.occasion = record.occasion; object.memory = record.memory
-            object.latitude = record.latitude; object.longitude = record.longitude; object.hasCoordinates = record.hasCoordinates
+            if record.hasCoordinates,
+               StoredCoordinatePolicy.isValid(latitude: record.latitude, longitude: record.longitude) {
+                object.latitude = record.latitude; object.longitude = record.longitude; object.hasCoordinates = true
+            } else {
+                object.latitude = 0; object.longitude = 0; object.hasCoordinates = false
+            }
             object.createdAt = record.createdAt; object.isShared = record.isShared; object.createdByID = record.createdByID
             object.companionIDs = record.companionIDs; object.circle = record.circleID.flatMap { circles[$0] }
             object.location = record.locationID.flatMap { locations[$0] }
@@ -684,6 +1006,13 @@ enum AppBackupService {
             object.service = record.service; object.atmosphere = record.atmosphere; object.value = record.value
             object.hazyMemory = record.hazyMemory; object.wouldOrderAgain = record.wouldOrderAgain
             object.hasWouldOrderAgain = record.hasWouldOrderAgain; object.createdAt = record.createdAt
+            object.visit = record.visitID.flatMap { visits[$0] }
+        }
+        for record in archive.dinerEntryReactions ?? [] {
+            let object = DinerEntryReactionEntity(context: context); context.assign(object, to: destinationStore)
+            object.id = record.id; object.authorPersonID = record.authorPersonID
+            object.targetPersonID = record.targetPersonID; object.kind = record.kind
+            object.createdAt = record.createdAt; object.updatedAt = record.updatedAt
             object.visit = record.visitID.flatMap { visits[$0] }
         }
         for record in archive.dishEntries {
@@ -741,5 +1070,13 @@ enum AppBackupService {
             let right = (rhs.value(forKey: "id") as? UUID)?.uuidString ?? ""
             return left < right
         }
+    }
+
+    private static func count<T: NSManagedObject>(
+        _ type: T.Type,
+        in context: NSManagedObjectContext
+    ) throws -> Int {
+        let request = NSFetchRequest<T>(entityName: String(describing: type))
+        return try context.count(for: request)
     }
 }

@@ -86,10 +86,14 @@ final class RankingEngineTests: XCTestCase {
 
         let legacyModel = try XCTUnwrap(ManagedObjectModel.make().copy() as? NSManagedObjectModel)
         let legacyVisit = try XCTUnwrap(legacyModel.entitiesByName["VisitEntity"])
-        legacyVisit.properties.removeAll { $0.name == "participants" }
+        legacyVisit.properties.removeAll {
+            $0.name == "participants" || $0.name == "dinerEntryReactions"
+        }
         let legacyPhoto = try XCTUnwrap(legacyModel.entitiesByName["PhotoEntity"])
         legacyPhoto.properties.removeAll { $0.name == "personID" }
-        legacyModel.entities.removeAll { $0.name == "VisitParticipantEntity" }
+        legacyModel.entities.removeAll {
+            $0.name == "VisitParticipantEntity" || $0.name == "DinerEntryReactionEntity"
+        }
 
         let legacyContainer = NSPersistentContainer(name: "Legacy", managedObjectModel: legacyModel)
         let legacyDescription = NSPersistentStoreDescription(url: storeURL)
@@ -129,6 +133,7 @@ final class RankingEngineTests: XCTestCase {
         let migratedVisit = try XCTUnwrap(currentContainer.viewContext.fetch(visitRequest).first)
         XCTAssertEqual(migratedVisit.id, visitID)
         XCTAssertTrue(migratedVisit.participantArray.isEmpty)
+        XCTAssertTrue(migratedVisit.dinerEntryReactionArray.isEmpty)
         XCTAssertNil(migratedVisit.photoArray.first?.personID)
         currentContainer.viewContext.reset()
         if let currentStore = currentContainer.persistentStoreCoordinator.persistentStores.first {
@@ -152,6 +157,53 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertLessThanOrEqual(abs(store.rankingEngine.visitValue(visit: visit, rating: rating) - Reaction.fine.anchor), 7.0001)
     }
 
+    func testCoonReactionIsOnePerAuthorAndDoesNotChangeTheRanking() throws {
+        let me = try XCTUnwrap(store.currentPerson)
+        let michelle = try XCTUnwrap(store.otherCircleMembers.first)
+        let place = store.createLocation(name: "Sticker Supper", category: .fullService)
+        let visit = store.logVisit(
+            at: place,
+            reaction: .loved,
+            personID: me.id,
+            companionIDs: [michelle.id]
+        )
+        _ = store.addRating(to: visit, personID: michelle.id, reaction: .liked)
+        let scoreBefore = try XCTUnwrap(store.score(for: place)?.score)
+
+        XCTAssertTrue(store.setCoonReaction(.runItBack, to: michelle.id, in: visit))
+        let first = try XCTUnwrap(store.myCoonReaction(to: michelle.id, in: visit))
+        XCTAssertEqual(first.kind, .runItBack)
+        XCTAssertEqual(store.coonReactions(to: michelle.id, in: visit).count, 1)
+
+        XCTAssertTrue(store.setCoonReaction(.culinaryBetrayal, to: michelle.id, in: visit))
+        let changed = try XCTUnwrap(store.myCoonReaction(to: michelle.id, in: visit))
+        XCTAssertEqual(changed.id, first.id)
+        XCTAssertEqual(changed.kind, .culinaryBetrayal)
+        XCTAssertEqual(store.coonReactions(to: michelle.id, in: visit).count, 1)
+        XCTAssertEqual(try XCTUnwrap(store.score(for: place)?.score), scoreBefore, accuracy: 0.0001)
+
+        XCTAssertTrue(store.setCoonReaction(nil, to: michelle.id, in: visit))
+        XCTAssertNil(store.myCoonReaction(to: michelle.id, in: visit))
+    }
+
+    func testCoonReactionRequiresAnotherMembersRatedEntry() throws {
+        let me = try XCTUnwrap(store.currentPerson)
+        let michelle = try XCTUnwrap(store.otherCircleMembers.first)
+        let place = store.createLocation(name: "Boundary Bistro")
+        let visit = store.logVisit(
+            at: place,
+            reaction: .liked,
+            personID: me.id,
+            companionIDs: [michelle.id]
+        )
+
+        XCTAssertFalse(store.setCoonReaction(.noNotes, to: me.id, in: visit))
+        XCTAssertFalse(store.setCoonReaction(.noNotes, to: michelle.id, in: visit))
+
+        _ = store.addRating(to: visit, personID: michelle.id, reaction: .fine)
+        XCTAssertTrue(store.setCoonReaction(.noNotes, to: michelle.id, in: visit))
+    }
+
     func testThreeYearOldVisitCarriesAboutHalfWeight() {
         let recent = Date.now.addingTimeInterval(-30 * 86_400)
         let old = Date.now.addingTimeInterval(-3 * 365 * 86_400)
@@ -163,6 +215,18 @@ final class RankingEngineTests: XCTestCase {
         _ = store.logVisit(at: place, reaction: nil)
         XCTAssertNil(store.score(for: place))
         XCTAssertEqual(place.visitArray.count, 1)
+    }
+
+    func testFamiliarRestaurantSeedsRankingWithoutCreatingOuting() throws {
+        let outingCount = store.visits.count
+
+        let restaurant = try XCTUnwrap(
+            store.seedFamiliarRestaurant(name: "Known Favorite", reaction: .loved)
+        )
+
+        XCTAssertEqual(store.visits.count, outingCount)
+        let score = try XCTUnwrap(store.score(for: restaurant))
+        XCTAssertEqual(score.ratedVisitCount, 0)
     }
 
     func testEstablishedPlaceMovementIsGuarded() {
@@ -536,6 +600,30 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertEqual(mappedVisit.longitude, mapped.longitude, accuracy: 0.000_001)
     }
 
+    func testInvalidRestaurantCoordinatesAreDiscardedBeforeDuplicateDetection() {
+        let location = store.createLocation(name: "Finite Cafe", category: .coffeeTea)
+
+        store.updateLocationDetails(
+            location,
+            name: location.name,
+            category: location.category,
+            cuisines: location.cuisines,
+            tags: location.tags,
+            address: nil,
+            city: nil,
+            phone: nil,
+            urlString: nil,
+            hoursText: nil,
+            latitude: .nan,
+            longitude: .infinity,
+            isClosed: false
+        )
+
+        XCTAssertFalse(location.hasCoordinates)
+        XCTAssertNil(location.coordinate)
+        XCTAssertTrue(store.duplicateLocationSuggestions().isEmpty)
+    }
+
     func testSanitizedBackfillPhotoBoundsStoredPixelDimensions() throws {
         let source = UIGraphicsImageRenderer(size: CGSize(width: 3_000, height: 2_400)).image { context in
             UIColor.systemOrange.setFill()
@@ -606,6 +694,35 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertEqual(store.people.filter { $0.name.localizedCaseInsensitiveCompare("Michelle") == .orderedSame }.count, 1)
     }
 
+    func testDeletingSavedCompanionHidesItFromFutureListsButKeepsPastName() throws {
+        let companion = try XCTUnwrap(store.addNamedCompanion(name: "Aunt Jo"))
+        let location = store.createLocation(name: "Goodbye Cafe")
+        let visit = store.logVisit(at: location, reaction: .liked, companionIDs: [companion.id])
+
+        XCTAssertTrue(store.deleteNamedCompanion(companion.id))
+        XCTAssertFalse(store.namedCompanions.contains { $0.id == companion.id })
+        XCTAssertEqual(store.person(id: companion.id)?.name, "Aunt Jo")
+        XCTAssertTrue(store.person(id: companion.id)?.isArchived == true)
+        XCTAssertEqual(store.taggedPeople(for: visit).map(\.name), ["Aunt Jo"])
+
+        XCTAssertTrue(store.updateVisit(
+            visit, type: nil, priceBand: 0, occasion: nil, memory: nil,
+            companions: [companion.id]
+        ))
+        XCTAssertEqual(store.taggedPeople(for: visit).map(\.name), ["Aunt Jo"])
+    }
+
+    func testDeletedCompanionCanBeAddedAgainAsAFreshProfile() throws {
+        let deleted = try XCTUnwrap(store.addNamedCompanion(name: "Aunt Jo"))
+        XCTAssertTrue(store.deleteNamedCompanion(deleted.id))
+
+        let replacement = try XCTUnwrap(store.addNamedCompanion(name: " Aunt Jo "))
+
+        XCTAssertNotEqual(replacement.id, deleted.id)
+        XCTAssertEqual(store.namedCompanions.map(\.id), [replacement.id])
+        XCTAssertFalse(replacement.isArchived)
+    }
+
     func testRenamingAPersonUpdatesEveryLinkedVisitName() throws {
         let michelle = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" })
         let visit = store.logVisit(at: store.createLocation(name: "Rename Table"), reaction: .liked, companionIDs: [michelle.id])
@@ -658,7 +775,7 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertTrue(store.isSharedVisit(restoredVisit))
     }
 
-    func testReloadConvergesConcurrentSameNameMembersOnOneCanonicalIdentity() throws {
+    func testReloadKeepsConcurrentSameNameMembersAsDistinctAccountIdentities() throws {
         let circle = try XCTUnwrap(store.activeCircle)
         let michelle = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" })
         let concurrentMichelle = PersonEntity(context: store.context)
@@ -689,14 +806,15 @@ final class RankingEngineTests: XCTestCase {
         store.reload()
 
         let restoredVisit = try XCTUnwrap(store.visits.first { $0.id == visit.id })
-        XCTAssertEqual(store.circleMembers.filter {
+        XCTAssertEqual(Set(store.circleMembers.filter {
             $0.name.trimmingCharacters(in: .whitespaces).localizedCaseInsensitiveCompare("Michelle") == .orderedSame
-        }.map(\.id), [michelle.id])
-        XCTAssertEqual(restoredVisit.companionIDs, [michelle.id])
-        XCTAssertEqual(restoredVisit.ratingArray.count, 2, "George and the canonical Michelle should each retain one rating")
-        XCTAssertEqual(restoredVisit.rating(for: michelle.id)?.reaction, .liked, "The newest duplicate rating should win")
+        }.map(\.id)), Set([michelle.id, concurrentMichelle.id]))
+        XCTAssertEqual(Set(restoredVisit.companionIDs), Set([michelle.id, concurrentMichelle.id]))
+        XCTAssertEqual(restoredVisit.ratingArray.count, 3, "George and both account identities should retain their own ratings")
+        XCTAssertEqual(restoredVisit.rating(for: michelle.id)?.reaction, .fine)
+        XCTAssertEqual(restoredVisit.rating(for: concurrentMichelle.id)?.reaction, .liked)
         XCTAssertEqual(restoredVisit.dishEntryArray.filter { $0.personID == michelle.id }.count, 1)
-        XCTAssertEqual(restoredVisit.dishEntryArray.first { $0.personID == michelle.id }?.reaction, .loved)
+        XCTAssertEqual(restoredVisit.dishEntryArray.filter { $0.personID == concurrentMichelle.id }.count, 1)
         XCTAssertTrue(store.isSharedVisit(restoredVisit))
     }
 
@@ -1123,6 +1241,69 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertEqual(store.score(for: location, personID: michelle.id)?.ratedVisitCount, 1)
     }
 
+    func testMutuallyTaggedOutingMergePreservesCoonReactionFromDuplicate() throws {
+        let george = try XCTUnwrap(store.currentPerson)
+        let michelle = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" })
+        let location = store.createLocation(name: "Sticker Reunion", category: .fullService)
+        let dinnerTime = Date(timeIntervalSince1970: 1_720_000_000)
+
+        let keeper = store.logVisit(
+            at: location,
+            reaction: .loved,
+            personID: george.id,
+            date: dinnerTime,
+            companionIDs: [michelle.id]
+        )
+        let duplicate = store.logVisit(
+            at: location,
+            reaction: .liked,
+            personID: michelle.id,
+            date: dinnerTime.addingTimeInterval(5 * 60),
+            companionIDs: [george.id]
+        )
+        XCTAssertTrue(store.setCoonReaction(.runItBack, to: michelle.id, in: duplicate))
+
+        store.reload()
+
+        XCTAssertEqual(store.visits.map(\.id), [keeper.id])
+        let reaction = try XCTUnwrap(store.myCoonReaction(to: michelle.id, in: keeper))
+        XCTAssertEqual(reaction.kind, .runItBack)
+        XCTAssertEqual(reaction.authorPersonID, george.id)
+        XCTAssertEqual(reaction.targetPersonID, michelle.id)
+        XCTAssertEqual(reaction.visit?.id, keeper.id)
+    }
+
+    func testMutuallyTaggedOutingMergeKeepsNewestCoonReactionPerPair() throws {
+        let george = try XCTUnwrap(store.currentPerson)
+        let michelle = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" })
+        let location = store.createLocation(name: "Sticker Collision", category: .fullService)
+        let dinnerTime = Date(timeIntervalSince1970: 1_720_000_000)
+
+        let keeper = store.logVisit(
+            at: location,
+            reaction: .loved,
+            personID: george.id,
+            date: dinnerTime,
+            companionIDs: [michelle.id]
+        )
+        _ = store.addRating(to: keeper, personID: michelle.id, reaction: .fine)
+        XCTAssertTrue(store.setCoonReaction(.runItBack, to: michelle.id, in: keeper))
+
+        let duplicate = store.logVisit(
+            at: location,
+            reaction: .liked,
+            personID: michelle.id,
+            date: dinnerTime.addingTimeInterval(5 * 60),
+            companionIDs: [george.id]
+        )
+        XCTAssertTrue(store.setCoonReaction(.noNotes, to: michelle.id, in: duplicate))
+
+        store.reload()
+
+        XCTAssertEqual(store.coonReactions(to: michelle.id, in: keeper).count, 1)
+        XCTAssertEqual(store.myCoonReaction(to: michelle.id, in: keeper)?.kind, .noNotes)
+    }
+
     func testDecliningTaggedOutingClearsPromptWithoutRemovingAttendee() throws {
         let george = try XCTUnwrap(store.currentPerson)
         let michelle = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" })
@@ -1140,6 +1321,25 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertTrue(store.pendingVisits(for: michelle.id).isEmpty)
         XCTAssertEqual(Set(store.attendees(for: visit).map(\.id)), Set([george.id, michelle.id]))
         XCTAssertNil(visit.rating(for: michelle.id))
+    }
+
+    func testEntryResponseIsNeededOnlyWhileParticipantIsPending() throws {
+        let george = try XCTUnwrap(store.currentPerson)
+        let michelle = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" })
+        let restaurant = store.createLocation(name: "Response Table")
+        let declined = store.logVisit(
+            at: restaurant, reaction: .liked, personID: george.id, companionIDs: [michelle.id]
+        )
+
+        XCTAssertTrue(store.needsEntryResponse(for: declined, personID: michelle.id))
+        store.declineRating(for: declined, personID: michelle.id)
+        XCTAssertFalse(store.needsEntryResponse(for: declined, personID: michelle.id))
+
+        let contributed = store.logVisit(
+            at: restaurant, reaction: .fine, personID: george.id, companionIDs: [michelle.id]
+        )
+        store.addPhoto(fullData: Data([0x01]), thumbnailData: nil, to: contributed, personID: michelle.id)
+        XCTAssertFalse(store.needsEntryResponse(for: contributed, personID: michelle.id))
     }
 
     func testRejectingIncorrectTagClearsPromptAndRemovesAttendee() throws {
@@ -1574,6 +1774,7 @@ final class RankingEngineTests: XCTestCase {
     /// The circle can arrive from a sync pull before the join finishes. Both
     /// copies then have to become one log rather than two.
     func testJoiningACircleThatAlreadyDownloadedMergesTheTwoLogs() throws {
+        let originalPersonID = try XCTUnwrap(store.currentPerson?.id)
         let mine = store.createLocation(name: "My Place", category: .fullService)
         let downloaded = try makeCircle(name: "Kelsey's Table", people: ["Kelsey"])
 
@@ -1585,13 +1786,17 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertEqual(store.locations.first { $0.id == mine.id }?.circle?.id, downloaded.circle.id)
         XCTAssertTrue(store.circleMembers.contains { $0.name == "Kelsey" })
         XCTAssertTrue(store.circleMembers.contains { $0.name == "George" })
+        XCTAssertEqual(store.currentPerson?.id, originalPersonID)
+        XCTAssertEqual(store.currentPerson?.name, "George")
     }
 
     /// Leaving must never delete the dining log. Deleting a circle graph while
     /// the interface still held its rows is what crashed the app.
     func testLeavingKeepsEveryRecordUnderAFreshIdentity() throws {
+        let georgeID = try XCTUnwrap(store.currentPerson?.id)
+        let michelleID = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" }?.id)
         let location = store.createLocation(name: "Kept Kitchen", category: .fullService)
-        let visit = store.logVisit(at: location, reaction: .liked)
+        let visit = store.logVisit(at: location, reaction: .liked, companionIDs: [michelleID])
         let sharedCircleID = try XCTUnwrap(store.activeCircleID)
 
         let newID = try XCTUnwrap(store.startFreshCircleIdentity())
@@ -1601,7 +1806,136 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertEqual(store.activeCircleID, newID)
         XCTAssertEqual(store.locations.map(\.id), [location.id])
         XCTAssertEqual(store.visits.map(\.id), [visit.id])
+        XCTAssertEqual(store.currentPerson?.id, georgeID)
         XCTAssertEqual(store.currentPerson?.name, "George")
+        XCTAssertEqual(store.circleMembers.map(\.id), [georgeID])
+        XCTAssertTrue(store.namedCompanions.contains { $0.id == michelleID })
+        XCTAssertTrue(store.attendees(for: visit).contains { $0.id == michelleID })
+    }
+
+    func testLeavingDemotesAnArchivedFormerMemberToo() throws {
+        let georgeID = try XCTUnwrap(store.currentPerson?.id)
+        let michelle = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" })
+        michelle.isArchived = true
+        try persistence.save()
+
+        _ = try XCTUnwrap(store.startFreshCircleIdentity())
+
+        XCTAssertEqual(store.currentPerson?.id, georgeID)
+        XCTAssertFalse(michelle.isCircleMember)
+        XCTAssertTrue(michelle.isArchived)
+    }
+
+    func testSameNamedMembersNeverMergeOrMoveThisPhonesIdentity() throws {
+        let georgeID = try XCTUnwrap(store.currentPerson?.id)
+        let secondGeorge = PersonEntity(context: store.context)
+        secondGeorge.id = UUID()
+        secondGeorge.name = "George"
+        secondGeorge.isMe = false
+        secondGeorge.isCircleMember = true
+        secondGeorge.colorHex = "2F5964"
+        secondGeorge.createdAt = .now.addingTimeInterval(1)
+        secondGeorge.circle = try XCTUnwrap(store.activeCircle)
+        try persistence.save()
+
+        store.reload()
+
+        XCTAssertEqual(store.circleMembers.filter { $0.name == "George" }.count, 2)
+        XCTAssertEqual(store.currentPerson?.id, georgeID)
+    }
+
+    func testServerPreferenceCannotReplaceAnExistingDeviceIdentity() throws {
+        let georgeID = try XCTUnwrap(store.currentPerson?.id)
+        let michelleID = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" }?.id)
+
+        XCTAssertEqual(store.adoptDeviceIdentity(preferring: michelleID), georgeID)
+        XCTAssertEqual(store.currentPerson?.id, georgeID)
+    }
+
+    func testLoggingIdentityRecoveryNeverGuessesBetweenCircleMembers() throws {
+        let circleID = try XCTUnwrap(store.activeCircle?.id)
+        store.completeBackupRestore(activeCircleID: circleID, selections: [:])
+
+        XCTAssertNil(store.currentPerson)
+        XCTAssertNil(store.resolveLoggingPersonID())
+        XCTAssertNil(store.currentPerson)
+    }
+
+    func testOrphanedHistoricalProfileCanBeMergedIntoConnectedMemberWithoutLosingRankings() throws {
+        let georgeID = try XCTUnwrap(store.currentPerson?.id)
+        let kelseyG = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" })
+        XCTAssertTrue(store.renamePerson(kelseyG, to: "Kelsey G"))
+        let importedKelsey = try XCTUnwrap(store.addNamedCompanion(name: "Kelsey"))
+        let importedKelseyID = importedKelsey.id
+        let kelseyGID = kelseyG.id
+        // Older backups can retain stale member/archive flags even though no
+        // current server membership points at this historical profile.
+        importedKelsey.isCircleMember = true
+        importedKelsey.isArchived = true
+        let first = store.createLocation(name: "Kelsey's Favorite", category: .fullService)
+        let second = store.createLocation(name: "Kelsey's Runner Up", category: .fullService)
+        let visit = store.logVisit(
+            at: first,
+            reaction: .liked,
+            personID: georgeID,
+            companionIDs: [importedKelseyID]
+        )
+        _ = store.addRating(to: visit, personID: importedKelseyID, reaction: .loved)
+        store.updateMemory("Kelsey remembered this dinner.", for: visit, personID: importedKelseyID)
+        let dish = try XCTUnwrap(store.addDish(
+            name: "Kelsey's Pasta",
+            role: .entree,
+            reaction: .loved,
+            wouldOrderAgain: true,
+            to: visit,
+            personID: importedKelseyID
+        ))
+        store.addPhoto(
+            fullData: Data([0x01, 0x02]),
+            thumbnailData: Data([0x03]),
+            to: visit,
+            personID: importedKelseyID
+        )
+        store.recordComparison(
+            a: first,
+            b: second,
+            outcome: .a,
+            personID: importedKelseyID
+        )
+        store.toggleWant(second, by: importedKelseyID)
+
+        let connectedMemberIDs: Set<UUID> = [georgeID, kelseyGID]
+        XCTAssertFalse(store.mergeHistoricalProfile(
+            georgeID,
+            into: kelseyGID,
+            connectedMemberIDs: connectedMemberIDs
+        ))
+        XCTAssertFalse(store.mergeHistoricalProfile(
+            importedKelseyID,
+            into: kelseyGID,
+            connectedMemberIDs: connectedMemberIDs.union([importedKelseyID])
+        ))
+        XCTAssertTrue(store.mergeHistoricalProfile(
+            importedKelseyID,
+            into: kelseyGID,
+            connectedMemberIDs: connectedMemberIDs
+        ))
+
+        let restoredVisit = try XCTUnwrap(store.visits.first { $0.id == visit.id })
+        XCTAssertNil(store.person(id: importedKelseyID))
+        XCTAssertNotNil(store.person(id: kelseyGID))
+        XCTAssertTrue(restoredVisit.companionIDs.contains(kelseyGID))
+        XCTAssertNil(restoredVisit.rating(for: importedKelseyID))
+        XCTAssertEqual(restoredVisit.rating(for: kelseyGID)?.reaction, .loved)
+        XCTAssertEqual(store.memory(for: restoredVisit, personID: kelseyGID), "Kelsey remembered this dinner.")
+        XCTAssertEqual(dish.personID, kelseyGID)
+        XCTAssertEqual(restoredVisit.photoArray.first?.personID, kelseyGID)
+        XCTAssertTrue(store.comparisons.allSatisfy { $0.personID != importedKelseyID })
+        XCTAssertTrue(store.comparisons.contains { $0.personID == kelseyGID })
+        XCTAssertTrue(store.wantEntries.allSatisfy { $0.addedByID != importedKelseyID })
+        XCTAssertTrue(store.wantEntries.contains { $0.addedByID == kelseyGID })
+        XCTAssertFalse(store.ranked(for: kelseyGID).isEmpty)
+        XCTAssertEqual(store.currentPerson?.id, georgeID)
     }
 
     func testExtraCirclesFromOlderBuildsAreFoldedIntoOneLog() throws {
@@ -1660,6 +1994,67 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertEqual(store.diagnosticReloadCount, reloadsBefore, "Local batches should publish without refetching the store")
         XCTAssertEqual(store.locations.count, 51)
         XCTAssertEqual(store.visits.count, 50)
+    }
+
+    func testNameOnlyCreationReusesUniqueAddressedRestaurant() {
+        let mapped = store.createLocation(
+            name: "Branch Bistro",
+            address: "123 Main Street",
+            coordinate: (40.75, -111.89)
+        )
+
+        let manual = store.createLocation(name: "branch bistro")
+
+        XCTAssertEqual(manual.id, mapped.id)
+        XCTAssertEqual(store.locations.count, 1)
+    }
+
+    func testNameOnlyCreationDoesNotMergeAmbiguousBranches() {
+        let first = store.createLocation(
+            name: "Branch Bistro",
+            address: "123 Main Street",
+            forceDistinct: true
+        )
+        let second = store.createLocation(
+            name: "Branch Bistro",
+            address: "456 State Street",
+            forceDistinct: true
+        )
+
+        let manual = store.createLocation(name: "Branch Bistro")
+
+        XCTAssertNotEqual(manual.id, first.id)
+        XCTAssertNotEqual(manual.id, second.id)
+        XCTAssertEqual(store.locations.count, 3)
+    }
+
+    func testRestaurantRoutePreservesRankingScope() {
+        let locationID = UUID()
+        let personID = UUID()
+
+        XCTAssertNotEqual(
+            AppRoute.location(locationID, rankingScope: .person(personID)),
+            AppRoute.location(locationID, rankingScope: .circle)
+        )
+    }
+
+    func testCircleJoinImpactCountsEverythingThatWillBecomeShared() throws {
+        let first = store.createLocation(name: "Local Favorite")
+        let second = store.createLocation(name: "Another Favorite")
+        let outing = store.logVisit(at: first, reaction: .loved)
+        store.addPhoto(fullData: Data([0x01]), thumbnailData: nil, to: outing)
+        store.toggleWant(second)
+        store.recordComparison(a: first, b: second, outcome: .a)
+
+        let impact = store.circleJoinImpact
+
+        XCTAssertEqual(impact.restaurants, 2)
+        XCTAssertEqual(impact.outings, 1)
+        XCTAssertEqual(impact.photos, 1)
+        XCTAssertEqual(impact.wantToTryEntries, 1)
+        XCTAssertEqual(impact.reactions, 1)
+        XCTAssertEqual(impact.rankingAnswers, 1)
+        XCTAssertTrue(impact.hasShareableData)
     }
 
     func testRemoteChangeBurstsAreCoalesced() async throws {

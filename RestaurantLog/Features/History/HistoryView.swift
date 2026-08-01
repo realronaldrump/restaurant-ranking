@@ -1,7 +1,7 @@
 import SwiftUI
 
 private enum HistoryFilter: String, CaseIterable, Identifiable {
-    case all = "All", unrated = "Unrated", hazy = "Hazy", unknownDate = "Date Unknown", shared = "Shared", closed = "Closed"
+    case all = "All outings", unrated = "No reaction yet", hazy = "Hazy memory", unknownDate = "Date unknown", closed = "Closed restaurants"
     var id: String { rawValue }
     var symbol: String {
         switch self {
@@ -9,22 +9,27 @@ private enum HistoryFilter: String, CaseIterable, Identifiable {
         case .unrated: "questionmark.circle"
         case .hazy: "cloud.fog"
         case .unknownDate: "calendar.badge.questionmark"
-        case .shared: "person.2"
         case .closed: "door.left.hand.closed"
         }
     }
 }
 
+private enum HistoryScope: String, CaseIterable, Identifiable {
+    case mine = "Mine"
+    case roster = "Everyone"
+    var id: String { rawValue }
+}
+
 private struct HistorySearchRecord: Identifiable {
+    let id: UUID
     let visit: VisitEntity
     let year: Int
     let searchableText: String
     let isUnrated: Bool
     let isHazy: Bool
     let hasUnknownDate: Bool
-    let isShared: Bool
     let isClosed: Bool
-    var id: UUID { visit.id }
+    let belongsToCurrentPerson: Bool
 }
 
 private struct HistoryYearSection: Identifiable {
@@ -45,6 +50,7 @@ struct HistoryView: View {
     @State private var query = ""
     @State private var effectiveQuery = ""
     @State private var filter: HistoryFilter = .all
+    @State private var scope: HistoryScope = .mine
     @State private var searchRecords: [HistorySearchRecord] = []
     @State private var isPreparing = true
 
@@ -52,21 +58,21 @@ struct HistoryView: View {
         let snapshot = historySnapshot
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
-                header(snapshot.count)
-                filterStrip
+                if isShared { scopePicker }
+                historyControls(snapshot.count)
                 if isPreparing {
                     historyPlaceholder
                 } else if snapshot.count == 0 {
                     EmptyLogView(
-                        title: searchRecords.isEmpty ? "No visits yet" : "No matching visits",
-                        message: searchRecords.isEmpty ? "Meals will appear here after you log them." : "Try another search or history filter.",
+                        title: searchRecords.isEmpty ? "No outings yet" : "No matching outings",
+                        message: searchRecords.isEmpty ? "Outings show up here after you log them." : "Try another search or filter.",
                         symbol: "book.pages"
                     )
                     if searchRecords.isEmpty {
-                        Button("Log Your First Meal") { router.sheet = .logMeal }
+                        Button("Log your first outing") { router.sheet = .logMeal }
                             .buttonStyle(PrimaryButtonStyle())
                     } else {
-                        Button("Show Every Visit") { filter = .all; query = ""; effectiveQuery = "" }
+                        Button("Show every outing") { filter = .all; query = ""; effectiveQuery = "" }
                             .buttonStyle(SecondaryButtonStyle())
                     }
                 } else {
@@ -81,7 +87,7 @@ struct HistoryView: View {
         .editorialPage()
         .navigationTitle("History")
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $query, prompt: "Place, dish, companion, or memory")
+        .searchable(text: $query, prompt: "Restaurant, dish, person, or memory")
         .task(id: query) {
             do { try await Task.sleep(nanoseconds: 150_000_000) }
             catch { return }
@@ -92,57 +98,61 @@ struct HistoryView: View {
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button { router.historyPath.append(.backfill) } label: { Image(systemName: "photo.on.rectangle.angled") }
-                    .accessibilityLabel("Backfill from photos")
+                    .accessibilityLabel("Find past outings in photos")
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button { router.historyPath.append(.atlas) } label: { Image(systemName: "map.fill") }
                     .accessibilityLabel("Open dining atlas")
                 Button { router.sheet = .logMeal } label: { Image(systemName: "plus") }
-                    .accessibilityLabel("Log a meal")
+                    .accessibilityLabel("Log an outing")
             }
         }
     }
 
-    private func header(_ count: Int) -> some View {
-        HStack(alignment: .bottom, spacing: 16) {
-            VStack(alignment: .leading, spacing: 7) {
-                Eyebrow("Every visit, kept")
-                Text("The complete record")
-                    .font(BBTheme.display(35))
-                    .fixedSize(horizontal: false, vertical: true)
-                Text("Search every place, dish, companion, and memory.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 8)
-            VStack(alignment: .trailing, spacing: 0) {
-                Text("\(count)")
-                    .font(BBTheme.score(38))
-                    .foregroundStyle(BBTheme.oxblood)
-                    .contentTransition(.numericText())
-                Text(count == 1 ? "VISIT" : "VISITS")
-                    .font(.caption2.weight(.bold))
-                    .tracking(0.7)
-                    .foregroundStyle(.secondary)
+    private var scopePicker: some View {
+        Picker("History scope", selection: $scope) {
+            ForEach(HistoryScope.allCases) { option in
+                Text(option.rawValue).tag(option)
             }
         }
+        .pickerStyle(.segmented)
+        .accessibilityIdentifier("history-scope")
         .padding(.top, 8)
     }
 
-    private var filterStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: 8) {
+    private var isShared: Bool { store.circleMembers.count > 1 }
+
+    private func historyControls(_ count: Int) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(scope == .roster && isShared ? "Everyone’s outings" : "My outings")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text("\(count) \(count == 1 ? "outing" : "outings")")
+                    .font(BBTheme.display(25))
+                    .contentTransition(.numericText())
+            }
+            Spacer(minLength: 8)
+            Menu {
                 ForEach(HistoryFilter.allCases) { value in
-                    FilterChip(title: value.rawValue, symbol: value.symbol, selected: filter == value) {
+                    Button {
                         filter = value
                         Haptics.selection()
+                    } label: {
+                        Label(value.rawValue, systemImage: filter == value ? "checkmark" : value.symbol)
                     }
                 }
+            } label: {
+                Label(filter.rawValue, systemImage: "line.3.horizontal.decrease.circle")
+                    .font(.callout.weight(.semibold))
+                    .lineLimit(1)
+                    .padding(.horizontal, 12)
+                    .frame(minHeight: 44)
+                    .background(BBTheme.surface, in: Capsule())
+                    .overlay(Capsule().stroke(BBTheme.hairline))
             }
-            .padding(.vertical, 2)
+            .accessibilityLabel("History filter, \(filter.rawValue)")
         }
-        .accessibilityLabel("History filters")
     }
 
     private func historySection(_ section: HistoryYearSection) -> some View {
@@ -152,7 +162,7 @@ struct HistoryView: View {
                     .font(BBTheme.score(25))
                     .foregroundStyle(BBTheme.oxblood)
                 Spacer()
-                Text("\(section.visits.count) \(section.visits.count == 1 ? "visit" : "visits")")
+                Text("\(section.visits.count) \(section.visits.count == 1 ? "outing" : "outings")")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
@@ -172,7 +182,7 @@ struct HistoryView: View {
     private var historyPlaceholder: some View {
         VStack(spacing: 0) {
             ForEach(0..<4, id: \.self) { index in
-                HStack { RoundedRectangle(cornerRadius: 12).frame(width: 56, height: 56); VStack(alignment: .leading) { Text("Restaurant name"); Text("Visit date") }; Spacer() }
+                HStack { RoundedRectangle(cornerRadius: 12).frame(width: 56, height: 56); VStack(alignment: .leading) { Text("Restaurant name"); Text("Outing date") }; Spacer() }
                     .padding(.vertical, 8)
                 if index < 3 { Divider() }
             }
@@ -184,12 +194,13 @@ struct HistoryView: View {
 
     private var historySnapshot: HistorySnapshot {
         let records = searchRecords.filter { record in
+            guard record.visit.isAlive else { return false }
+            guard !isShared || scope == .roster || record.belongsToCurrentPerson else { return false }
             let filterMatches: Bool = switch filter {
             case .all: true
             case .unrated: record.isUnrated
             case .hazy: record.isHazy
             case .unknownDate: record.hasUnknownDate
-            case .shared: record.isShared
             case .closed: record.isClosed
             }
             guard filterMatches else { return false }
@@ -210,6 +221,7 @@ struct HistoryView: View {
     private func rebuildSearchRecords() {
         isPreparing = true
         let peopleByID = Dictionary(uniqueKeysWithValues: store.people.map { ($0.id, $0.name) })
+        let currentPersonID = store.currentPerson?.id
         searchRecords = store.visits.map { visit in
             let participantIDs = visit.participantArray
                 .filter { $0.status != .notThere }
@@ -220,15 +232,23 @@ struct HistoryView: View {
                 + visit.dishEntryArray.map { $0.dish?.name }
                 + visit.participantArray.map(\.memory)
                 + people.map(Optional.some)
+            let currentStatus = currentPersonID.flatMap { visit.participant(for: $0)?.status }
+            let belongsToCurrentPerson = currentPersonID.map { personID in
+                if let currentStatus { return currentStatus != .notThere }
+                return visit.createdByID == personID || visit.rating(for: personID) != nil || visit.companionIDs.contains(personID)
+            } ?? false
             return HistorySearchRecord(
+                id: visit.id,
                 visit: visit,
                 year: visit.dateKnowledge == .known ? Calendar.current.component(.year, from: visit.date) : Int.min,
                 searchableText: searchable.compactMap { $0 }.joined(separator: " "),
-                isUnrated: visit.ratingArray.isEmpty,
-                isHazy: visit.ratingArray.contains(where: \.hazyMemory),
+                isUnrated: belongsToCurrentPerson
+                    && currentStatus != .declined
+                    && currentPersonID.map { visit.rating(for: $0) == nil } == true,
+                isHazy: currentPersonID.flatMap { visit.rating(for: $0)?.hazyMemory } ?? false,
                 hasUnknownDate: visit.dateKnowledge == .unknown,
-                isShared: store.isSharedVisit(visit),
-                isClosed: visit.location?.isClosed == true
+                isClosed: visit.location?.isClosed == true,
+                belongsToCurrentPerson: belongsToCurrentPerson
             )
         }
         isPreparing = false

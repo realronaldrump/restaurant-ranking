@@ -11,7 +11,12 @@ struct LocationScore: Identifiable {
     var categoryRank: Int = 0
 
     var isProvisional: Bool { ratedVisitCount < 2 && comparisonCount < 4 }
+    /// The precise score, for detail surfaces that have room to explain it.
     var displayScore: String { score.formatted(.number.precision(.fractionLength(1))) }
+    /// The score as lists show it. Ranked lists round to whole numbers so that
+    /// two rows reading the same number really are tied, which is the promise
+    /// the tied-rank markers make.
+    var listScore: Int { Int(score.rounded()) }
 
     init(
         location: RestaurantLocation,
@@ -51,6 +56,7 @@ struct CircleLocationScore: Identifiable {
         memberScores.map(\.score.score).reduce(0, +) / Double(max(1, memberScores.count))
     }
     var displayScore: String { score.formatted(.number.precision(.fractionLength(1))) }
+    var listScore: Int { Int(score.rounded()) }
     var scoreSpread: Double {
         guard let lowest = memberScores.map(\.score.score).min(),
               let highest = memberScores.map(\.score.score).max() else { return 0 }

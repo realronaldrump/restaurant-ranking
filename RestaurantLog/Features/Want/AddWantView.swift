@@ -13,7 +13,7 @@ struct AddWantView: View {
         NavigationStack {
             List {
                 if !localResults.isEmpty {
-                    Section("Your log") {
+                    Section {
                         ForEach(localResults) { location in
                             row(location.name, subtitle: location.category.shortTitle) {
                                 store.toggleWant(location)
@@ -21,10 +21,11 @@ struct AddWantView: View {
                                 dismiss()
                             }
                         }
-                    }
+                    } header: { Eyebrow("Your log") }
+                    .listRowBackground(BBTheme.surface)
                 }
                 if !mapResults.isEmpty {
-                    Section("Map results") {
+                    Section {
                         ForEach(mapResults) { candidate in
                             row(candidate.name, subtitle: candidate.address ?? candidate.suggestedCategory.shortTitle) {
                                 let location = store.createLocation(
@@ -39,7 +40,8 @@ struct AddWantView: View {
                                 dismiss()
                             }
                         }
-                    }
+                    } header: { Eyebrow("Map results") }
+                    .listRowBackground(BBTheme.surface)
                 } else if !trimmedQuery.isEmpty, localResults.isEmpty {
                     Section {
                         if locationService.isSearching {
@@ -48,11 +50,12 @@ struct AddWantView: View {
                             ContentUnavailableView.search(text: trimmedQuery)
                         }
                     }
+                    .listRowBackground(BBTheme.surface)
                 }
             }
             .editorialForm()
             .scrollDismissesKeyboard(.immediately)
-            .searchable(text: $query, prompt: "Find a place to save")
+            .searchable(text: $query, prompt: "Find a restaurant to save")
             .navigationTitle("Add to Want to Try")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }

@@ -17,15 +17,6 @@ final class LegacyStoreConsolidatorTests: XCTestCase {
             throw XCTSkip("No local device-store fixture is bundled on this machine.")
         }
 
-        let expected = try fingerprintStore(
-            at: fixtureURL.appendingPathComponent("BigBeautiful-private.sqlite")
-        )
-        XCTAssertGreaterThan(expected.relationships.filter { $0.targetID != nil }.count, 0)
-        XCTAssertGreaterThan(expected.photos.count, 0)
-        XCTAssertTrue(expected.photos.values.allSatisfy {
-            $0.fullData.byteCount > 0 && $0.thumbnailData.byteCount > 0
-        })
-
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("device-consolidation-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -34,6 +25,14 @@ final class LegacyStoreConsolidatorTests: XCTestCase {
 
         let sourceURL = directory.appendingPathComponent("BigBeautiful-private.sqlite")
         let destinationURL = directory.appendingPathComponent("Consolidated.sqlite")
+        let fingerprintURL = try LegacyStoreConsolidator.makeRecoveryCopy(of: sourceURL)
+        let expected = try fingerprintStore(at: fingerprintURL)
+        XCTAssertGreaterThan(expected.relationships.filter { $0.targetID != nil }.count, 0)
+        XCTAssertGreaterThan(expected.photos.count, 0)
+        XCTAssertTrue(expected.photos.values.allSatisfy {
+            $0.fullData.byteCount > 0 && $0.thumbnailData.byteCount > 0
+        })
+
         let copied = try await LegacyStoreConsolidator.consolidate(
             from: sourceURL,
             into: destinationURL

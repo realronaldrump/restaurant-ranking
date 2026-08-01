@@ -38,6 +38,55 @@ enum CircleJoinResult: Equatable {
     case failed(String)
 }
 
+enum CircleEnrollmentDecision: Equatable {
+    case useMembership(UUID)
+    case create(UUID)
+    case missingKey
+    case needsFreshCircleIdentity
+    case missingLocalIdentity
+    case identityConflict
+
+    static func decide(
+        hasKey: Bool,
+        membershipPersonID: UUID?,
+        localPersonID: UUID?
+    ) -> CircleEnrollmentDecision {
+        if let membershipPersonID {
+            guard hasKey else { return .missingKey }
+            if let localPersonID, localPersonID != membershipPersonID {
+                return .identityConflict
+            }
+            return .useMembership(membershipPersonID)
+        }
+        if hasKey { return .needsFreshCircleIdentity }
+        if let localPersonID { return .create(localPersonID) }
+        return .missingLocalIdentity
+    }
+}
+
+struct CircleRecoveryCandidate: Equatable {
+    let circleID: UUID
+    let memberCount: Int
+    let lastActivity: Date
+
+    static func preferred(from candidates: [CircleRecoveryCandidate]) -> CircleRecoveryCandidate? {
+        candidates.max { lhs, rhs in
+            let lhsShared = lhs.memberCount > 1
+            let rhsShared = rhs.memberCount > 1
+            if lhsShared != rhsShared { return !lhsShared && rhsShared }
+            if lhs.lastActivity != rhs.lastActivity { return lhs.lastActivity < rhs.lastActivity }
+            if lhs.memberCount != rhs.memberCount { return lhs.memberCount < rhs.memberCount }
+            return lhs.circleID.uuidString > rhs.circleID.uuidString
+        }
+    }
+}
+
+enum CircleActivationResult: Equatable {
+    case ready(personID: UUID)
+    case needsFreshCircleIdentity
+    case failed
+}
+
 /// The app-facing face of sync.
 ///
 /// There is one dining log and it is always synced once the person is signed
@@ -55,6 +104,10 @@ final class SyncCoordinator {
     private(set) var members: [SupabaseClient.MembershipRow] = []
     /// True while a first upload or download is still filling the circle in.
     private(set) var isPreparing = false
+    /// Set only after an authenticated membership query proves this account no
+    /// longer belongs to the local circle. The app then rotates the on-device
+    /// log into a private circle instead of retrying a revoked identity forever.
+    private(set) var circleNeedingFreshIdentity: UUID?
     var lastError: String?
 
     @ObservationIgnored private let configuration: SyncConfiguration?
@@ -62,6 +115,7 @@ final class SyncCoordinator {
     @ObservationIgnored private var debounce: Task<Void, Never>?
     @ObservationIgnored private var scheduledCircles = CircleSyncQueue()
     @ObservationIgnored private var pendingCircles = CircleSyncQueue()
+    @ObservationIgnored private var retiringCircleIDs: Set<UUID> = []
     @ObservationIgnored private let signIn = AppleSignIn()
     @ObservationIgnored private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.davis.bigbeautifulranking",
@@ -82,11 +136,12 @@ final class SyncCoordinator {
 
     init(
         container: NSPersistentContainer,
-        configuration: SyncConfiguration? = SyncConfiguration.fromBundle()
+        configuration: SyncConfiguration? = SyncConfiguration.fromBundle(),
+        client: SupabaseClient? = nil
     ) {
         self.configuration = configuration
         if let configuration {
-            engine = SyncEngine(configuration: configuration, container: container)
+            engine = SyncEngine(configuration: configuration, container: container, client: client)
             status = .idle
         } else {
             engine = nil
@@ -140,6 +195,7 @@ final class SyncCoordinator {
         debounce = nil
         scheduledCircles.removeAll()
         pendingCircles.removeAll()
+        await engine.cancelSynchronization()
         await engine.supabase.signOut()
         isSignedIn = false
         accountUserID = nil
@@ -161,29 +217,58 @@ final class SyncCoordinator {
     /// Somebody else has joined, so this log is genuinely shared.
     var isShared: Bool { members.count > 1 }
 
+    /// Authoritative enrollment lookup for destructive local transitions such
+    /// as backup restore. Callers must distinguish "not a member" from a
+    /// network failure instead of guessing from the last cached roster.
+    func authenticatedMembership(circleID: UUID) async throws -> SupabaseClient.MembershipRow? {
+        guard let engine, isSignedIn else { throw SyncError.notSignedIn }
+        return try await engine.supabase.memberships()
+            .first { $0.circleID == circleID }
+    }
+
+    /// Prevents an in-flight or debounced pass from interpreting a backup's
+    /// replacement graph as thousands of intentional deletions. Clearing the
+    /// baseline makes the next pass reconcile the restored local log and the
+    /// existing remote circle as two complete inputs.
+    func prepareForBackupRestore(circleID: UUID) async {
+        guard let engine else { return }
+        debounce?.cancel()
+        debounce = nil
+        scheduledCircles.removeAll()
+        pendingCircles.removeAll()
+        await engine.cancelSynchronization()
+        SyncBaselineStore.reset(circleID: circleID)
+        status = .idle
+        lastError = nil
+    }
+
     /// Brings the circle up to date with the service, doing whatever that
     /// currently requires. Safe to call on every launch and after every join.
     ///
     /// Registration and key creation happen here rather than behind a switch in
     /// Settings: a log that is only sometimes uploaded is the thing that made
     /// members disagree about what the circle contained.
-    func activate(circleID: UUID, name: String, personID: UUID) async {
-        guard let engine, isSignedIn else { return }
+    @discardableResult
+    func activate(circleID: UUID, name: String, personID: UUID?) async -> CircleActivationResult {
+        guard let engine, isSignedIn else { return .failed }
         isPreparing = true
         defer { isPreparing = false }
 
-        if !hasKey(circleID: circleID) {
-            do {
-                let alreadyAMember = try await engine.supabase.memberships()
-                    .contains { $0.circleID == circleID }
-                if alreadyAMember {
-                    // The account belongs to this circle but this device cannot
-                    // read it. Only a fresh join code can repair that, and
-                    // publishing a second key would break the other members.
-                    lastError = SyncError.circleKeyMissing.localizedDescription
-                    status = .failed(SyncError.circleKeyMissing.localizedDescription)
-                    return
-                }
+        do {
+            let membership = try await engine.supabase.memberships()
+                .first { $0.circleID == circleID }
+            switch CircleEnrollmentDecision.decide(
+                hasKey: hasKey(circleID: circleID),
+                membershipPersonID: membership?.personID,
+                localPersonID: personID
+            ) {
+            case let .useMembership(serverPersonID):
+                circleNeedingFreshIdentity = nil
+                _ = await sync(circleID: circleID)
+                await refreshMembers(circleID: circleID)
+                return status.isFailure ? .failed : .ready(personID: serverPersonID)
+
+            case let .create(localPersonID):
                 let key = CircleCrypto.makeKey()
                 let sealedName = try CircleCrypto.seal(
                     Data(name.utf8),
@@ -193,18 +278,42 @@ final class SyncCoordinator {
                 // The key is persisted only after the service accepted the
                 // circle, so a failed request never leaves the app believing it
                 // is enrolled. Retrying is idempotent either way.
-                try await engine.supabase.createCircle(id: circleID, nameCipher: sealedName, personID: personID)
+                try await engine.supabase.createCircle(
+                    id: circleID,
+                    nameCipher: sealedName,
+                    personID: localPersonID
+                )
                 try CircleKeychain.storeKey(key, for: circleID)
+                circleNeedingFreshIdentity = nil
                 lastError = nil
-            } catch {
-                lastError = error.localizedDescription
-                status = .failed(error.localizedDescription)
-                return
-            }
-        }
+                _ = await sync(circleID: circleID)
+                await refreshMembers(circleID: circleID)
+                return status.isFailure ? .failed : .ready(personID: localPersonID)
 
-        _ = await sync(circleID: circleID)
-        await refreshMembers(circleID: circleID, claiming: personID)
+            case .missingKey:
+                lastError = SyncError.circleKeyMissing.localizedDescription
+                status = .failed(SyncError.circleKeyMissing.localizedDescription)
+                return .failed
+
+            case .needsFreshCircleIdentity:
+                circleNeedingFreshIdentity = circleID
+                return .needsFreshCircleIdentity
+
+            case .missingLocalIdentity:
+                lastError = SyncError.deviceIdentityMissing.localizedDescription
+                status = .failed(SyncError.deviceIdentityMissing.localizedDescription)
+                return .failed
+
+            case .identityConflict:
+                lastError = SyncError.deviceIdentityConflict.localizedDescription
+                status = .failed(SyncError.deviceIdentityConflict.localizedDescription)
+                return .failed
+            }
+        } catch {
+            lastError = error.localizedDescription
+            status = .failed(error.localizedDescription)
+            return .failed
+        }
     }
 
     /// Drops this device's access to a circle without touching the dining log.
@@ -213,6 +322,7 @@ final class SyncCoordinator {
         pendingCircles.remove(circleID)
         CircleKeychain.removeKey(for: circleID)
         SyncBaselineStore.reset(circleID: circleID)
+        if circleNeedingFreshIdentity == circleID { circleNeedingFreshIdentity = nil }
     }
 
     /// Cleans up the private circle this device published before it joined
@@ -220,6 +330,11 @@ final class SyncCoordinator {
     /// on the service forever and would block account deletion later.
     func discardAbandonedCircle(_ circleID: UUID) async {
         guard let engine, isSignedIn, hasKey(circleID: circleID) else { return }
+        retiringCircleIDs.insert(circleID)
+        scheduledCircles.remove(circleID)
+        pendingCircles.remove(circleID)
+        await engine.cancelSynchronization()
+        defer { retiringCircleIDs.remove(circleID) }
         do {
             let rows = try await engine.supabase.members(circleID: circleID)
             let mine = rows.first { $0.userID == accountUserID }
@@ -236,10 +351,10 @@ final class SyncCoordinator {
 
     // MARK: - Members
 
-    /// Refreshes the roster and, when asked, repairs this account's member
-    /// profile so the badge lands on the right person after two devices
-    /// converge on one record.
-    func refreshMembers(circleID: UUID, claiming personID: UUID? = nil) async {
+    /// Refreshes operational roster metadata. A membership's person identity is
+    /// immutable after create/join; a roster refresh must never claim a profile
+    /// on behalf of the local cache.
+    func refreshMembers(circleID: UUID) async {
         guard let engine, isSignedIn, hasKey(circleID: circleID) else {
             members = []
             return
@@ -254,13 +369,6 @@ final class SyncCoordinator {
         }
         do {
             members = try await roster(circleID: circleID)
-            // Two devices can converge on one person record for the same human,
-            // which leaves this account's membership pointing at a profile that
-            // no longer exists. Repair it, then read the roster back.
-            if let personID, let mine = myMembership, mine.personID != personID {
-                try await engine.supabase.setMemberPerson(circleID: circleID, personID: personID)
-                members = try await roster(circleID: circleID)
-            }
         } catch {
             members = []
             lastError = error.localizedDescription
@@ -333,13 +441,16 @@ final class SyncCoordinator {
         return String(data: plaintext, encoding: .utf8)
     }
 
-    func cancelInvitations(circleID: UUID) async {
-        guard let engine else { return }
+    @discardableResult
+    func cancelInvitations(circleID: UUID) async -> Bool {
+        guard let engine else { return false }
         do {
             try await engine.supabase.revokeJoinCodes(circleID: circleID)
             lastError = nil
+            return true
         } catch {
             lastError = error.localizedDescription
+            return false
         }
     }
 
@@ -378,14 +489,20 @@ final class SyncCoordinator {
     /// syncing it as a private circle again.
     func leave(circleID: UUID) async -> Bool {
         guard let engine else { return false }
+        retiringCircleIDs.insert(circleID)
+        scheduledCircles.remove(circleID)
+        pendingCircles.remove(circleID)
+        await engine.cancelSynchronization()
         do {
             try await engine.supabase.leaveCircle(circleID: circleID)
             forget(circleID: circleID)
             members = []
             status = .idle
             lastError = nil
+            retiringCircleIDs.remove(circleID)
             return true
         } catch {
+            retiringCircleIDs.remove(circleID)
             lastError = error.localizedDescription
             return false
         }
@@ -396,13 +513,58 @@ final class SyncCoordinator {
     /// again resumes the protocol where it stopped.
     func deleteServerCopy(circleID: UUID) async -> Bool {
         guard let engine else { return false }
+        retiringCircleIDs.insert(circleID)
+        scheduledCircles.remove(circleID)
+        pendingCircles.remove(circleID)
+        await engine.cancelSynchronization()
         do {
             try await engine.supabase.deleteCircleData(circleID: circleID)
             forget(circleID: circleID)
             lastError = nil
+            retiringCircleIDs.remove(circleID)
             return true
         } catch {
+            retiringCircleIDs.remove(circleID)
             lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    /// Retires every server circle still attached to the signed-in account but
+    /// keeps the account itself. Reset App calls this before touching Core Data,
+    /// so a reset cannot leave orphan memberships that are downloaded and
+    /// merged into the next onboarding circle.
+    func resetSyncedCircles() async -> Bool {
+        guard let engine else { return false }
+        do {
+            let memberships = try await engine.supabase.memberships()
+            let circleIDs = Set(memberships.map(\.circleID))
+            retiringCircleIDs.formUnion(circleIDs)
+            debounce?.cancel()
+            debounce = nil
+            for circleID in circleIDs {
+                scheduledCircles.remove(circleID)
+                pendingCircles.remove(circleID)
+            }
+            await engine.cancelSynchronization()
+
+            for membership in memberships.sorted(by: { $0.circleID.uuidString < $1.circleID.uuidString }) {
+                if membership.role == "owner" {
+                    try await engine.supabase.deleteCircleData(circleID: membership.circleID)
+                } else {
+                    try await engine.supabase.leaveCircle(circleID: membership.circleID)
+                }
+                forget(circleID: membership.circleID)
+            }
+            retiringCircleIDs.subtract(circleIDs)
+            members = []
+            status = .idle
+            lastError = nil
+            return true
+        } catch {
+            retiringCircleIDs.removeAll()
+            lastError = error.localizedDescription
+            status = .failed(error.localizedDescription)
             return false
         }
     }
@@ -411,16 +573,8 @@ final class SyncCoordinator {
     /// objects), and finally deletes the Supabase Auth account itself.
     func deleteAccount() async -> Bool {
         guard let engine else { return false }
+        guard await resetSyncedCircles() else { return false }
         do {
-            let memberships = try await engine.supabase.memberships()
-            for membership in memberships {
-                if membership.role == "owner" {
-                    try await engine.supabase.deleteCircleData(circleID: membership.circleID)
-                } else {
-                    try await engine.supabase.leaveCircle(circleID: membership.circleID)
-                }
-                forget(circleID: membership.circleID)
-            }
             try await engine.supabase.deleteAccount()
             isSignedIn = false
             accountUserID = nil
@@ -438,7 +592,8 @@ final class SyncCoordinator {
 
     /// Coalesces a burst of edits into one pass.
     func scheduleSync(circleID: UUID) {
-        guard engine != nil, isSignedIn, hasKey(circleID: circleID) else { return }
+        guard engine != nil, isSignedIn, hasKey(circleID: circleID),
+              !retiringCircleIDs.contains(circleID) else { return }
         scheduledCircles.enqueue(circleID)
         debounce?.cancel()
         debounce = Task { [weak self] in
@@ -455,14 +610,26 @@ final class SyncCoordinator {
         }
     }
 
-    /// Syncs every circle this account belongs to and this device holds a key
-    /// for. Used at launch, when a reinstalled app has an account but no data.
+    /// Recovers the most plausible dining log when this installation has no
+    /// local data. Legacy builds could leave an account enrolled in several
+    /// abandoned circles; downloading and merging all of them is both
+    /// surprising and capable of combining unrelated member identities.
     func syncKnownCircles() async {
         guard let engine, isSignedIn else { return }
         do {
-            for membership in try await engine.supabase.memberships()
-            where hasKey(circleID: membership.circleID) {
-                await sync(circleID: membership.circleID)
+            let memberships = try await engine.supabase.memberships()
+                .filter { hasKey(circleID: $0.circleID) }
+            var candidates: [CircleRecoveryCandidate] = []
+            for membership in memberships {
+                let roster = try? await engine.supabase.members(circleID: membership.circleID)
+                candidates.append(.init(
+                    circleID: membership.circleID,
+                    memberCount: roster?.count ?? 0,
+                    lastActivity: membership.lastSeenAt ?? membership.joinedAt ?? .distantPast
+                ))
+            }
+            if let selected = CircleRecoveryCandidate.preferred(from: candidates) {
+                await sync(circleID: selected.circleID)
             }
         } catch {
             lastError = error.localizedDescription
@@ -512,6 +679,23 @@ final class SyncCoordinator {
                 logger.notice("Sync kept this device's version of \(outcome.conflicts, privacy: .public) record(s).")
             }
             return true
+        } catch let error as SyncTransportError where error.mayMeanCircleAccessWasRevoked {
+            do {
+                let stillAMember = try await engine.supabase.memberships()
+                    .contains { $0.circleID == circleID }
+                if !stillAMember {
+                    circleNeedingFreshIdentity = circleID
+                    status = .idle
+                    lastError = nil
+                    return false
+                }
+            } catch {
+                // Preserve the original access error when the verification
+                // query itself is unavailable.
+            }
+            status = .failed(error.localizedDescription)
+            lastError = error.localizedDescription
+            return false
         } catch let error as SyncTransportError where error.isTransient {
             status = .offline(error.localizedDescription)
             lastError = error.localizedDescription

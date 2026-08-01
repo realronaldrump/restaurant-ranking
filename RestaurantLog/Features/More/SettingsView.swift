@@ -3,6 +3,13 @@ import Photos
 import SwiftUI
 import UniformTypeIdentifiers
 
+private struct LiveRestoreEnrollment {
+    let circleID: UUID
+    let circleName: String
+    let personID: UUID
+    let personName: String
+}
+
 @MainActor
 struct SettingsView: View {
     @Environment(AppStore.self) private var store
@@ -29,232 +36,24 @@ struct SettingsView: View {
     @State private var isConfirmingSyncAccountDeletion = false
     @State private var isDeletingSyncAccount = false
     @State private var isChangingCircleSync = false
+    @State private var isResettingApp = false
 
     var body: some View {
         Form {
             if !didDismissPhotoVisitTimeSync, store.photoDateSyncCandidateCount > 0 {
                 photoVisitTimeSuggestion
             }
-            Section {
-                ForEach(store.circleMembers) { person in
-                    Button { editingPerson = person } label: {
-                        HStack {
-                            Circle().fill(Color(hex: person.colorHex)).frame(width: 24, height: 24)
-                            Text(person.name).foregroundStyle(BBTheme.ink)
-                            Spacer()
-                            if person.id == store.currentPerson?.id {
-                                Text("You").foregroundStyle(.secondary)
-                            }
-                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-            } header: {
-                Text("Your circle")
-            } footer: {
-                Text(sync.isShared
-                    ? "Everybody here shares this log. Manage who is in it under Backup & sharing."
-                    : "People join your circle with a join code, and then share this log. Send one under Backup & sharing.")
-            }
-            Section {
-                ForEach(store.namedCompanions) { person in
-                    Button { editingPerson = person } label: {
-                        HStack {
-                            Label(person.name, systemImage: "person.crop.circle").foregroundStyle(BBTheme.ink)
-                            Spacer()
-                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-                HStack {
-                    TextField("Add someone you dine with", text: $newCompanion)
-                    Button("Add") { _ = store.addNamedCompanion(name: newCompanion); newCompanion = "" }
-                        .disabled(newCompanion.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-            } header: {
-                Text("People you dine with")
-            } footer: {
-                Text("Names you can tag on an outing. They do not need the app, and tagging one never shares your log with anybody.")
-            }
-            Section("Syncing & permissions") {
-                LabeledContent("Backup & sharing", value: syncDescription)
-                if sync.isConfigured {
-                    Text(syncExplanation)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if sync.isSignedIn {
-                        Button(sync.isShared ? "Manage Circle & Members" : "Share This Log") { router.sheet = .circle }
-                    } else {
-                        Button {
-                            signIn()
-                        } label: {
-                            if isChangingCircleSync {
-                                HStack { ProgressView(); Text("Signing in…") }
-                                    .frame(maxWidth: .infinity)
-                            } else {
-                                Label("Sign in with Apple", systemImage: "apple.logo")
-                                    .frame(maxWidth: .infinity)
-                            }
-                        }
-                        .buttonStyle(PrimaryButtonStyle())
-                        .disabled(isChangingCircleSync)
-                    }
-                }
-                if case .offline = sync.status {
-                    Text("Your latest changes are saved on this iPhone and will upload when the connection returns.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if case let .failed(message) = sync.status {
-                    Text(message)
-                        .font(.caption)
-                        .foregroundStyle(BBTheme.oxblood)
-                }
-                if sync.isConfigured, sync.isSignedIn {
-                    Button("Sign Out") { Task { await sync.signOut() } }
-                    Button("Delete Sync Account and Service Data", role: .destructive) {
-                        isConfirmingSyncAccountDeletion = true
-                    }
-                    .disabled(isDeletingSyncAccount)
-                    .confirmationDialog(
-                        "Delete your sync account and service data?",
-                        isPresented: $isConfirmingSyncAccountDeletion,
-                        titleVisibility: .visible
-                    ) {
-                        Button("Delete Sync Account", role: .destructive) {
-                            isDeletingSyncAccount = true
-                            Task {
-                                let deleted = await sync.deleteAccount()
-                                backupMessage = deleted
-                                    ? "Your sync account and its service data were deleted. Your dining log stayed on this iPhone."
-                                    : sync.lastError
-                                isDeletingSyncAccount = false
-                            }
-                        }
-                        Button("Cancel", role: .cancel) {}
-                    } message: {
-                        Text("The shared copy, its encrypted records, stored photos, invitations, memberships, and the account itself are permanently deleted. Your dining log stays on this iPhone.")
-                    }
-                }
-                LabeledContent("Foreground location", value: locationDescription)
-                LabeledContent("Photo Library", value: photoDescription)
-                Button("Open iOS Settings") {
-                    guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
-                    UIApplication.shared.open(url)
-                }
-            }
-            Section {
-                Picker("Appearance", selection: $appearancePreference) {
-                    ForEach(AppearancePreference.allCases) { preference in
-                        Text(preference.title).tag(preference)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .accessibilityIdentifier("appearance-picker")
-
-                Toggle("Subtle haptics", isOn: $hapticsEnabled)
-            } header: {
-                Text("Experience")
-            } footer: {
-                Text("System follows your iPhone’s appearance setting.")
-            }
-            Section("Backup & restore") {
-                Button { isImportingBeli = true } label: {
-                    Label("Import from Beli", systemImage: "square.and.arrow.down.on.square")
-                }
-                .disabled(isPreparingBackup || isRestoringBackup)
-                .fileImporter(isPresented: $isImportingBeli, allowedContentTypes: [.zip]) { result in
-                    if case .success(let url) = result { beliSelection = .init(url: url) }
-                    else if case .failure(let error) = result { backupMessage = error.localizedDescription }
-                }
-
-                Button {
-                    prepareBackup()
-                } label: {
-                    Label(isPreparingBackup ? "Preparing Backup…" : "Export Full Backup", systemImage: "square.and.arrow.up")
-                }
-                .disabled(isPreparingBackup || isRestoringBackup)
-
-                Button {
-                    isShowingRestoreConfirmation = true
-                } label: {
-                    Label(isRestoringBackup ? "Restoring Backup…" : "Restore from Backup", systemImage: "arrow.down.doc")
-                }
-                .disabled(isPreparingBackup || isRestoringBackup)
-                .confirmationDialog("Restore from backup?", isPresented: $isShowingRestoreConfirmation, titleVisibility: .visible) {
-                    Button("Choose Backup and Replace Everything", role: .destructive) {
-                        isImportingBackup = true
-                    }
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text("The selected backup will replace all current dining logs on this iPhone, and the replacement will then sync to the rest of your circle. Export a current backup first if you may need it later.")
-                }
-                .fileImporter(isPresented: $isImportingBackup, allowedContentTypes: [.restaurantLogBackup]) { result in
-                    restoreBackup(result)
-                }
-
-                Text("Beli ZIP imports add or update dining history without duplicating previous imports. A .bbrlog backup contains every circle, member, restaurant, visit, rating, comparison, wish-list entry, dish, stored photo, and import link. Restore replaces the app’s current data.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if let backupMessage {
-                    Text(backupMessage).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            if !store.beliImportSessions.isEmpty {
-                Section {
-                    ForEach(store.beliImportSessions) { session in
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(alignment: .firstTextBaseline) {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text("Beli import").font(.headline)
-                                    Text(session.importedAt.formatted(date: .abbreviated, time: .shortened))
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Button("Delete", role: .destructive) { importToDelete = session }
-                            }
-                            Text(importSummary(session))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 3)
-                    }
-                } header: {
-                    Text("Imported data")
-                } footer: {
-                    Text("Deleting an import removes the outings, photos, dishes, and ranking seeds it created. Restaurants or outings that existed before the import are preserved.")
-                }
-            }
-            Section("Privacy") {
-                Text("Signing in with Apple keeps your log in your account. Records and photos are encrypted on this iPhone first, and the key never leaves the devices in your circle, so the sync service stores content it cannot read. Map search uses Apple Maps. There are no ads, analytics, or tracking.")
-                NavigationLink("Read the full privacy policy") { PrivacyPolicyView() }
-                if let privacyURL = URL(string: "https://realronaldrump.github.io/restaurant-ranking/privacy.html") {
-                    Link("Privacy policy on the web", destination: privacyURL)
-                }
-                if let supportURL = URL(string: "https://realronaldrump.github.io/restaurant-ranking/support.html") {
-                    Link("Support & privacy choices", destination: supportURL)
-                }
-            }
-            Section("Start over") {
-                Button("Reset App", role: .destructive) {
-                    isShowingResetConfirmation = true
-                }
-                .accessibilityIdentifier("reset-app-button")
-                Text("Erase every dining log and return to the beginning of onboarding.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Section {
-                LabeledContent("Version", value: appVersion)
-                LabeledContent("Release date", value: Self.releaseDateText)
-            } footer: {
-                Text("Big Beautiful Restaurant Log \(appVersion) • Released \(Self.releaseDateText)")
-                    .accessibilityIdentifier("app-version-footer")
-            }
+            circleMembersSection
+            namedCompanionsSection
+            accountSyncSection
+            permissionsSection
+            experienceSection
+            backupSection
+            libraryUpkeepSection
+            importedDataSection
+            privacySection
+            startOverSection
+            versionSection
         }
         .editorialForm()
         .scrollDismissesKeyboard(.interactively)
@@ -285,8 +84,12 @@ struct SettingsView: View {
                 backupMessage = "Imported \(summary.outingsCreated) new outings and \(summary.photosAdded) photos from Beli."
             }
         }
-        .alert("Delete this Beli import?", isPresented: deletionAlertPresented, presenting: importToDelete) { session in
-            Button("Delete Imported Data", role: .destructive) {
+        .editorialPrompt(item: $importToDelete) { session in
+            EditorialPrompt.destructive(
+                "Delete this Beli import from this iPhone?",
+                message: "Deletes everything this import created, including edits you made inside those outings. Restaurants and outings that existed before the import are kept. If this log is shared, the deletions sync too. This cannot be undone.",
+                actionTitle: "Delete imported data"
+            ) {
                 if let summary = store.deleteBeliImport(sessionID: session.id) {
                     backupMessage = deletionMessage(summary)
                     Haptics.success()
@@ -295,33 +98,361 @@ struct SettingsView: View {
                 }
                 importToDelete = nil
             }
-            Button("Cancel", role: .cancel) { importToDelete = nil }
-        } message: { _ in
-            Text("This permanently removes the data created by this import, including any edits made inside its imported outings. Pre-existing matched records remain. This cannot be undone.")
         }
-        .alert("Reset Big Beautiful Restaurant Log?", isPresented: $isShowingResetConfirmation) {
-            Button("Cancel", role: .cancel) {}
-            Button("Erase Everything", role: .destructive) {
-                didCompleteGrandOpening = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    guard store.eraseAllData() else {
-                        didCompleteGrandOpening = true
+        .editorialPrompt(isPresented: $isShowingResetConfirmation) {
+            EditorialPrompt.destructive(
+                "Reset this iPhone and its synced circles?",
+                message: "Erases every restaurant, outing, photo, and ranking on this iPhone. It also leaves circles you joined and deletes circles you own from the server. If the server cleanup fails, nothing is erased. This cannot be undone.",
+                actionTitle: "Erase everything"
+            ) {
+                isResettingApp = true
+                Task {
+                    defer { isResettingApp = false }
+                    if sync.isConfigured, sync.isSignedIn,
+                       !(await sync.resetSyncedCircles()) {
+                        backupMessage = sync.lastError
                         return
                     }
+                    // Also clear local keys for stale circles that no longer
+                    // have a server membership and therefore were absent from
+                    // the retirement query.
+                    for circle in store.circles { sync.forget(circleID: circle.id) }
+                    guard store.eraseAllData() else { return }
+                    didCompleteGrandOpening = false
                     hapticsEnabled = true
                     appearancePreference = .system
                     didDismissPhotoVisitTimeSync = false
                 }
             }
-        } message: {
-            Text("This permanently deletes all circles, restaurants, visits, photos, rankings, and app setup from this iPhone. If the circle is synced, the deletions are published to the other members as well. iOS permissions will not change. This cannot be undone.")
+        }
+        .editorialPrompt(isPresented: $isConfirmingSyncAccountDeletion) {
+            EditorialPrompt.destructive(
+                "Delete your account and server data?",
+                message: "Permanently deletes your account and everything stored on the server. Your log stays on this iPhone.",
+                actionTitle: "Delete sync account"
+            ) {
+                isDeletingSyncAccount = true
+                Task {
+                    let deleted = await sync.deleteAccount()
+                    backupMessage = deleted
+                        ? "Your account and everything on the server were deleted. Your log is still on this iPhone."
+                        : sync.lastError
+                    isDeletingSyncAccount = false
+                }
+            }
+        }
+        .editorialPrompt(isPresented: $isShowingRestoreConfirmation) {
+            EditorialPrompt.destructive(
+                "Restore from backup?",
+                message: "The backup replaces the log on this iPhone, and if you share a circle, it replaces the shared copy for everyone. Export a backup first if you might want the current log back.",
+                actionTitle: "Choose backup and replace everything"
+            ) {
+                isImportingBackup = true
+            }
         }
     }
 
-    private static let releaseDateText = "July 30, 2026"
+    private var circleMembersSection: some View {
+        Section {
+            ForEach(store.circleMembers) { person in
+                Button { editingPerson = person } label: {
+                    HStack {
+                        Circle().fill(Color(hex: person.colorHex)).frame(width: 24, height: 24)
+                        Text(person.name).foregroundStyle(BBTheme.ink)
+                        Spacer()
+                        if person.id == store.currentPerson?.id {
+                            Text("You").foregroundStyle(.secondary)
+                        }
+                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        } header: {
+            Eyebrow("Circle")
+        } footer: {
+            Text(circleRosterExplanation)
+        }
+        .listRowBackground(BBTheme.surface)
+    }
+
+    private var namedCompanionsSection: some View {
+        Section {
+            ForEach(store.namedCompanions) { person in
+                Button { editingPerson = person } label: {
+                    HStack {
+                        Label(person.name, systemImage: "person.crop.circle").foregroundStyle(BBTheme.ink)
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            HStack {
+                TextField("Add someone you dine with", text: $newCompanion)
+                Button("Add") {
+                    _ = store.addNamedCompanion(name: newCompanion)
+                    newCompanion = ""
+                }
+                .disabled(newCompanion.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        } header: {
+            Eyebrow("People you dine with")
+        } footer: {
+            Text("Names you can add to an outing. They do not need the app, and adding someone never shares your log.")
+        }
+        .listRowBackground(BBTheme.surface)
+    }
+
+    private var accountSyncSection: some View {
+        Section {
+            LabeledContent("Sync", value: syncDescription)
+            if sync.isConfigured {
+                Text(syncExplanation)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if sync.isSignedIn {
+                    Button("Manage people and sharing") {
+                        router.sheet = .circle
+                    }
+                } else {
+                    Button { signIn() } label: {
+                        if isChangingCircleSync {
+                            HStack { ProgressView(); Text("Signing in…") }
+                                .frame(maxWidth: .infinity)
+                        } else {
+                            Label("Sign in with Apple", systemImage: "apple.logo")
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .buttonStyle(PrimaryButtonStyle())
+                    .disabled(isChangingCircleSync)
+                }
+            }
+            syncStatusMessage
+            if sync.isConfigured, sync.isSignedIn {
+                Button("Sign out") { Task { await sync.signOut() } }
+                Button("Delete account and server data", role: .destructive) {
+                    isConfirmingSyncAccountDeletion = true
+                }
+                .disabled(isDeletingSyncAccount)
+            }
+        } header: {
+            Eyebrow("Account and sync")
+        }
+        .listRowBackground(BBTheme.surface)
+    }
+
+    @ViewBuilder
+    private var syncStatusMessage: some View {
+        switch sync.status {
+        case .offline:
+            Text("Saved on this iPhone. They will upload when you are back online.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .failed(let message):
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(BBTheme.oxblood)
+        default:
+            EmptyView()
+        }
+    }
+
+    private var permissionsSection: some View {
+        Section {
+            LabeledContent("Foreground location", value: locationDescription)
+            LabeledContent("Photo Library", value: photoDescription)
+            Button("Open iOS Settings") {
+                guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+                UIApplication.shared.open(url)
+            }
+        } header: {
+            Eyebrow("iOS permissions")
+        } footer: {
+            Text("Both are optional. Changing them here does not affect anything already in your log.")
+        }
+        .listRowBackground(BBTheme.surface)
+    }
+
+    private var experienceSection: some View {
+        Section {
+            Picker("Appearance", selection: $appearancePreference) {
+                ForEach(AppearancePreference.allCases) { preference in
+                    Text(preference.title).tag(preference)
+                }
+            }
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("appearance-picker")
+            Toggle("Subtle haptics", isOn: $hapticsEnabled)
+        } header: {
+            Eyebrow("Appearance")
+        } footer: {
+            Text("System matches your iPhone’s appearance setting.")
+        }
+        .listRowBackground(BBTheme.surface)
+    }
+
+    private var backupSection: some View {
+        Section {
+            Button { isImportingBeli = true } label: {
+                Label("Import from Beli", systemImage: "square.and.arrow.down.on.square")
+            }
+            .disabled(isPreparingBackup || isRestoringBackup)
+            .fileImporter(isPresented: $isImportingBeli, allowedContentTypes: [.zip]) { result in
+                if case .success(let url) = result { beliSelection = .init(url: url) }
+                else if case .failure(let error) = result { backupMessage = error.localizedDescription }
+            }
+
+            Button { prepareBackup() } label: {
+                Label(isPreparingBackup ? "Preparing backup…" : "Export full backup", systemImage: "square.and.arrow.up")
+            }
+            .disabled(isPreparingBackup || isRestoringBackup)
+
+            Button { isShowingRestoreConfirmation = true } label: {
+                Label(isRestoringBackup ? "Restoring backup…" : "Restore from backup", systemImage: "arrow.down.doc")
+            }
+            .disabled(isPreparingBackup || isRestoringBackup)
+            .accessibilityIdentifier("restore-backup-button")
+            .fileImporter(isPresented: $isImportingBackup, allowedContentTypes: [.restaurantLogBackup]) { result in
+                restoreBackup(result)
+            }
+
+            Text("Importing the same Beli export twice updates your outings instead of duplicating them. A backup file holds everything: restaurants, outings, reactions, comparisons, dishes, photos, and your Want to Try list.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let backupMessage {
+                Text(backupMessage).font(.caption).foregroundStyle(.secondary)
+            }
+        } header: {
+            Eyebrow("Backups and imports")
+        } footer: {
+            Text("Backups are created on this iPhone. If you share a circle, imports and restores also change what everyone else sees.")
+        }
+        .listRowBackground(BBTheme.surface)
+    }
+
+    private var libraryUpkeepSection: some View {
+        Section {
+            Button { router.morePath.append(.merge) } label: {
+                HStack {
+                    Label("Merge duplicates", systemImage: "arrow.triangle.merge")
+                    Spacer()
+                    Text(duplicateSuggestionSummary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .accessibilityIdentifier("merge-duplicates-button")
+            .accessibilityLabel("Merge duplicates. \(duplicateSuggestionSummary).")
+        } header: {
+            Eyebrow("Library upkeep")
+        } footer: {
+            Text("Restaurants with a matching Maps listing, address, or coordinate are merged automatically. This is for the ones only you can judge.")
+        }
+        .listRowBackground(BBTheme.surface)
+    }
+
+    private var duplicateSuggestionSummary: String {
+        let count = store.duplicateLocationSuggestions().count
+        switch count {
+        case 0: return "None found"
+        case 1: return "1 to review"
+        default: return "\(count) to review"
+        }
+    }
+
+    @ViewBuilder
+    private var importedDataSection: some View {
+        if !store.beliImportSessions.isEmpty {
+            Section {
+                ForEach(store.beliImportSessions) { session in
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(alignment: .firstTextBaseline) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Beli import").font(.headline)
+                                Text(session.importedAt.formatted(date: .abbreviated, time: .shortened))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Delete imported data", role: .destructive) { importToDelete = session }
+                        }
+                        Text(importSummary(session))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 3)
+                }
+            } header: {
+                Eyebrow("Imported data")
+            } footer: {
+                Text("Deleting an import only removes what that import created. Anything that existed beforehand is kept.")
+            }
+            .listRowBackground(BBTheme.surface)
+        }
+    }
+
+    private var privacySection: some View {
+        Section {
+            Text("Your log is encrypted on this iPhone before it is uploaded, and the key never leaves your devices, so the server stores something it cannot read. Map search uses Apple Maps. No ads, no analytics, no tracking.")
+            NavigationLink("Read the full privacy policy") { PrivacyPolicyView() }
+            if let privacyURL = URL(string: "https://realronaldrump.github.io/restaurant-ranking/privacy.html") {
+                Link("Privacy policy on the web", destination: privacyURL)
+            }
+            if let supportURL = URL(string: "https://realronaldrump.github.io/restaurant-ranking/support.html") {
+                Link("Support and privacy choices", destination: supportURL)
+            }
+        } header: {
+            Eyebrow("Privacy")
+        }
+        .listRowBackground(BBTheme.surface)
+    }
+
+    private var startOverSection: some View {
+        Section {
+            Button(role: .destructive) {
+                isShowingResetConfirmation = true
+            } label: {
+                if isResettingApp {
+                    HStack { ProgressView(); Text("Resetting…") }
+                } else {
+                    Text("Reset app")
+                }
+            }
+            .disabled(isResettingApp)
+            .accessibilityIdentifier("reset-app-button")
+            Text("Erase this iPhone’s log and start over. Also leaves circles you joined and deletes circles you own from the server.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } header: {
+            Eyebrow("Reset")
+        }
+        .listRowBackground(BBTheme.surface)
+    }
+
+    private var versionSection: some View {
+        Section {
+            LabeledContent("Version", value: appVersion)
+            LabeledContent("Build", value: buildNumber)
+            LabeledContent("Release date", value: Self.releaseDateText)
+        } footer: {
+            Text("Big Beautiful Restaurant Log \(appVersion) (build \(buildNumber)) • Released \(Self.releaseDateText)")
+                .accessibilityIdentifier("app-version-footer")
+        }
+        .listRowBackground(BBTheme.surface)
+    }
+
+    private static let releaseDateText = "August 1, 2026"
 
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
+    }
+
+    private var buildNumber: String {
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "Unknown"
     }
 
     private var photoVisitTimeSuggestion: some View {
@@ -329,8 +460,8 @@ struct SettingsView: View {
         return Section {
             Label {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Sync visits with photo time").font(.headline)
-                    Text("Use the earliest verified photo capture time for \(count) previous \(count == 1 ? "visit" : "visits") across your logs.")
+                    Text("Sync outings with photo time").font(.headline)
+                    Text("Set \(count) \(count == 1 ? "outing" : "outings") to the time its earliest photo was taken.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -342,22 +473,16 @@ struct SettingsView: View {
                 let updated = store.syncVisitDatesWithStoredPhotoTimes()
                 if updated > 0 { Haptics.success() }
             } label: {
-                Label("Sync \(count) Visit \(count == 1 ? "Time" : "Times")", systemImage: "checkmark.circle")
+                Label("Sync \(count) outing \(count == 1 ? "date" : "dates")", systemImage: "checkmark.circle")
             }
-            Button("Not Now") { didDismissPhotoVisitTimeSync = true }
+            Button("Not now") { didDismissPhotoVisitTimeSync = true }
                 .foregroundStyle(.secondary)
         } header: {
-            Text("Suggestion")
+            Eyebrow("Suggestion")
         } footer: {
-            Text("This uses verified capture metadata already saved with your attached photos and does not access your photo library.")
+            Text("Uses the dates already saved with your attached photos. Your photo library is not opened.")
         }
-    }
-
-    private var deletionAlertPresented: Binding<Bool> {
-        Binding(
-            get: { importToDelete != nil },
-            set: { if !$0 { importToDelete = nil } }
-        )
+        .listRowBackground(BBTheme.surface)
     }
 
     private func importSummary(_ session: ExternalImportSessionEntity) -> String {
@@ -366,12 +491,12 @@ struct SettingsView: View {
         if session.outingsCreated > 0 { parts.append("\(session.outingsCreated) outings") }
         if session.photosAdded > 0 { parts.append("\(session.photosAdded) photos") }
         if session.dishesAdded > 0 { parts.append("\(session.dishesAdded) dishes") }
-        if session.rankingsSeeded > 0 { parts.append("\(session.rankingsSeeded) ranking seeds") }
-        return parts.isEmpty ? "Matched existing dining records" : parts.joined(separator: " · ")
+        if session.rankingsSeeded > 0 { parts.append("\(session.rankingsSeeded) starting ranks") }
+        return parts.isEmpty ? "Matched what was already here" : parts.joined(separator: " · ")
     }
 
     private func deletionMessage(_ summary: BeliImportDeletionSummary) -> String {
-        var message = "Deleted \(summary.outingsDeleted) outings, \(summary.photosDeleted) photos, \(summary.dishesDeleted) dishes, and \(summary.rankingsDeleted) ranking seeds from the Beli import."
+        var message = "Deleted \(summary.outingsDeleted) outings, \(summary.photosDeleted) photos, \(summary.dishesDeleted) dishes, and \(summary.rankingsDeleted) starting ranks from the Beli import."
         if summary.restaurantsDeleted > 0 { message += " Deleted \(summary.restaurantsDeleted) imported restaurants." }
         if summary.restaurantsPreserved > 0 { message += " Preserved \(summary.restaurantsPreserved) restaurants with other activity." }
         return message
@@ -417,14 +542,63 @@ struct SettingsView: View {
                 let scoped = url.startAccessingSecurityScopedResource()
                 defer { if scoped { url.stopAccessingSecurityScopedResource() } }
                 let archive = try await Task.detached(priority: .userInitiated) {
-                    let data = try Data(contentsOf: url, options: .mappedIfSafe)
+                    let data = try AppBackupCodec.readBackupData(from: url)
                     return try AppBackupCodec.decode(data)
                 }.value
+
+                var liveEnrollment: LiveRestoreEnrollment?
+                if sync.isConfigured, sync.isSignedIn, let circle = store.activeCircle,
+                   let membership = try await sync.authenticatedMembership(circleID: circle.id) {
+                    guard sync.hasKey(circleID: circle.id) else { throw SyncError.circleKeyMissing }
+                    liveEnrollment = .init(
+                        circleID: circle.id,
+                        circleName: circle.name,
+                        personID: membership.personID,
+                        personName: store.person(id: membership.personID)?.name
+                            ?? store.currentPerson?.name
+                            ?? "Me"
+                    )
+                    await sync.prepareForBackupRestore(circleID: circle.id)
+                }
+
+                // AppBackup replaces the whole Core Data graph. Suppress the
+                // ordinary save hook until the restored graph has been attached
+                // to the authenticated circle; otherwise old circle IDs can be
+                // scheduled as accidental mass deletions.
+                let commitHandler = store.didCommit
+                store.didCommit = nil
+                defer { store.didCommit = commitHandler }
                 let summary = try await AppBackupService.restore(archive, into: store)
+                if let liveEnrollment {
+                    guard store.reconnectRestoredLog(
+                        to: liveEnrollment.circleID,
+                        circleName: liveEnrollment.circleName,
+                        memberPersonID: liveEnrollment.personID,
+                        fallbackPersonName: liveEnrollment.personName
+                    ) else {
+                        backupMessage = store.lastError ?? "The backup was restored on this iPhone but could not reconnect to your circle. Nothing on the server changed."
+                        return
+                    }
+                }
+
+                if sync.isConfigured, sync.isSignedIn,
+                   let circle = store.activeCircle,
+                   let personID = store.currentPerson?.id {
+                    let activation = await sync.activate(
+                        circleID: circle.id,
+                        name: circle.name,
+                        personID: personID
+                    )
+                    guard case let .ready(serverPersonID) = activation,
+                          serverPersonID == personID else {
+                        backupMessage = "The backup was restored on this iPhone, but syncing stopped. \(sync.lastError ?? "Try the backup import again.")"
+                        return
+                    }
+                }
                 hapticsEnabled = archive.preferences.hapticsEnabled
                 didCompleteGrandOpening = !store.circles.isEmpty
                 didDismissPhotoVisitTimeSync = false
-                backupMessage = "Restored \(summary.visits) visits across \(summary.circles) circle\(summary.circles == 1 ? "" : "s")."
+                backupMessage = "Restored \(summary.visits) outings across \(summary.circles) circle\(summary.circles == 1 ? "" : "s")."
                 Haptics.success()
             } catch {
                 backupMessage = error.localizedDescription
@@ -447,19 +621,29 @@ struct SettingsView: View {
     }
     private var syncDescription: String {
         guard sync.isConfigured else { return "Not available in this build" }
-        guard sync.isSignedIn else { return "Signed out · this iPhone only" }
+        guard sync.isSignedIn else { return "Only this iPhone has a copy" }
         if sync.isPreparing || sync.status.isBusy { return "Syncing…" }
         let count = sync.members.count
-        return count > 1 ? "Shared with \(count - 1) other\(count == 2 ? "" : "s")" : "Backed up & encrypted"
+        return count > 1
+            ? "\(count) people synced"
+            : "Backed up and encrypted"
     }
 
     private var syncExplanation: String {
         guard sync.isSignedIn else {
-            return "This log exists only on this iPhone. Signing in keeps an encrypted copy in your account and lets you share it with the people you dine with."
+            return "This circle has \(store.circleMembers.count) \(store.circleMembers.count == 1 ? "person" : "people") in it but exists only on this iPhone. Sign in to back it up and share it."
         }
         return sync.members.count > 1
-            ? "This log is shared. Everyone sees the same restaurants and outings, and each person keeps their own reactions and rankings."
-            : "This log is encrypted and kept in your account. Nobody else can see it until you share it."
+            ? "You share the same restaurants and outings. Everyone keeps their own reactions and rankings."
+            : "Your log is backed up and encrypted. Nobody else has their own copy yet."
+    }
+
+    private var circleRosterExplanation: String {
+        let count = store.circleMembers.count
+        if count > 1 {
+            return "\(count) people keep their own reactions in this log. That does not mean they have their own copy — set that up under Account and sync."
+        }
+        return "Just you so far. Set up sharing under Account and sync to give someone their own copy."
     }
 
     private func signIn() {
@@ -468,8 +652,13 @@ struct SettingsView: View {
             defer { isChangingCircleSync = false }
             guard await sync.signInWithApple(),
                   let circle = store.activeCircle,
-                  let personID = store.currentPerson?.id ?? store.circleMembers.first?.id else { return }
-            await sync.activate(circleID: circle.id, name: circle.name, personID: personID)
+                  let personID = store.currentPerson?.id else {
+                backupMessage = sync.lastError ?? SyncError.deviceIdentityMissing.localizedDescription
+                return
+            }
+            if case .failed = await sync.activate(circleID: circle.id, name: circle.name, personID: personID) {
+                backupMessage = sync.lastError
+            }
         }
     }
 
@@ -482,6 +671,7 @@ private struct EditPersonView: View {
     let person: PersonEntity
     @State private var name: String
     @State private var errorMessage: String?
+    @State private var isConfirmingDeletion = false
 
     init(person: PersonEntity) {
         self.person = person
@@ -491,12 +681,23 @@ private struct EditPersonView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Name") {
+                Section {
                     TextField("Name", text: $name)
                         .textInputAutocapitalization(.words)
                     if let errorMessage {
                         Text(errorMessage).font(.caption).foregroundStyle(BBTheme.oxblood)
                     }
+                } header: { Eyebrow("Name") }
+                .listRowBackground(BBTheme.surface)
+                if !person.isCircleMember {
+                    Section {
+                        Button("Delete person", role: .destructive) {
+                            isConfirmingDeletion = true
+                        }
+                    } footer: {
+                        Text("Removes them from the list. Past outings keep their name and reactions.")
+                    }
+                    .listRowBackground(BBTheme.surface)
                 }
             }
             .editorialForm()
@@ -511,13 +712,22 @@ private struct EditPersonView: View {
                     .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
+            .editorialPrompt(isPresented: $isConfirmingDeletion) {
+                EditorialPrompt.destructive(
+                    "Delete \(person.name)?",
+                    message: "They will no longer appear when you add people to an outing. Past outings are unchanged.",
+                    actionTitle: "Delete person"
+                ) {
+                    if store.deleteNamedCompanion(person.id) { dismiss() }
+                }
+            }
         }
     }
 
     @discardableResult
     private func saveName() -> Bool {
         guard store.renamePerson(person, to: name) else {
-            errorMessage = "Use a distinct name for each person in this circle."
+            errorMessage = "Each person needs a different name."
             return false
         }
         errorMessage = nil
@@ -530,14 +740,14 @@ struct PrivacyPolicyView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Eyebrow("Effective July 29, 2026")
+                Eyebrow("Effective August 1, 2026")
                 Text("Private by design.").font(BBTheme.display(37))
-                Text("Big Beautiful Restaurant Log has no advertising, analytics, data broker, or tracking SDK. Your dining log is kept in your account through Sign in with Apple and a developer-operated Supabase service, and it is encrypted on this iPhone before any of it is uploaded.")
-                Text("When syncing is on, member names, dining records, notes, and photos are encrypted on this iPhone before upload. The service stores ciphertext linked to a Sign in with Apple account and an app-generated device identifier, but never receives the circle key and cannot read the dining content. The service retains the account email Apple provides for authentication.")
-                Text("Map searches are sent to Apple through MapKit. Coordinates saved in the dining log may be included in encrypted sync records; the sync service cannot read them. Photos are processed on-device, and app-stored copies have embedded location metadata removed before encrypted upload.")
-                Text("If you import a Beli export, the ZIP is read on-device. The app contacts Apple Maps to help match restaurants and downloads only the Beli photo links included in that export when you explicitly start the import. Beli profile, social, device, follow, and comment data is not retained.")
-                Text("Location is foreground-only and optional. Photo Library access is optional; the standard picker works without full-library permission. Permissions can be revoked at any time in iOS Settings.")
-                Text("Settings lets you sign out, remove somebody from your circle, leave a circle, or delete your account and every piece of service data it owns. None of these silently delete the dining log on this iPhone.")
+                Text("This app has no advertising, analytics, data broker, or tracking SDK. Your log is kept in your account through Sign in with Apple and a Supabase service run by the developer, and it is encrypted on this iPhone before anything is uploaded.")
+                Text("When syncing is on, names, outings, notes, and photos are encrypted on this iPhone before upload. The service stores that encrypted data against your Apple account and a device identifier the app generates. It never receives your key, so it cannot read any of it. It does keep the email address Apple provides for sign-in.")
+                Text("Map searches go to Apple through MapKit. Coordinates you save may be included in encrypted sync records, which the service cannot read. Photos are processed on this device, and saved copies have their location data removed before upload.")
+                Text("A Beli export is read on this device. The app uses Apple Maps to match restaurants and downloads only the photo links in that export, and only once you start the import. Beli profile, social, device, follow, and comment data is discarded.")
+                Text("Location is optional and only used while the app is open. Photo Library access is optional too — the standard picker works without it. You can revoke either one in iOS Settings.")
+                Text("From Settings you can sign out, remove someone from your circle, leave a circle, or delete your account and everything stored on the server. None of these quietly delete the log on this iPhone.")
                 if let privacyURL = URL(string: "https://realronaldrump.github.io/restaurant-ranking/privacy.html") {
                     Link("Read the complete policy and privacy choices", destination: privacyURL)
                         .font(.headline)

@@ -6,7 +6,7 @@ struct HomeView: View {
     @Environment(AppRouter.self) private var router
 
     var body: some View {
-        let visits = store.visits
+        let visits = store.visits.filter(\.isAlive)
         ScrollView {
             VStack(alignment: .leading, spacing: BBTheme.Spacing.section) {
                 masthead(visits)
@@ -21,12 +21,14 @@ struct HomeView: View {
             .readablePageWidth()
         }
         .editorialPage()
+        .navigationTitle("Log")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private func masthead(_ visits: [VisitEntity]) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Eyebrow("\(mastheadPossessive) dining log")
+                Eyebrow(rosterEyebrow)
                 Spacer(minLength: 12)
                 Label(
                     Date.now.formatted(.dateTime.month(.abbreviated).day()),
@@ -34,21 +36,13 @@ struct HomeView: View {
                 )
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .padding(.horizontal, 10)
-                .frame(minHeight: 32)
-                .background(BBTheme.surface, in: Capsule())
             }
-            Text("Big Beautiful\nRestaurant Log")
-                .font(BBTheme.display(42))
-                .tracking(-1)
-                .lineSpacing(-3)
+            Text("Big Beautiful Restaurant Log")
+                .font(BBTheme.display(36))
+                .tracking(-0.7)
+                .lineSpacing(-2)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("app-title")
-            Text("A private record of the meals, places, and opinions you want to remember.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: 560, alignment: .leading)
             Divider().overlay(BBTheme.strongHairline)
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 18) { visitStats(visits) }
@@ -60,15 +54,16 @@ struct HomeView: View {
 
     @ViewBuilder
     private func visitStats(_ visits: [VisitEntity]) -> some View {
-        Label("\(visits.count) \(visits.count == 1 ? "visit" : "visits")", systemImage: "fork.knife")
-        Label("\(Set(visits.compactMap { $0.location?.id }).count) places", systemImage: "mappin")
+        Label("\(visits.count) \(visits.count == 1 ? "outing" : "outings")", systemImage: "fork.knife")
+        Label("\(Set(visits.compactMap { $0.location?.id }).count) restaurants", systemImage: "mappin")
         Label("Since \(establishedYear(visits))", systemImage: "clock")
     }
 
-    private var mastheadPossessive: String {
-        let name = store.currentPerson?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !name.isEmpty else { return "YOUR" }
-        return "\(name.uppercased())’S"
+    private var isShared: Bool { store.circleMembers.count > 1 }
+
+    private var rosterEyebrow: String {
+        guard isShared else { return "Your log" }
+        return "\(store.activeCircle?.name ?? "Shared log") · \(store.circleMembers.count) people"
     }
 
     private func establishedYear(_ visits: [VisitEntity]) -> String {
@@ -80,12 +75,12 @@ struct HomeView: View {
         Button { router.sheet = .logMeal; Haptics.impact() } label: {
             ZStack(alignment: .trailing) {
                 LinearGradient(
-                    colors: [BBTheme.oxblood, BBTheme.oxblood.opacity(0.82)],
+                    colors: [BBTheme.oxbloodFill, BBTheme.oxbloodFill.opacity(0.82)],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
                 )
                 RadialGradient(
-                    colors: [BBTheme.paper.opacity(0.14), BBTheme.paper.opacity(0)],
+                    colors: [BBTheme.cream.opacity(0.14), BBTheme.cream.opacity(0)],
                     center: .center,
                     startRadius: 0,
                     endRadius: 92
@@ -95,48 +90,44 @@ struct HomeView: View {
                 .accessibilityHidden(true)
                 HStack(spacing: 18) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("NEW VISIT")
-                            .font(BBTheme.eyebrow)
-                            .tracking(1.2)
-                            .foregroundStyle(BBTheme.paper.opacity(0.78))
-                        Text("Log a meal").font(BBTheme.display(32)).foregroundStyle(BBTheme.paper)
-                        Text("Photo or place, then your reaction.")
+                        Text("Log an outing").font(BBTheme.display(32)).foregroundStyle(BBTheme.cream)
+                        Text("Pick the restaurant, then your reaction.")
                             .font(.callout)
-                            .foregroundStyle(BBTheme.paper.opacity(0.72))
+                            .foregroundStyle(BBTheme.cream.opacity(0.72))
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 8)
                     Image(systemName: "plus")
                         .font(.title2.weight(.medium))
                         .frame(width: 50, height: 50)
-                        .background(BBTheme.paper.opacity(0.13), in: Circle())
+                        .background(BBTheme.cream.opacity(0.13), in: Circle())
                 }
                 .padding(22)
             }
-            .foregroundStyle(BBTheme.paper)
+            .foregroundStyle(BBTheme.cream)
             .clipShape(RoundedRectangle(cornerRadius: BBTheme.Radius.card, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: BBTheme.Radius.card, style: .continuous)
-                    .stroke(BBTheme.paper.opacity(0.13), lineWidth: 1)
+                    .stroke(BBTheme.cream.opacity(0.13), lineWidth: 1)
             }
         }
         .buttonStyle(.pressable)
         .accessibilityIdentifier("log-meal-button")
-        .accessibilityHint("Opens the quick meal logging flow")
+        .accessibilityHint("Opens the outing logging flow")
     }
 
     @ViewBuilder private var pendingRatings: some View {
-        let pending = store.pendingVisits()
+        let pending = store.pendingVisits().filter(\.isAlive)
         if !pending.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
-                EditorialSectionHeader("Your entry, please", eyebrow: "Shared outings")
+                EditorialSectionHeader("Waiting for your reaction")
                 ForEach(pending.prefix(2), id: \.objectID) { visit in
                     Button { router.sheet = .rateVisit(visit.id) } label: {
                         HStack(spacing: 14) {
                             IconTile(symbol: "person.2.wave.2.fill")
                             VStack(alignment: .leading) {
                                 Text(visit.location?.name ?? "Shared outing").font(.headline)
-                                Text("\(visit.dateKnowledge == .known ? visit.date.formatted(date: .abbreviated, time: .omitted) : "Date unknown") · Add only what you tried")
+                                Text("\(visit.dateKnowledge == .known ? visit.date.formatted(date: .abbreviated, time: .shortened) : "Date unknown") · Add your diner entry")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -155,24 +146,28 @@ struct HomeView: View {
     private var topTable: some View {
         let scores = Array(store.ranked().prefix(3))
         return VStack(alignment: .leading, spacing: 12) {
-            EditorialSectionHeader("The top table", eyebrow: "Right now", actionTitle: "Full ranking") { router.selectedTab = .rankings }
+            EditorialSectionHeader("Your top three", actionTitle: "See full ranking") { router.selectedTab = .rankings }
             if scores.isEmpty {
-                EmptyLogView(title: "No table yet", message: "Log one meal and the ranking begins.", symbol: "chair.lounge")
+                EmptyLogView(title: "Nothing ranked yet", message: "Log an outing to start your ranking.", symbol: "list.number")
             } else {
                 VStack(spacing: 0) {
                     ForEach(Array(scores.enumerated()), id: \.element.id) { index, item in
-                        Button { router.logPath.append(.location(item.id)) } label: {
+                        Button { router.logPath.append(.location(item.id, rankingScope: store.currentPerson.map { .person($0.id) })) } label: {
                             HStack(spacing: 14) {
                                 Text("\(index + 1)")
                                     .font(BBTheme.score(22))
-                                    .foregroundStyle(index == 0 ? BBTheme.paper : BBTheme.oxblood)
+                                    .foregroundStyle(index == 0 ? BBTheme.cream : BBTheme.oxblood)
                                     .frame(width: 38, height: 38)
-                                    .background(index == 0 ? BBTheme.oxblood : BBTheme.oxblood.opacity(0.08), in: Circle())
+                                    .background(index == 0 ? BBTheme.oxbloodFill : BBTheme.oxblood.opacity(0.08), in: Circle())
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text(item.location.name).font(.headline)
+                                    Text(item.location.name)
+                                        .font(BBTheme.display(21))
+                                        .lineLimit(2)
+                                        .layoutPriority(1)
                                     Text(item.location.category.shortTitle).font(.caption).foregroundStyle(.secondary)
                                 }
-                                Spacer(); ScoreMark(score: item.score, size: 31, provisional: item.isProvisional)
+                                Spacer(minLength: 8)
+                                ScoreMark(score: item.score, size: 18, provisional: item.isProvisional)
                             }
                             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                             .padding(.vertical, 10)
@@ -193,7 +188,7 @@ struct HomeView: View {
 
     private func settleCardBody(count: Int) -> some View {
         Button {
-            router.logPath.append(.settleScore)
+            router.selectedTab = .settle
         } label: {
             HStack(spacing: 18) {
                 ZStack {
@@ -202,9 +197,10 @@ struct HomeView: View {
                     Text("\(count)").font(BBTheme.score(28)).foregroundStyle(BBTheme.oxblood)
                 }
                 VStack(alignment: .leading, spacing: 4) {
-                    Eyebrow(count == 1 ? "1 question" : "\(count) questions")
                     Text("Settle the Score").font(BBTheme.display(25))
-                    Text("Clarify a few close rankings.").font(.caption).foregroundStyle(.secondary)
+                    Text(count == 1 ? "1 question about a close call." : "\(count) questions about close calls.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Image(systemName: "arrow.right").foregroundStyle(.secondary)
@@ -217,7 +213,7 @@ struct HomeView: View {
     @ViewBuilder private func recentHistory(_ visits: [VisitEntity]) -> some View {
         if !visits.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
-                EditorialSectionHeader("Recently entered", eyebrow: "The record", actionTitle: "History") { router.selectedTab = .history }
+                EditorialSectionHeader(isShared ? "Recent outings" : "Your recent outings", actionTitle: "History") { router.selectedTab = .history }
                 let recent = Array(visits.prefix(4))
                 VStack(spacing: 0) {
                     ForEach(Array(recent.enumerated()), id: \.element.objectID) { index, visit in
@@ -238,7 +234,7 @@ struct VisitRow: View {
     @Environment(AppStore.self) private var store
     let visit: VisitEntity
     @ViewBuilder var body: some View {
-        if visit.managedObjectContext == nil || visit.isDeleted {
+        if !visit.isAlive {
             EmptyView()
         } else {
             row
@@ -262,9 +258,9 @@ struct VisitRow: View {
                 }
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text(visit.location?.name ?? "Unknown place").font(.headline)
+                Text(visit.location?.name ?? "Unknown restaurant").font(.headline)
                 HStack(spacing: 5) {
-                    Text(visit.dateKnowledge == .known ? visit.date.formatted(date: .abbreviated, time: .omitted) : "Date unknown")
+                    Text(visit.dateKnowledge == .known ? visit.date.formatted(date: .abbreviated, time: .shortened) : "Date unknown")
                     if let type = visit.visitType { Text("· \(type.rawValue)") }
                     if !photos.isEmpty { Image(systemName: "photo.fill") }
                 }.font(.caption).foregroundStyle(.secondary)
@@ -276,18 +272,34 @@ struct VisitRow: View {
         .contentShape(Rectangle())
     }
 
-    /// The current person's verdict in oxblood; another diner's verdict, dimmed,
-    /// when only they have rated; UNRATED when nobody has.
+    /// Names both the reaction and its owner so history does not rely on icon
+    /// recognition or color to distinguish the current person's entry.
     @ViewBuilder private func reactionMark(_ ratings: [RatingEntity]) -> some View {
         let mine = store.currentPerson.flatMap { person in ratings.first { $0.personID == person.id } }
         if let mine {
-            Image(systemName: mine.reaction.symbol).foregroundStyle(BBTheme.oxblood).accessibilityLabel(mine.reaction.rawValue)
+            reactionLabel(mine, owner: "You", emphasized: true)
         } else if let other = ratings.first {
             let name = store.person(id: other.personID)?.name ?? "Someone"
-            Image(systemName: other.reaction.symbol).foregroundStyle(.secondary)
-                .accessibilityLabel("\(other.reaction.rawValue), rated by \(name)")
+            reactionLabel(other, owner: name, emphasized: false)
         } else {
-            Text("UNRATED").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+                Text("No reaction yet")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("No reaction yet")
         }
+    }
+
+    private func reactionLabel(_ rating: RatingEntity, owner: String, emphasized: Bool) -> some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            Label(rating.reaction.compactTitle, systemImage: rating.reaction.symbol)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(emphasized ? BBTheme.oxblood : BBTheme.ink)
+            Text(owner)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .multilineTextAlignment(.trailing)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(owner), \(rating.reaction.title)")
     }
 }

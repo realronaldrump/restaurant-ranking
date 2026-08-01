@@ -1,15 +1,50 @@
 import SwiftUI
 
+@MainActor
+struct PhotoViewerSnapshot: Identifiable {
+    let id: UUID
+    let createdAt: Date
+    let caption: String?
+    let imageData: Data?
+
+    init?(photo: PhotoEntity) {
+        guard photo.isAlive else { return nil }
+        id = photo.id
+        createdAt = photo.createdAt
+        caption = photo.caption
+        imageData = photo.fullData ?? photo.thumbnailData
+    }
+
+    fileprivate static var unavailable: Self {
+        .init(id: UUID(), createdAt: .now, caption: nil, imageData: nil)
+    }
+
+    private init(id: UUID, createdAt: Date, caption: String?, imageData: Data?) {
+        self.id = id
+        self.createdAt = createdAt
+        self.caption = caption
+        self.imageData = imageData
+    }
+}
+
 struct PhotoViewer: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let photo: PhotoEntity
+    let photo: PhotoViewerSnapshot
     @State private var image: UIImage?
     @State private var loadFailed = false
     @State private var scale: CGFloat = 1
     @State private var lastScale: CGFloat = 1
     @State private var dragOffset: CGSize = .zero
     @State private var lastDragOffset: CGSize = .zero
+
+    init(photo: PhotoViewerSnapshot) {
+        self.photo = photo
+    }
+
+    init(photo: PhotoEntity) {
+        self.photo = PhotoViewerSnapshot(photo: photo) ?? .unavailable
+    }
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -22,7 +57,7 @@ struct PhotoViewer: View {
                     .gesture(magnify)
                     .simultaneousGesture(panOrDismiss)
                     .onTapGesture(count: 2) { toggleZoom() }
-                    .accessibilityLabel("Meal photo from \(photo.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                    .accessibilityLabel("Outing photo from \(photo.createdAt.formatted(date: .abbreviated, time: .shortened))")
             } else if loadFailed {
                 ContentUnavailableView("Photo unavailable", systemImage: "photo.badge.exclamationmark").foregroundStyle(.white)
             } else {
@@ -44,7 +79,7 @@ struct PhotoViewer: View {
         .statusBarHidden()
         .task {
             let key = "viewer-\(photo.id.uuidString)"
-            image = await PhotoImageCache.display(key: key, data: photo.fullData ?? photo.thumbnailData, maxDimension: 2_800)
+            image = await PhotoImageCache.display(key: key, data: photo.imageData, maxDimension: 2_800)
             loadFailed = image == nil
         }
     }

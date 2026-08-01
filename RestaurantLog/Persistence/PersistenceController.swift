@@ -198,9 +198,12 @@ enum LegacyStoreConsolidator {
         }
     }
 
-    /// Creates a transactionally consistent Core Data copy, including WAL and
-    /// externally stored photo blobs, in a unique retirement directory. The
-    /// source is never modified by this operation.
+    /// Creates a complete writable copy, including WAL and externally stored
+    /// photo blobs, in a unique retirement directory. The legacy store is not
+    /// open anywhere in the current app, so copying all of its SQLite artifacts
+    /// is a consistent snapshot. The copy is then migrated in place; asking
+    /// Core Data to migrate the original while it is attached read-only fails
+    /// as soon as a later app version adds an attribute.
     static func makeRecoveryCopy(of sourceURL: URL) throws -> URL {
         let manager = FileManager.default
         let folder = sourceURL.deletingLastPathComponent()
@@ -210,18 +213,47 @@ enum LegacyStoreConsolidator {
         let destinationURL = folder.appendingPathComponent(sourceURL.lastPathComponent)
 
         do {
+            try copyStoreArtifacts(from: sourceURL, to: destinationURL, using: manager)
             let coordinator = NSPersistentStoreCoordinator(managedObjectModel: ManagedObjectModel.make())
-            try coordinator.replacePersistentStore(
+            let migrated = try coordinator.addPersistentStore(
+                ofType: NSSQLiteStoreType,
+                configurationName: nil,
                 at: destinationURL,
-                destinationOptions: nil,
-                withPersistentStoreFrom: sourceURL,
-                sourceOptions: storeOptions(readOnly: true, historyTracking: false),
-                ofType: NSSQLiteStoreType
+                options: storeOptions(readOnly: false, historyTracking: true)
             )
+            try coordinator.remove(migrated)
             return destinationURL
         } catch {
             try? manager.removeItem(at: folder)
             throw error
+        }
+    }
+
+    private static func copyStoreArtifacts(
+        from sourceURL: URL,
+        to destinationURL: URL,
+        using manager: FileManager
+    ) throws {
+        try manager.copyItem(at: sourceURL, to: destinationURL)
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let source = URL(fileURLWithPath: sourceURL.path + suffix)
+            guard manager.fileExists(atPath: source.path) else { continue }
+            try manager.copyItem(
+                at: source,
+                to: URL(fileURLWithPath: destinationURL.path + suffix)
+            )
+        }
+
+        let sourceSupport = sourceURL.deletingLastPathComponent().appendingPathComponent(
+            ".\(sourceURL.deletingPathExtension().lastPathComponent)_SUPPORT",
+            isDirectory: true
+        )
+        if manager.fileExists(atPath: sourceSupport.path) {
+            let destinationSupport = destinationURL.deletingLastPathComponent().appendingPathComponent(
+                ".\(destinationURL.deletingPathExtension().lastPathComponent)_SUPPORT",
+                isDirectory: true
+            )
+            try manager.copyItem(at: sourceSupport, to: destinationSupport)
         }
     }
 

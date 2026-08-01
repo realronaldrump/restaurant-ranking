@@ -1,4 +1,5 @@
 import CoreData
+import CoreLocation
 import CryptoKit
 import Foundation
 import Observation
@@ -10,9 +11,32 @@ struct ComparisonQuestion: Identifiable {
     var id: String { "\(a.id.uuidString)-\(b.id.uuidString)" }
 }
 
+/// Two restaurant records that probably describe the same place, along with the
+/// evidence that suggested it. The keeper is the record with more history, so
+/// accepting a suggestion moves the smaller record into the larger one.
+struct DuplicateLocationSuggestion: Identifiable {
+    let keeper: RestaurantLocation
+    let duplicate: RestaurantLocation
+    let reason: String
+    var id: String { "\(keeper.id.uuidString)-\(duplicate.id.uuidString)" }
+}
+
 enum SettleScorePrompt {
     case comparison(ComparisonQuestion)
     case anchor(RestaurantLocation)
+}
+
+struct CircleJoinImpact: Equatable {
+    let restaurants: Int
+    let outings: Int
+    let photos: Int
+    let wantToTryEntries: Int
+    let reactions: Int
+    let rankingAnswers: Int
+
+    var hasShareableData: Bool {
+        restaurants + outings + photos + wantToTryEntries + reactions + rankingAnswers > 0
+    }
 }
 
 @MainActor
@@ -36,6 +60,9 @@ final class AppStore {
     @ObservationIgnored private var devicePersonIDsByCircle: [String: String] = [:]
     @ObservationIgnored private var scoreCache: [UUID: [LocationScore]] = [:]
     @ObservationIgnored private var circleScoreCache: [String: [CircleLocationScore]] = [:]
+    /// Duplicate detection is quadratic in the coordinate pass and is read from
+    /// view bodies, so it is cached against the same revision the scores use.
+    @ObservationIgnored private var duplicateSuggestionCache: [DuplicateLocationSuggestion]?
     @ObservationIgnored private var locationsByIdentity: [LocationIdentityKey: RestaurantLocation] = [:]
     @ObservationIgnored private var locationsBySource: [LocationSourceKey: RestaurantLocation] = [:]
     @ObservationIgnored private var cachedScoreRevision = -1
@@ -60,8 +87,8 @@ final class AppStore {
             .filter { $0.isAlive && $0.circle?.id == activeCircle?.id }
             .sorted(by: personComesBefore)
     }
-    var circleMembers: [PersonEntity] { people.filter(\.isCircleMember) }
-    var namedCompanions: [PersonEntity] { people.filter { !$0.isCircleMember } }
+    var circleMembers: [PersonEntity] { people.filter { $0.isCircleMember && !$0.isArchived } }
+    var namedCompanions: [PersonEntity] { people.filter { !$0.isCircleMember && !$0.isArchived } }
     var locations: [RestaurantLocation] {
         allLocations.filter { $0.isAlive && $0.circle?.id == activeCircle?.id }
     }
@@ -74,11 +101,37 @@ final class AppStore {
     var wantEntries: [WantEntryEntity] {
         allWantEntries.filter { $0.isAlive && $0.circle?.id == activeCircle?.id }
     }
+
+    /// Everything in the active local log that adopting another circle will
+    /// publish to that circle. The join UI uses this for informed consent.
+    var circleJoinImpact: CircleJoinImpact {
+        let activeVisits = visits
+        return CircleJoinImpact(
+            restaurants: locations.count,
+            outings: activeVisits.count,
+            photos: activeVisits.reduce(0) { $0 + $1.photoArray.count },
+            wantToTryEntries: wantEntries.count,
+            reactions: activeVisits.reduce(0) {
+                $0 + $1.ratingArray.count + $1.dinerEntryReactionArray.count
+            },
+            rankingAnswers: comparisons.count
+        )
+    }
     var beliImportSessions: [ExternalImportSessionEntity] {
         allImportSessions.filter {
             $0.isAlive && $0.circle?.id == activeCircle?.id && $0.provider == "beli"
         }
     }
+
+    func beliPhotosNeedingDownload(from archive: BeliParsedArchive) -> [BeliPhotoRow] {
+        guard let circle = activeCircle else { return [] }
+        let livePhotoIDs = Set(visits.flatMap(\.photoArray).map(\.id))
+        let importedExternalKeys = Set(externalImportLinks(in: circle).compactMap { link in
+            link.recordType == "photo" && livePhotoIDs.contains(link.targetID) ? link.externalKey : nil
+        })
+        return archive.photos.filter { !importedExternalKeys.contains($0.id) }
+    }
+
     var photoDateSyncCandidateCount: Int {
         _ = revision
         return photoDateSyncCandidates.count
@@ -120,7 +173,7 @@ final class AppStore {
             queue: .main
         ) { [weak self] notification in
             let message = notification.userInfo?[PersistenceNotificationKey.message] as? String
-            Task { @MainActor in self?.reportError(message ?? "Big Beautiful Log could not save your latest changes.") }
+            Task { @MainActor in self?.reportError(message ?? "Big Beautiful Restaurant Log could not save your latest changes.") }
         }
     }
 
@@ -170,6 +223,11 @@ final class AppStore {
             commit()
             return me.id
         }
+        // Capture this before changing the active circle. If the destination
+        // circle already arrived in a background pull, switching first makes
+        // `currentPerson` resolve inside that destination and can silently turn
+        // this phone into the owner (or another member) of the joined circle.
+        let carriedDevicePersonID = currentPerson?.id
         if current.id != circleID {
             if circles.contains(where: { $0.id == circleID }) {
                 // The circle was downloaded before the join finished. Move this
@@ -190,12 +248,21 @@ final class AppStore {
         consolidateCircles(preferring: circleID)
 
         guard let circle = circles.first(where: { $0.id == circleID }) else { return nil }
-        let person = currentPerson ?? circleMembers.first ?? makePerson(
-            name: "Me",
-            isCircleMember: true,
-            color: "6F1D2B",
-            circle: circle
-        )
+        let person: PersonEntity
+        if let carriedDevicePersonID {
+            guard let carriedPerson = people.first(where: { $0.id == carriedDevicePersonID }) else {
+                reportError("This iPhone's member profile could not be carried into the joined circle.")
+                return nil
+            }
+            person = carriedPerson
+        } else {
+            person = makePerson(
+                name: "Me",
+                isCircleMember: true,
+                color: "6F1D2B",
+                circle: circle
+            )
+        }
         devicePersonID = person.id
         persistDeviceSelection()
         commit()
@@ -207,12 +274,22 @@ final class AppStore {
     /// syncing again as a private circle.
     @discardableResult
     func startFreshCircleIdentity() -> UUID? {
-        guard let circle = activeCircle else { return nil }
+        guard let circle = activeCircle, let devicePersonID = currentPerson?.id else {
+            reportError("This iPhone could not determine which person owns its dining log.")
+            return nil
+        }
         let previousID = circle.id
         let newID = UUID()
         circle.id = newID
+        // A private copy has exactly one syncing member: the person holding
+        // this phone. Former circle members remain as named companions so all
+        // of their outings, reactions, rankings and photos stay readable.
+        for person in people {
+            person.isCircleMember = person.id == devicePersonID
+        }
         devicePersonIDsByCircle.removeValue(forKey: previousID.uuidString)
         activeCircleID = newID
+        self.devicePersonID = devicePersonID
         persistDeviceSelection()
         commit()
         return newID
@@ -285,23 +362,37 @@ final class AppStore {
     /// stopping to ask who is holding the phone.
     @discardableResult
     func adoptDeviceIdentity(preferring personID: UUID?) -> UUID? {
+        // Once a phone has a valid local identity, a roster refresh may confirm
+        // it but may never replace it. Server-side membership reconciliation
+        // used to turn one person's phone into another person's profile after
+        // a leave/rejoin race.
+        if currentPerson != nil { return devicePersonID }
         if let personID, circleMembers.contains(where: { $0.id == personID }) {
-            if devicePersonID != personID { selectCurrentPerson(personID) }
+            selectCurrentPerson(personID)
             return personID
         }
-        if currentPerson != nil { return devicePersonID }
         // Nothing to disambiguate: a log with one member is that member's.
         guard let only = circleMembers.first, circleMembers.count == 1 else { return nil }
         selectCurrentPerson(only.id)
         return only.id
     }
 
-    /// Only ever seen after the log is shared, so it reads as a place at a
-    /// table rather than as a setting somebody forgot to fill in.
+    /// Resolves the author for a user-initiated save without ever guessing
+    /// between multiple people in a shared dining circle.
+    @discardableResult
+    func resolveLoggingPersonID() -> UUID? {
+        currentPerson?.id ?? adoptDeviceIdentity(preferring: nil)
+    }
+
+    static let missingLoggingIdentityMessage =
+        "This iPhone could not identify which circle member is saving this outing. Reconnect to your shared log and try again."
+
+    /// Only ever seen after the log is shared, so it names whose log it is
+    /// rather than reading like a setting somebody forgot to fill in.
     static func defaultCircleName(for ownerName: String) -> String {
         let name = ownerName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return "Our Table" }
-        return name.hasSuffix("s") ? "\(name)' Table" : "\(name)'s Table"
+        guard !name.isEmpty else { return "Shared Log" }
+        return name.hasSuffix("s") ? "\(name)’ Log" : "\(name)’s Log"
     }
 
     func reportError(_ message: String) {
@@ -340,6 +431,76 @@ final class AppStore {
         for circleID in changedCircleIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
             didCommit?(circleID)
         }
+    }
+
+    /// Reattaches a restored local log to the membership this installation had
+    /// before the restore. Backup files describe dining data, not Supabase Auth
+    /// ownership, so their circle/person identifiers must never replace the
+    /// authenticated enrollment of a live shared circle.
+    @discardableResult
+    func reconnectRestoredLog(
+        to circleID: UUID,
+        circleName: String,
+        memberPersonID: UUID,
+        fallbackPersonName: String
+    ) -> Bool {
+        guard activeCircle != nil else {
+            reportError("The restored backup did not contain a dining log.")
+            return false
+        }
+        guard adoptCircle(id: circleID, name: circleName) != nil,
+              let circle = activeCircle,
+              circle.id == circleID else {
+            reportError("The restored dining log could not be reconnected to this circle.")
+            return false
+        }
+
+        let attachedPerson = currentPerson
+            ?? (circleMembers.count == 1 ? circleMembers.first : nil)
+        if let attachedPerson, attachedPerson.id != memberPersonID {
+            let restoredPersonID = attachedPerson.id
+            if let enrolledPerson = people.first(where: { $0.id == memberPersonID }) {
+                guard rewritePersonReferences(
+                    replacementIDs: [restoredPersonID: memberPersonID],
+                    duplicatePeople: [attachedPerson]
+                ) else { return false }
+                enrolledPerson.isCircleMember = true
+                enrolledPerson.isArchived = false
+            } else {
+                guard rewritePersonReferences(
+                    replacementIDs: [restoredPersonID: memberPersonID],
+                    duplicatePeople: []
+                ) else { return false }
+                attachedPerson.id = memberPersonID
+                attachedPerson.isCircleMember = true
+                attachedPerson.isArchived = false
+            }
+        } else if let attachedPerson {
+            attachedPerson.isCircleMember = true
+            attachedPerson.isArchived = false
+        } else {
+            let person = makePerson(
+                name: fallbackPersonName.trimmedOr("Me"),
+                isCircleMember: true,
+                color: "6F1D2B",
+                circle: circle
+            )
+            person.id = memberPersonID
+        }
+
+        devicePersonID = memberPersonID
+        activeCircleID = circleID
+        persistDeviceSelection()
+        do {
+            try persistence.save()
+        } catch {
+            context.rollback()
+            reload()
+            reportError("The restored dining log could not be reconnected. \(error.localizedDescription)")
+            return false
+        }
+        reload()
+        return currentPerson?.id == memberPersonID
     }
 
     private func resetAfterExternalStoreWrite() {
@@ -480,6 +641,65 @@ final class AppStore {
         return true
     }
 
+    /// Removes a saved dining companion from the lists used for future outings.
+    ///
+    /// The person record is retained as an archived profile when it has been
+    /// used before, so old outings can still show the name and keep their
+    /// ratings, dishes, photos, and memories intact. A later add with the same
+    /// name creates a fresh profile instead of resurrecting the deleted entry.
+    @discardableResult
+    func deleteNamedCompanion(_ personID: UUID) -> Bool {
+        guard let person = allPeople.first(where: { $0.isAlive && $0.id == personID }),
+              person.circle?.id == activeCircle?.id,
+              !person.isCircleMember,
+              !person.isArchived else { return false }
+        person.isArchived = true
+        commit()
+        return true
+    }
+
+    /// Connects a historical profile to the authenticated circle member it
+    /// actually represents. Older backups can still mark that profile as a
+    /// member or archived, so the caller supplies the authoritative server
+    /// roster and this method refuses to merge any currently connected account
+    /// or this iPhone's own identity. This is intentionally explicit: names
+    /// such as "Kelsey" and "Kelsey G" are suggestive but are not proof, while
+    /// merging the wrong two people would transfer private opinions between
+    /// them. Every person-linked record is rewritten before the old profile is
+    /// removed, so imported rankings and outing history are preserved.
+    @discardableResult
+    func mergeHistoricalProfile(
+        _ historicalID: UUID,
+        into memberID: UUID,
+        connectedMemberIDs: Set<UUID>
+    ) -> Bool {
+        guard historicalID != memberID,
+              historicalID != devicePersonID,
+              connectedMemberIDs.contains(memberID),
+              !connectedMemberIDs.contains(historicalID),
+              let historical = allPeople.first(where: { $0.isAlive && $0.id == historicalID }),
+              let member = allPeople.first(where: { $0.isAlive && $0.id == memberID }),
+              historical.circle?.id == activeCircle?.id,
+              member.circle?.id == activeCircle?.id,
+              member.isCircleMember else { return false }
+
+        guard rewritePersonReferences(
+            replacementIDs: [historicalID: memberID],
+            duplicatePeople: [historical]
+        ) else { return false }
+        do {
+            try persistence.save()
+        } catch {
+            context.rollback()
+            reload()
+            reportError("Those person profiles could not be merged. \(error.localizedDescription)")
+            return false
+        }
+        reload()
+        if let activeCircleID { didCommit?(activeCircleID) }
+        return true
+    }
+
     /// True when removing this person outright would erase something they did.
     func personHasHistory(_ personID: UUID) -> Bool {
         if visits.contains(where: { visit in
@@ -489,6 +709,9 @@ final class AppStore {
                 || visit.participantArray.contains { $0.personID == personID }
                 || visit.dishEntryArray.contains { $0.personID == personID }
                 || visit.photoArray.contains { $0.personID == personID }
+                || visit.dinerEntryReactionArray.contains {
+                    $0.authorPersonID == personID || $0.targetPersonID == personID
+                }
         }) { return true }
         if comparisons.contains(where: { $0.personID == personID }) { return true }
         return wantEntries.contains { $0.addedByID == personID }
@@ -553,6 +776,75 @@ final class AppStore {
         }
     }
 
+    /// All social stickers attached to one diner's entry, oldest first.
+    /// These never participate in ranking calculations.
+    func coonReactions(to targetPersonID: UUID, in visit: VisitEntity) -> [DinerEntryReactionEntity] {
+        _ = revision
+        return visit.dinerEntryReactionArray.filter { $0.targetPersonID == targetPersonID }
+    }
+
+    func myCoonReaction(to targetPersonID: UUID, in visit: VisitEntity) -> DinerEntryReactionEntity? {
+        guard let authorPersonID = currentPerson?.id else { return nil }
+        return coonReactions(to: targetPersonID, in: visit).first {
+            $0.authorPersonID == authorPersonID
+        }
+    }
+
+    func canReactWithCoon(to targetPersonID: UUID, in visit: VisitEntity) -> Bool {
+        guard let authorPersonID = currentPerson?.id,
+              authorPersonID != targetPersonID,
+              visit.circle?.id == activeCircle?.id,
+              visit.rating(for: targetPersonID) != nil,
+              let target = person(id: targetPersonID) else { return false }
+        return target.isCircleMember && !target.isArchived
+    }
+
+    /// Creates, changes, or removes this member's single sticker on another
+    /// diner's entry. A deterministic identifier makes the same author/target
+    /// pair converge to one encrypted sync row even across multiple devices.
+    @discardableResult
+    func setCoonReaction(
+        _ kind: CoonReaction?,
+        to targetPersonID: UUID,
+        in visit: VisitEntity
+    ) -> Bool {
+        guard let authorPersonID = currentPerson?.id,
+              authorPersonID != targetPersonID,
+              visit.circle?.id == activeCircle?.id else { return false }
+
+        let existing = visit.dinerEntryReactionArray.first {
+            $0.authorPersonID == authorPersonID && $0.targetPersonID == targetPersonID
+        }
+        guard let kind else {
+            guard let existing else { return false }
+            context.delete(existing)
+            commit()
+            return true
+        }
+        guard canReactWithCoon(to: targetPersonID, in: visit) else { return false }
+
+        let value: DinerEntryReactionEntity
+        if let existing {
+            value = existing
+        } else {
+            value = DinerEntryReactionEntity(context: context)
+            assign(value, alongside: visit)
+            value.id = coonReactionID(
+                visitID: visit.id,
+                authorPersonID: authorPersonID,
+                targetPersonID: targetPersonID
+            )
+            value.authorPersonID = authorPersonID
+            value.targetPersonID = targetPersonID
+            value.createdAt = .now
+            value.visit = visit
+        }
+        value.kind = kind
+        value.updatedAt = .now
+        commit()
+        return true
+    }
+
     func isSharedVisit(_ visit: VisitEntity) -> Bool {
         let memberIDs = Set(circleMembers.map(\.id))
         return activeParticipantIDs(for: visit).contains {
@@ -574,7 +866,7 @@ final class AppStore {
         cuisines: [String] = [],
         tags: [String] = []
     ) -> RestaurantLocation {
-        let normalizedName = name.trimmedOr("Unnamed Establishment")
+        let normalizedName = name.trimmedOr("Unnamed restaurant")
         let circleID = activeCircle?.id
         if let sourceIdentifier, !sourceIdentifier.isEmpty,
            let existing = locationsBySource[.init(circleID: circleID, sourceIdentifier: sourceIdentifier)] {
@@ -582,6 +874,13 @@ final class AppStore {
         }
         let identityKey = LocationIdentityKey(circleID: circleID, name: normalizedName, address: address)
         if !forceDistinct, let existing = locationsByIdentity[identityKey] { return existing }
+        let hasNoAddress = address?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true
+        if !forceDistinct, hasNoAddress {
+            let sameName = locations.filter {
+                restaurantNameLookupKey($0.name) == restaurantNameLookupKey(normalizedName)
+            }
+            if sameName.count == 1, let existing = sameName.first { return existing }
+        }
         let location = RestaurantLocation(context: context)
         assign(location, alongside: activeCircle)
         location.id = UUID(); location.name = normalizedName
@@ -589,7 +888,8 @@ final class AppStore {
         location.address = address; location.city = city; location.phone = phone; location.urlString = url?.absoluteString
         location.sourceIdentifier = sourceIdentifier; location.cuisines = cuisines; location.tags = tags
         location.createdAt = .now; location.updatedAt = .now; location.circle = activeCircle
-        if let coordinate {
+        if let coordinate,
+           StoredCoordinatePolicy.isValid(latitude: coordinate.0, longitude: coordinate.1) {
             location.latitude = coordinate.0; location.longitude = coordinate.1; location.hasCoordinates = true
         }
         allLocations.append(location)
@@ -609,7 +909,15 @@ final class AppStore {
            let location = locationsBySource[.init(circleID: circleID, sourceIdentifier: sourceIdentifier)] {
             return location
         }
-        return locationsByIdentity[.init(circleID: circleID, name: name, address: address)]
+        if let exact = locationsByIdentity[.init(circleID: circleID, name: name, address: address)] {
+            return exact
+        }
+        let hasNoAddress = address?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true
+        guard hasNoAddress else { return nil }
+        let sameName = locations.filter {
+            restaurantNameLookupKey($0.name) == restaurantNameLookupKey(name)
+        }
+        return sameName.count == 1 ? sameName.first : nil
     }
 
     @discardableResult
@@ -637,7 +945,8 @@ final class AppStore {
             visit.isShared = resolvedCompanionIDs.contains { id in
                 circleMembers.contains { $0.id == id }
             }
-            if let coordinate {
+            if let coordinate,
+               StoredCoordinatePolicy.isValid(latitude: coordinate.0, longitude: coordinate.1) {
                 visit.latitude = coordinate.0; visit.longitude = coordinate.1; visit.hasCoordinates = true
             } else if let coordinate = location.coordinate {
                 visit.latitude = coordinate.latitude; visit.longitude = coordinate.longitude; visit.hasCoordinates = true
@@ -1087,14 +1396,20 @@ final class AppStore {
                 return values.min { abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date)) }
             }
 
+            var livePhotoIDs = Set(visits.flatMap(\.photoArray).map(\.id))
             for row in request.archive.photos {
                 guard let downloaded = request.downloadedPhotos[row.id],
                       let rankingID = assignedRankingID(
                         for: row.restaurantName, city: row.city,
                         explicit: request.photoRankingAssignments[row.id]
                       ), let visit = targetVisit(rankingID: rankingID, near: row.uploadDate) else { continue }
-                if linksByKey[importLinkKey("photo", row.id)] != nil { continue }
-                if let duplicate = links.first(where: { $0.recordType == "photo" && $0.contentHash == downloaded.contentHash }) {
+                let rowLink = linksByKey[importLinkKey("photo", row.id)]
+                if let rowLink, livePhotoIDs.contains(rowLink.targetID) { continue }
+                if let duplicate = links.first(where: {
+                    $0.recordType == "photo" &&
+                        $0.contentHash == downloaded.contentHash &&
+                        livePhotoIDs.contains($0.targetID)
+                }) {
                     link(
                         recordType: "photo", externalKey: row.id, targetID: duplicate.targetID,
                         contentHash: downloaded.contentHash, createdByImport: false
@@ -1107,6 +1422,7 @@ final class AppStore {
                     captureDate: downloaded.photo.captureDate, caption: row.caption
                 )
                 guard let photo = visit.photoArray.last else { continue }
+                livePhotoIDs.insert(photo.id)
                 link(
                     recordType: "photo", externalKey: row.id, targetID: photo.id,
                     contentHash: downloaded.contentHash, createdByImport: true
@@ -1231,8 +1547,11 @@ final class AppStore {
         }
     }
 
-    func recordComparison(a: RestaurantLocation, b: RestaurantLocation, outcome: ComparisonOutcome, personID: UUID? = nil) {
-        guard a.id != b.id, let resolvedPersonID = personID ?? currentPerson?.id else { return }
+    /// Returns the new comparison's identifier so a flow that records answers
+    /// one at a time can take the last one back.
+    @discardableResult
+    func recordComparison(a: RestaurantLocation, b: RestaurantLocation, outcome: ComparisonOutcome, personID: UUID? = nil) -> UUID? {
+        guard a.id != b.id, let resolvedPersonID = personID ?? currentPerson?.id else { return nil }
         let comparison = ComparisonEntity(context: context)
         assign(comparison, alongside: activeCircle)
         comparison.id = UUID(); comparison.personID = resolvedPersonID
@@ -1243,10 +1562,12 @@ final class AppStore {
         allComparisons.append(comparison)
         pendingSorts.insert(.comparisons)
         commit()
+        return comparison.id
     }
 
-    func recordAnchor(for location: RestaurantLocation, value: Double, personID: UUID? = nil) {
-        guard let resolvedPersonID = personID ?? currentPerson?.id else { return }
+    @discardableResult
+    func recordAnchor(for location: RestaurantLocation, value: Double, personID: UUID? = nil) -> UUID? {
+        guard let resolvedPersonID = personID ?? currentPerson?.id else { return nil }
         let evidenceFingerprint = rankingEvidenceFingerprint(for: location, personID: resolvedPersonID)
         let comparison = ComparisonEntity(context: context)
         assign(comparison, alongside: activeCircle)
@@ -1258,6 +1579,44 @@ final class AppStore {
         allComparisons.append(comparison)
         pendingSorts.insert(.comparisons)
         commit()
+        return comparison.id
+    }
+
+    /// Withdraws a comparison or anchor this person just recorded.
+    ///
+    /// Ranking answers are evidence, not history: a mistapped comparison should
+    /// leave no trace rather than be corrected by a contradicting second answer.
+    /// Ownership is checked so one member can never retract another's evidence.
+    @discardableResult
+    func removeComparison(id: UUID, personID: UUID? = nil) -> Bool {
+        guard let resolvedPersonID = personID ?? currentPerson?.id,
+              let comparison = allComparisons.first(where: { $0.id == id }),
+              comparison.personID == resolvedPersonID else { return false }
+        allComparisons.removeAll { $0.id == id }
+        context.delete(comparison)
+        commit()
+        return true
+    }
+
+    /// Adds a familiar restaurant as ranking evidence without inventing an outing.
+    /// Onboarding uses this when somebody knows how they feel about a restaurant
+    /// but has not supplied a real outing date for the permanent history.
+    @discardableResult
+    func seedFamiliarRestaurant(
+        name: String,
+        reaction: Reaction,
+        personID: UUID? = nil
+    ) -> RestaurantLocation? {
+        let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanName.isEmpty, let resolvedPersonID = personID ?? currentPerson?.id else { return nil }
+        return performBatch {
+            let restaurant = createLocation(
+                name: cleanName,
+                category: DiningCategory.suggested(for: cleanName)
+            )
+            recordAnchor(for: restaurant, value: reaction.anchor, personID: resolvedPersonID)
+            return restaurant
+        }
     }
 
     func ranked(for personID: UUID? = nil) -> [LocationScore] {
@@ -1290,6 +1649,7 @@ final class AppStore {
         if cachedScoreRevision != revision {
             scoreCache.removeAll()
             circleScoreCache.removeAll()
+            duplicateSuggestionCache = nil
             cachedScoreRevision = revision
         }
     }
@@ -1298,12 +1658,15 @@ final class AppStore {
         ranked(for: personID).first { $0.id == location.id }
     }
 
+    func needsEntryResponse(for visit: VisitEntity, personID: UUID? = nil) -> Bool {
+        guard let personID = personID ?? currentPerson?.id else { return false }
+        return visit.participant(for: personID)?.status == .pending && visit.rating(for: personID) == nil
+    }
+
     func pendingVisits(for personID: UUID? = nil) -> [VisitEntity] {
         guard let personID = personID ?? currentPerson?.id else { return [] }
         // `visits` is already maintained newest-first by the store cache.
-        return visits.filter {
-            $0.participant(for: personID)?.status == .pending && $0.rating(for: personID) == nil
-        }
+        return visits.filter { needsEntryResponse(for: $0, personID: personID) }
     }
 
     func toggleWant(_ location: RestaurantLocation, by personID: UUID? = nil) {
@@ -1354,7 +1717,8 @@ final class AppStore {
         location.cuisines = cuisines; location.tags = tags
         location.address = address?.nilIfBlank; location.city = city?.nilIfBlank; location.phone = phone?.nilIfBlank
         location.urlString = urlString?.nilIfBlank; location.hoursText = hoursText?.nilIfBlank
-        if let latitude, let longitude {
+        if let latitude, let longitude,
+           StoredCoordinatePolicy.isValid(latitude: latitude, longitude: longitude) {
             location.latitude = latitude; location.longitude = longitude; location.hasCoordinates = true
         } else {
             location.hasCoordinates = false; location.latitude = 0; location.longitude = 0
@@ -1586,7 +1950,7 @@ final class AppStore {
             pendingSorts.removeAll()
             persistDeviceSelection()
             revision += 1
-        } catch { reportError("Big Beautiful Log could not reload your saved data. \(error.localizedDescription)") }
+        } catch { reportError("Big Beautiful Restaurant Log could not reload your saved data. \(error.localizedDescription)") }
     }
 
     private func commit() {
@@ -1650,7 +2014,7 @@ final class AppStore {
     private func makePerson(name: String, isCircleMember: Bool, color: String, circle: CircleEntity) -> PersonEntity {
         let person = PersonEntity(context: context)
         assign(person, alongside: circle)
-        person.id = UUID(); person.name = name.trimmedOr("Guest"); person.isMe = false; person.isCircleMember = isCircleMember; person.colorHex = color
+        person.id = UUID(); person.name = name.trimmedOr("Guest"); person.isMe = false; person.isCircleMember = isCircleMember; person.isArchived = false; person.colorHex = color
         person.createdAt = .now; person.circle = circle
         allPeople.append(person)
         return person
@@ -1658,10 +2022,18 @@ final class AppStore {
 
     private func person(named name: String) -> PersonEntity? {
         let key = personLookupKey(name)
-        return people.first { personLookupKey($0.name) == key }
+        return people.first { !$0.isArchived && personLookupKey($0.name) == key }
     }
 
     private func personLookupKey(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(
+                options: [.caseInsensitive, .diacriticInsensitive],
+                locale: Locale(identifier: "en_US_POSIX")
+            )
+    }
+
+    private func restaurantNameLookupKey(_ name: String) -> String {
         name.trimmingCharacters(in: .whitespacesAndNewlines)
             .folding(
                 options: [.caseInsensitive, .diacriticInsensitive],
@@ -1733,6 +2105,120 @@ final class AppStore {
                 secondVisit.companionIDs.contains(firstVisit.createdByID)
             }
         }
+    }
+
+    /// Restaurant pairs that look like the same place but that the automatic
+    /// reconciliation pass deliberately refuses to merge on its own.
+    ///
+    /// `reconcileDuplicateLocations` already folds together records that agree
+    /// on a Maps identifier, an address, or a coordinate. What it leaves behind
+    /// is the genuinely ambiguous residue — two records sharing a name with
+    /// different or missing addresses, which may equally be two branches. Those
+    /// need a person to decide, so they are surfaced as suggestions rather than
+    /// merged, and the merge tool stays out of the way when there are none.
+    func duplicateLocationSuggestions() -> [DuplicateLocationSuggestion] {
+        invalidateScoreCacheIfStale()
+        if let duplicateSuggestionCache { return duplicateSuggestionCache }
+        let result = computeDuplicateLocationSuggestions()
+        duplicateSuggestionCache = result
+        return result
+    }
+
+    private func computeDuplicateLocationSuggestions() -> [DuplicateLocationSuggestion] {
+        let candidates = locations
+        var suggestions: [DuplicateLocationSuggestion] = []
+        var pairedIDs = Set<String>()
+
+        func pairKey(_ first: RestaurantLocation, _ second: RestaurantLocation) -> String {
+            [first.id.uuidString, second.id.uuidString].sorted().joined(separator: "-")
+        }
+
+        func ordered(
+            _ first: RestaurantLocation,
+            _ second: RestaurantLocation
+        ) -> (keeper: RestaurantLocation, duplicate: RestaurantLocation) {
+            let firstVisits = first.visitArray.count
+            let secondVisits = second.visitArray.count
+            if firstVisits != secondVisits {
+                return firstVisits > secondVisits ? (first, second) : (second, first)
+            }
+            return first.createdAt <= second.createdAt ? (first, second) : (second, first)
+        }
+
+        for group in Dictionary(grouping: candidates, by: { restaurantNameKey($0.name) }).values
+        where group.count > 1 {
+            for (offset, first) in group.enumerated() {
+                for second in group.dropFirst(offset + 1) {
+                    let key = pairKey(first, second)
+                    guard pairedIDs.insert(key).inserted else { continue }
+                    let pair = ordered(first, second)
+                    let addresses = [pair.keeper.address, pair.duplicate.address]
+                        .compactMap { $0?.nilIfBlank }
+                    suggestions.append(
+                        .init(
+                            keeper: pair.keeper,
+                            duplicate: pair.duplicate,
+                            reason: addresses.count == 2
+                                ? "Same name, two addresses"
+                                : "Same name"
+                        )
+                    )
+                }
+            }
+        }
+
+        // Comparing every located restaurant against every other is quadratic,
+        // and this runs after each save. Since the pass only ever accepts pairs
+        // within 75 m, bucketing to a ~110 m grid and looking at just the eight
+        // neighbouring cells finds the same pairs in time linear in the log.
+        struct GridCell: Hashable {
+            let latitude: Int
+            let longitude: Int
+        }
+        let cellSize = 0.001
+        var grid: [GridCell: [RestaurantLocation]] = [:]
+        for location in candidates {
+            guard let coordinate = location.coordinate else { continue }
+            let cell = GridCell(
+                latitude: Int((coordinate.latitude / cellSize).rounded(.down)),
+                longitude: Int((coordinate.longitude / cellSize).rounded(.down))
+            )
+            grid[cell, default: []].append(location)
+        }
+
+        for (cell, bucket) in grid {
+            let neighbours = (-1...1).flatMap { latitudeOffset in
+                (-1...1).compactMap { longitudeOffset in
+                    grid[GridCell(
+                        latitude: cell.latitude + latitudeOffset,
+                        longitude: cell.longitude + longitudeOffset
+                    )]
+                }
+            }.flatMap { $0 }
+
+            for first in bucket {
+                guard let firstCoordinate = first.coordinate else { continue }
+                let firstKey = restaurantNameKey(first.name)
+                for second in neighbours where second.id != first.id {
+                    guard let secondCoordinate = second.coordinate else { continue }
+                    let secondKey = restaurantNameKey(second.name)
+                    guard firstKey != secondKey,
+                          firstKey.contains(secondKey) || secondKey.contains(firstKey) else { continue }
+                    let key = pairKey(first, second)
+                    guard !pairedIDs.contains(key) else { continue }
+                    let distance = CLLocation(latitude: firstCoordinate.latitude, longitude: firstCoordinate.longitude)
+                        .distance(from: CLLocation(latitude: secondCoordinate.latitude, longitude: secondCoordinate.longitude))
+                    guard distance <= 75 else { continue }
+                    pairedIDs.insert(key)
+                    let pair = ordered(first, second)
+                    suggestions.append(
+                        .init(keeper: pair.keeper, duplicate: pair.duplicate, reason: "Similar name, same block")
+                    )
+                }
+            }
+        }
+
+        return suggestions.sorted { $0.keeper.name.localizedCaseInsensitiveCompare($1.keeper.name) == .orderedAscending }
     }
 
     private func restaurantNameKey(_ name: String) -> String {
@@ -1979,6 +2465,8 @@ final class AppStore {
             }
         }
         for photo in duplicate.photoArray { photo.visit = keeper }
+        for reaction in duplicate.dinerEntryReactionArray { reaction.visit = keeper }
+        reconcileCoonReactions(in: keeper)
 
         keeper.date = min(keeper.date, duplicate.date)
         keeper.createdAt = min(keeper.createdAt, duplicate.createdAt)
@@ -2167,12 +2655,10 @@ final class AppStore {
         return colors[index % colors.count]
     }
 
-    /// Person names are unique within a circle. Older builds could split one name
-    /// across a member and a reusable companion, while two offline devices can
-    /// independently add the same name before delta syncs. Every replica picks
-    /// the same canonical UUID: prefer a member, then the earliest creation date,
-    /// then UUID. All linked records are rewritten before duplicate people are
-    /// deleted, so concurrent additions converge without losing history.
+    /// Older builds could split one companion across a reusable guest and a
+    /// member profile. Those legacy member/guest pairs are reconciled by name,
+    /// but two member profiles are never merged: matching display names do not
+    /// prove that two authenticated accounts represent the same person.
     @discardableResult
     private func reconcileDuplicatePeople() -> Bool {
         let byCircle = Dictionary(grouping: allPeople) { $0.circle?.id }
@@ -2180,9 +2666,16 @@ final class AppStore {
         var duplicatePeople: [PersonEntity] = []
 
         for circlePeople in byCircle.values {
-            let byName = Dictionary(grouping: circlePeople) { personLookupKey($0.name) }
+            let activePeople = circlePeople.filter { !$0.isArchived }
+            let byName = Dictionary(grouping: activePeople) { personLookupKey($0.name) }
             for matchingPeople in byName.values {
                 guard matchingPeople.count > 1 else { continue }
+                // Equal names do not prove equal people. In particular, two
+                // signed-in circle members may legitimately share a name, and
+                // merging them transfers ratings and the local device identity
+                // from one account to another. Leave the entire group distinct
+                // when more than one member profile is present.
+                guard matchingPeople.filter(\.isCircleMember).count <= 1 else { continue }
                 let ordered = matchingPeople.sorted { lhs, rhs in
                     if lhs.isCircleMember != rhs.isCircleMember { return lhs.isCircleMember }
                     return personComesBefore(lhs, rhs)
@@ -2194,6 +2687,17 @@ final class AppStore {
                 }
             }
         }
+        return rewritePersonReferences(
+            replacementIDs: replacementIDs,
+            duplicatePeople: duplicatePeople
+        )
+    }
+
+    @discardableResult
+    private func rewritePersonReferences(
+        replacementIDs: [UUID: UUID],
+        duplicatePeople: [PersonEntity]
+    ) -> Bool {
         guard !replacementIDs.isEmpty else { return false }
 
         func canonicalID(_ id: UUID) -> UUID { replacementIDs[id] ?? id }
@@ -2249,6 +2753,8 @@ final class AppStore {
                 if let personID = photo.personID { photo.personID = canonicalID(personID) }
             }
 
+            reconcileCoonReactions(in: visit, canonicalPersonID: canonicalID)
+
             synchronizeLegacyCompanionIDs(for: visit)
         }
         for comparison in allComparisons {
@@ -2278,6 +2784,48 @@ final class AppStore {
     private func dishLookupKey(_ name: String) -> String {
         name.trimmingCharacters(in: .whitespacesAndNewlines)
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+    }
+
+    private func coonReactionID(
+        visitID: UUID,
+        authorPersonID: UUID,
+        targetPersonID: UUID
+    ) -> UUID {
+        let input = "coon-reaction|\(visitID.uuidString)|\(authorPersonID.uuidString)|\(targetPersonID.uuidString)"
+        let hex = SHA256.hash(data: Data(input.utf8)).prefix(16)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let value = "\(hex.prefix(8))-\(hex.dropFirst(8).prefix(4))-\(hex.dropFirst(12).prefix(4))-\(hex.dropFirst(16).prefix(4))-\(hex.dropFirst(20).prefix(12))"
+        return UUID(uuidString: value) ?? UUID()
+    }
+
+    private func reconcileCoonReactions(
+        in visit: VisitEntity,
+        canonicalPersonID: (UUID) -> UUID = { $0 }
+    ) {
+        var newestReactionByPair: [String: DinerEntryReactionEntity] = [:]
+        let ordered = visit.dinerEntryReactionArray.sorted {
+            if $0.updatedAt != $1.updatedAt { return $0.updatedAt < $1.updatedAt }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+        for reaction in ordered {
+            let authorPersonID = canonicalPersonID(reaction.authorPersonID)
+            let targetPersonID = canonicalPersonID(reaction.targetPersonID)
+            guard authorPersonID != targetPersonID else {
+                context.delete(reaction)
+                continue
+            }
+            reaction.authorPersonID = authorPersonID
+            reaction.targetPersonID = targetPersonID
+            reaction.id = coonReactionID(
+                visitID: visit.id,
+                authorPersonID: authorPersonID,
+                targetPersonID: targetPersonID
+            )
+            let key = "\(authorPersonID.uuidString)-\(targetPersonID.uuidString)"
+            if let older = newestReactionByPair[key] { context.delete(older) }
+            newestReactionByPair[key] = reaction
+        }
     }
 
     private var photoDateSyncCandidates: [(visit: VisitEntity, photoDate: Date)] {
@@ -2404,7 +2952,9 @@ final class AppStore {
         let snapshot = RankingEvidenceSnapshot(version: 1, ratedVisits: ratedVisits, dishEntries: dishEntries)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        let data = try! encoder.encode(snapshot)
+        // The snapshot contains only JSON-native values, but an unexpected
+        // encoder failure must never terminate the app while ranking a log.
+        let data = (try? encoder.encode(snapshot)) ?? Data()
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 

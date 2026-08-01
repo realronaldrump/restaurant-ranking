@@ -17,7 +17,7 @@ enum AppTab: String, CaseIterable, Identifiable {
     case log = "Log"
     case rankings = "Rankings"
     case history = "History"
-    case want = "Want to Try"
+    case settle = "Settle"
     case more = "More"
     var id: String { rawValue }
     var symbol: String {
@@ -25,18 +25,24 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .log: "book.closed.fill"
         case .rankings: "list.number"
         case .history: "clock.arrow.circlepath"
-        case .want: "bookmark.fill"
+        case .settle: "scale.3d"
         case .more: "ellipsis.circle.fill"
         }
     }
 }
 
+enum RankingScope: Hashable {
+    case person(UUID)
+    case circle
+}
+
 enum AppRoute: Hashable {
-    case location(UUID)
+    case location(UUID, rankingScope: RankingScope? = nil)
     case visit(UUID)
     case atlas
     case stats
     case settleScore
+    case wantToTry
     case backfill
     case settings
     case merge
@@ -70,7 +76,7 @@ final class AppRouter {
     var logPath: [AppRoute] = []
     var rankingPath: [AppRoute] = []
     var historyPath: [AppRoute] = []
-    var wantPath: [AppRoute] = []
+    var settlePath: [AppRoute] = []
     var morePath: [AppRoute] = []
 
     /// An invitation waiting to be accepted.
@@ -128,7 +134,7 @@ final class AppRouter {
         case .log: Binding(get: { self.logPath }, set: { self.logPath = $0 })
         case .rankings: Binding(get: { self.rankingPath }, set: { self.rankingPath = $0 })
         case .history: Binding(get: { self.historyPath }, set: { self.historyPath = $0 })
-        case .want: Binding(get: { self.wantPath }, set: { self.wantPath = $0 })
+        case .settle: Binding(get: { self.settlePath }, set: { self.settlePath = $0 })
         case .more: Binding(get: { self.morePath }, set: { self.morePath = $0 })
         }
     }
@@ -138,7 +144,7 @@ final class AppRouter {
         case .log: logPath.removeAll()
         case .rankings: rankingPath.removeAll()
         case .history: historyPath.removeAll()
-        case .want: wantPath.removeAll()
+        case .settle: settlePath.removeAll()
         case .more: morePath.removeAll()
         }
     }

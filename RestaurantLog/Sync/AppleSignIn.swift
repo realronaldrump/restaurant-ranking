@@ -19,8 +19,11 @@ final class AppleSignIn: NSObject {
     private var continuation: CheckedContinuation<Credential, Error>?
     private var currentNonce: String?
     private var controller: ASAuthorizationController?
+    private var requestIsActive = false
 
     func requestCredential() async throws -> Credential {
+        guard !requestIsActive else { throw AppleSignInError.requestAlreadyInProgress }
+        requestIsActive = true
         let nonce = Self.makeNonce()
         currentNonce = nonce
 
@@ -44,7 +47,9 @@ final class AppleSignIn: NSObject {
     private func finish(_ result: Result<Credential, Error>) {
         let pending = continuation
         continuation = nil
+        currentNonce = nil
         controller = nil
+        requestIsActive = false
         switch result {
         case let .success(credential): pending?.resume(returning: credential)
         case let .failure(error): pending?.resume(throwing: error)
@@ -102,18 +107,27 @@ extension AppleSignIn: ASAuthorizationControllerDelegate {
 
 extension AppleSignIn: ASAuthorizationControllerPresentationContextProviding {
     nonisolated func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
-        MainActor.assumeIsolated {
-            let scene = UIApplication.shared.connectedScenes
-                .compactMap { $0 as? UIWindowScene }
-                .first { $0.activationState == .foregroundActive }
-            return scene?.keyWindow ?? scene?.windows.first ?? ASPresentationAnchor()
+        if Thread.isMainThread {
+            return MainActor.assumeIsolated { Self.activePresentationAnchor() }
         }
+        return DispatchQueue.main.sync {
+            MainActor.assumeIsolated { Self.activePresentationAnchor() }
+        }
+    }
+
+    @MainActor
+    private static func activePresentationAnchor() -> ASPresentationAnchor {
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }
+        return scene?.keyWindow ?? scene?.windows.first ?? ASPresentationAnchor()
     }
 }
 
 enum AppleSignInError: LocalizedError {
     case cancelled
     case missingIdentityToken
+    case requestAlreadyInProgress
 
     var errorDescription: String? {
         switch self {
@@ -121,6 +135,8 @@ enum AppleSignInError: LocalizedError {
             "Sign in was cancelled."
         case .missingIdentityToken:
             "Apple did not return an identity token, so the circle could not be linked to this device."
+        case .requestAlreadyInProgress:
+            "Sign in with Apple is already in progress."
         }
     }
 }

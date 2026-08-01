@@ -21,6 +21,7 @@ enum ManagedObjectModel {
         let person = entity("PersonEntity", PersonEntity.self, [
             attribute("id", .UUIDAttributeType), attribute("name", .stringAttributeType),
             attribute("isMe", .booleanAttributeType, defaultValue: false), attribute("isCircleMember", .booleanAttributeType, defaultValue: true),
+            attribute("isArchived", .booleanAttributeType, defaultValue: false),
             attribute("colorHex", .stringAttributeType, defaultValue: "6F1D2B"),
             attribute("createdAt", .dateAttributeType)
         ])
@@ -59,6 +60,11 @@ enum ManagedObjectModel {
             attribute("valueRaw", .stringAttributeType, optional: true), attribute("hazyMemory", .booleanAttributeType, defaultValue: false),
             attribute("wouldOrderAgain", .booleanAttributeType, defaultValue: false), attribute("hasWouldOrderAgain", .booleanAttributeType, defaultValue: false),
             attribute("createdAt", .dateAttributeType)
+        ])
+        let dinerEntryReaction = entity("DinerEntryReactionEntity", DinerEntryReactionEntity.self, [
+            attribute("id", .UUIDAttributeType), attribute("authorPersonID", .UUIDAttributeType),
+            attribute("targetPersonID", .UUIDAttributeType), attribute("kindRaw", .stringAttributeType),
+            attribute("createdAt", .dateAttributeType), attribute("updatedAt", .dateAttributeType)
         ])
         let dish = entity("DishEntity", DishEntity.self, [
             attribute("id", .UUIDAttributeType), attribute("name", .stringAttributeType), attribute("roleRaw", .stringAttributeType),
@@ -116,12 +122,13 @@ enum ManagedObjectModel {
         pair(location, "dishes", dish, "location", toManyA: true, deleteA: .cascadeDeleteRule)
         pair(location, "wantEntries", want, "location", toManyA: true, deleteA: .cascadeDeleteRule)
         pair(visit, "ratings", rating, "visit", toManyA: true, deleteA: .cascadeDeleteRule)
+        pair(visit, "dinerEntryReactions", dinerEntryReaction, "visit", toManyA: true, deleteA: .cascadeDeleteRule)
         pair(visit, "dishEntries", dishEntry, "visit", toManyA: true, deleteA: .cascadeDeleteRule)
         pair(visit, "photos", photo, "visit", toManyA: true, deleteA: .cascadeDeleteRule)
         pair(visit, "participants", participant, "visit", toManyA: true, deleteA: .cascadeDeleteRule)
         pair(dish, "entries", dishEntry, "dish", toManyA: true, deleteA: .cascadeDeleteRule)
 
-        model.entities = [circle, person, brand, location, visit, participant, rating, dish, dishEntry, photo, comparison, want, importLink, importSession]
+        model.entities = [circle, person, brand, location, visit, participant, rating, dinerEntryReaction, dish, dishEntry, photo, comparison, want, importLink, importSession]
         return model
     }
 

@@ -446,9 +446,12 @@ actor SupabaseClient {
         request.httpMethod = "DELETE"
         do {
             _ = try await perform(request)
-        } catch SyncTransportError.notFound {
+        } catch let error as SyncTransportError where error.isMissingStorageObject {
             // Deletion is idempotent. A peer or an earlier retry may already
-            // have removed the object.
+            // have removed the object. Supabase Storage's legacy endpoint
+            // returns this particular missing-key result as HTTP 400 instead
+            // of 404, so classify the structured message at this operation's
+            // boundary rather than weakening 400 handling everywhere.
         }
     }
 
@@ -635,6 +638,24 @@ enum SyncTransportError: LocalizedError, Equatable {
         switch self {
         case .offline, .serverUnavailable: true
         case .unauthorized, .forbidden, .notFound, .conflict, .requestFailed, .malformedResponse: false
+        }
+    }
+
+    var isMissingStorageObject: Bool {
+        switch self {
+        case .notFound:
+            true
+        case let .requestFailed(code, detail):
+            code == 400 && detail.caseInsensitiveCompare("Object not found") == .orderedSame
+        default:
+            false
+        }
+    }
+
+    var mayMeanCircleAccessWasRevoked: Bool {
+        switch self {
+        case .forbidden, .notFound: true
+        default: false
         }
     }
 }

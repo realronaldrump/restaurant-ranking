@@ -36,9 +36,9 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Your location helps find nearby restaurants while you log a meal. It is never tracked in the background.</string>
+	<string>Your location helps find nearby restaurants while you log an outing. It is never tracked in the background.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Photo access lets you attach meal photos and privately rebuild your dining history.</string>
+	<string>Photo access lets you attach outing photos and privately rebuild your dining history.</string>
 	<key>SupabaseAnonKey</key>
 	<string>$(SUPABASE_ANON_KEY)</string>
 	<key>SupabaseURL</key>

@@ -22,6 +22,10 @@ enum SyncStatus: Equatable {
     case disabled
 
     var isBusy: Bool { self == .syncing }
+    var isFailure: Bool {
+        if case .failed = self { return true }
+        return false
+    }
 
     var description: String {
         switch self {
@@ -49,6 +53,36 @@ struct SyncOutcome: Equatable {
     var photosDeleted = 0
 
     var madeLocalChanges: Bool { applied > 0 || deletedLocally > 0 || photosDownloaded > 0 }
+}
+
+enum SyncPhotoCleanup {
+    static func deletionCandidates(
+        plannedKeys: [SyncKey],
+        remote: [SyncKey: DecodedSyncRecord]
+    ) -> Set<UUID> {
+        let plannedPhotoIDs = plannedKeys.lazy
+            .filter { $0.kind == .photo }
+            .map(\.id)
+        let remoteTombstoneIDs = remote.lazy.compactMap { key, record in
+            key.kind == .photo && record.deleted ? key.id : nil
+        }
+        return Set(plannedPhotoIDs).union(remoteTombstoneIDs)
+    }
+
+    static func pending(
+        candidates: Set<UUID>,
+        completed: Set<UUID>,
+        livePhotoIDs: Set<UUID>
+    ) -> Set<UUID> {
+        candidates.subtracting(completed.subtracting(livePhotoIDs))
+    }
+
+    static func completedAfterReconcilingLivePhotos(
+        completed: Set<UUID>,
+        livePhotoIDs: Set<UUID>
+    ) -> Set<UUID> {
+        completed.subtracting(livePhotoIDs)
+    }
 }
 
 /// Advances only through rows this build understood. An unknown or unreadable
@@ -124,6 +158,15 @@ actor SyncEngine {
         return try await task.value
     }
 
+    /// Lifecycle operations (leave, reset, account deletion) must not race a
+    /// pass that can republish rows after the server copy was retired.
+    func cancelSynchronization() async {
+        guard let task = inFlight else { return }
+        task.cancel()
+        _ = await task.result
+        inFlight = nil
+    }
+
     private func run(circleID: UUID) async throws -> SyncOutcome {
         guard try await client.restore() != nil else { throw SyncError.notSignedIn }
         guard let key = CircleKeychain.key(for: circleID) else { throw SyncError.circleKeyMissing }
@@ -137,11 +180,14 @@ actor SyncEngine {
 
         // 2. Read the local graph.
         let context = container.newBackgroundContext()
-        context.mergePolicy = NSMergePolicy(merge: .mergeByPropertyObjectTrumpMergePolicyType)
-        context.transactionAuthor = "sync"
 
         let snapshot = try await context.perform {
-            try SyncSnapshotBuilder.build(circleID: circleID, in: context)
+            // A private-queue context's mutable configuration is Core Data
+            // state too. Configure it on its own queue so concurrency checking
+            // cannot terminate the app during a sync pass.
+            context.mergePolicy = NSMergePolicy(merge: .mergeByPropertyObjectTrumpMergePolicyType)
+            context.transactionAuthor = "sync"
+            return try SyncSnapshotBuilder.build(circleID: circleID, in: context)
         }
 
         // 3. Decide.
@@ -212,19 +258,24 @@ actor SyncEngine {
         // metadata is not enough. Remove both variants before accepting the new
         // baseline; a failure leaves this pass retryable and the operation is
         // idempotent if another device already completed it.
-        var deletedPhotoIDs = Set(
-            (plan.tombstone + plan.deleteLocally)
-                .filter { $0.kind == .photo }
-                .map(\.id)
+        let deletionCandidates = SyncPhotoCleanup.deletionCandidates(
+            plannedKeys: plan.tombstone + plan.deleteLocally,
+            remote: remote
         )
-        deletedPhotoIDs.formUnion(remote.values.compactMap { record in
-            record.key.kind == .photo && record.deleted ? record.key.id : nil
-        })
+        // Remote tombstones keep a failed Storage cleanup retryable after local
+        // metadata is gone. The completed-ID ledger suppresses repeat deletes
+        // once both objects have been removed successfully.
+        let deletedPhotoIDs = SyncPhotoCleanup.pending(
+            candidates: deletionCandidates,
+            completed: baseline.cleanedPhotoIDs,
+            livePhotoIDs: snapshot.photoIDs
+        )
         for photoID in deletedPhotoIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
             try await client.deletePhoto(circleID: circleID, objectKey: "\(photoID.uuidString).full")
             try await client.deletePhoto(circleID: circleID, objectKey: "\(photoID.uuidString).thumb")
             baseline.uploadedPhotoIDs.remove(photoID)
             baseline.downloadedPhotoIDs.remove(photoID)
+            baseline.cleanedPhotoIDs.insert(photoID)
             outcome.photosDeleted += 1
         }
 
@@ -235,6 +286,10 @@ actor SyncEngine {
         let settled = try await context.perform {
             try SyncSnapshotBuilder.build(circleID: circleID, in: context)
         }
+        baseline.cleanedPhotoIDs = SyncPhotoCleanup.completedAfterReconcilingLivePhotos(
+            completed: baseline.cleanedPhotoIDs,
+            livePhotoIDs: settled.photoIDs
+        )
 
         // Where storing a remote record produced a different value than the one
         // that arrived, publish the stored version. Without this the two sides

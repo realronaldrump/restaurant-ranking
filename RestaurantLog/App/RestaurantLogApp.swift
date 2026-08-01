@@ -10,6 +10,7 @@ struct RestaurantLogApp: App {
     @State private var router = AppRouter()
     @State private var locationService = LocationService()
     @State private var launchMessage = "Opening your restaurant log…"
+    @State private var isOnboardingSessionActive = false
     @AppStorage("didCompleteGrandOpening") private var didCompleteGrandOpening = false
     @AppStorage(AppearancePreference.storageKey) private var appearancePreference = AppearancePreference.system
 
@@ -20,9 +21,15 @@ struct RestaurantLogApp: App {
         }
         // Segmented controls in Big Beautiful colors rather than system gray.
         let segmented = UISegmentedControl.appearance()
-        segmented.selectedSegmentTintColor = UIColor(named: "Oxblood")
+        segmented.selectedSegmentTintColor = UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(red: 0.365, green: 0.075, blue: 0.125, alpha: 1)
+                : UIColor(red: 0.435, green: 0.114, blue: 0.169, alpha: 1)
+        }
         segmented.setTitleTextAttributes([.foregroundColor: UIColor(named: "Ink") ?? .label], for: .normal)
-        segmented.setTitleTextAttributes([.foregroundColor: UIColor(named: "Paper") ?? .systemBackground], for: .selected)
+        segmented.setTitleTextAttributes([
+            .foregroundColor: UIColor(red: 0.957, green: 0.922, blue: 0.867, alpha: 1)
+        ], for: .selected)
     }
 
     var body: some Scene {
@@ -44,9 +51,8 @@ struct RestaurantLogApp: App {
                 receiveInvitation(url)
             }
             .onChange(of: scenePhase) { _, phase in
-                guard phase == .active, let store, let sync,
-                      let circleID = store.activeCircleID else { return }
-                Task { await sync.sync(circleID: circleID) }
+                guard phase == .active, let store, let sync else { return }
+                Task { await connectCircle(store, sync) }
             }
         }
     }
@@ -59,10 +65,17 @@ struct RestaurantLogApp: App {
     private func loadedContent(_ store: AppStore, _ sync: SyncCoordinator) -> some View {
         @Bindable var router = router
         Group {
-            if didCompleteGrandOpening, store.activeCircle != nil {
+            if didCompleteGrandOpening, store.activeCircle != nil, !isOnboardingSessionActive {
                 MainTabView()
             } else {
-                GrandOpeningView(isComplete: $didCompleteGrandOpening)
+                GrandOpeningView(isComplete: Binding(
+                    get: { didCompleteGrandOpening },
+                    set: { completed in
+                        didCompleteGrandOpening = completed
+                        if completed { isOnboardingSessionActive = false }
+                    }
+                ))
+                .onAppear { isOnboardingSessionActive = true }
             }
         }
         .environment(store)
@@ -78,6 +91,7 @@ struct RestaurantLogApp: App {
                 invitation: invitation,
                 onJoined: {
                     didCompleteGrandOpening = true
+                    isOnboardingSessionActive = false
                     router.completeInvitation(invitation)
                 },
                 onDiscard: { router.discardInvitation(invitation) }
@@ -99,30 +113,25 @@ struct RestaurantLogApp: App {
                 .presentationDragIndicator(.visible)
                 .tint(BBTheme.oxblood)
         }
-        .alert("Couldn’t Save or Sync", isPresented: Binding(
+        .editorialPrompt(isPresented: Binding(
             get: { store.lastError != nil },
             set: { if !$0 { store.clearLastError() } }
         )) {
-            Button("OK") { store.clearLastError() }
-        } message: {
-            Text(store.lastError ?? "Big Beautiful Log encountered an unexpected persistence error.")
+            EditorialPrompt.error(
+            "Couldn’t save or sync",
+            message: store.lastError ?? "Big Beautiful Restaurant Log encountered an unexpected persistence error.",
+                dismissTitle: "OK"
+            )
         }
         // Registration follows the log rather than a switch: whenever the
         // circle changes identity — first launch, a join, or leaving a shared
         // circle — it is registered and brought up to date automatically.
-        .task(id: "\(store.activeCircleID?.uuidString ?? "none")-\(sync.isSignedIn)") {
+        .task(id: "\(store.activeCircleID?.uuidString ?? "none")-\(sync.isSignedIn)-\(sync.circleNeedingFreshIdentity?.uuidString ?? "stable")") {
             await connectCircle(store, sync)
         }
         .onReceive(NotificationCenter.default.publisher(for: .circleDidArriveFromSync)) { _ in
             // A log downloaded from the account is itself completed setup.
             didCompleteGrandOpening = true
-        }
-        .onAppear {
-            if ProcessInfo.processInfo.arguments.contains("-seedSampleData"), !Self.hasSeededSampleData {
-                Self.hasSeededSampleData = true
-                store.seedSampleLog()
-                didCompleteGrandOpening = true
-            }
         }
     }
 
@@ -145,6 +154,16 @@ struct RestaurantLogApp: App {
         // behind after an invitation, which stranded records where nobody else
         // could see them.
         preparedStore.consolidateCircles()
+        // UI-test fixtures must exist before loadedContent chooses its first
+        // screen. Seeding from a view onAppear races GrandOpeningView's own
+        // appearance callback and can leave onboarding latched over the newly
+        // seeded log for the lifetime of the process.
+        if ProcessInfo.processInfo.arguments.contains("-seedSampleData"), !Self.hasSeededSampleData {
+            Self.hasSeededSampleData = true
+            preparedStore.seedSampleLog()
+            didCompleteGrandOpening = true
+            isOnboardingSessionActive = false
+        }
         let coordinator = SyncCoordinator(container: persistence.container)
         await coordinator.restoreSession()
 
@@ -177,12 +196,36 @@ struct RestaurantLogApp: App {
     @MainActor
     private func connectCircle(_ store: AppStore, _ sync: SyncCoordinator) async {
         guard sync.isConfigured, sync.isSignedIn,
-              let circle = store.activeCircle,
-              let personID = store.currentPerson?.id ?? store.circleMembers.first?.id else { return }
-        await sync.activate(circleID: circle.id, name: circle.name, personID: personID)
-        // The service is the authority on which member profile this account
-        // owns, so a reinstall or a merged record repairs itself here.
-        store.adoptDeviceIdentity(preferring: sync.myMembership?.personID)
+              let circle = store.activeCircle else { return }
+        let result = await sync.activate(
+            circleID: circle.id,
+            name: circle.name,
+            personID: store.currentPerson?.id
+        )
+        switch result {
+        case let .ready(personID):
+            // This only fills a missing local selection. An established phone
+            // identity is never replaced by a roster refresh.
+            store.adoptDeviceIdentity(preferring: personID)
+
+        case .needsFreshCircleIdentity:
+            // A successful membership query proved this account was removed or
+            // the old account/circle was reset. Preserve the entire local log,
+            // rotate it to a private identity, and enroll that new identity.
+            let retiredID = circle.id
+            sync.forget(circleID: retiredID)
+            guard let newID = store.startFreshCircleIdentity(),
+                  let freshCircle = store.activeCircle,
+                  let personID = store.currentPerson?.id else { return }
+            _ = await sync.activate(
+                circleID: newID,
+                name: freshCircle.name,
+                personID: personID
+            )
+
+        case .failed:
+            break
+        }
     }
 
     @ViewBuilder
@@ -196,7 +239,7 @@ struct RestaurantLogApp: App {
             if let visit = store.visits.first(where: { $0.id == id }) {
                 SharedVisitRatingView(visit: visit)
             } else {
-                ContentUnavailableView("Visit unavailable", systemImage: "calendar.badge.exclamationmark")
+                ContentUnavailableView("Outing unavailable", systemImage: "calendar.badge.exclamationmark")
             }
         case .addWant:
             AddWantView()
@@ -204,7 +247,7 @@ struct RestaurantLogApp: App {
             if let location = store.locations.first(where: { $0.id == id }) {
                 DirectComparisonView(source: location)
             } else {
-                ContentUnavailableView("Place unavailable", systemImage: "mappin.slash")
+                ContentUnavailableView("Restaurant unavailable", systemImage: "mappin.slash")
             }
         case .circle:
             CircleView()
@@ -221,11 +264,11 @@ private struct AppLaunchView: View {
             VStack(spacing: 18) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(BBTheme.oxblood)
+                        .fill(BBTheme.oxbloodFill)
                         .frame(width: 64, height: 64)
                     Image(systemName: "book.closed.fill")
                         .font(.title2)
-                        .foregroundStyle(BBTheme.paper)
+                        .foregroundStyle(BBTheme.cream)
                 }
                 VStack(spacing: 6) {
                     Text("Big Beautiful\nRestaurant Log")

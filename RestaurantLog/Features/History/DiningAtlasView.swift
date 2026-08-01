@@ -95,19 +95,19 @@ struct DiningAtlasView: View {
     var body: some View {
         Group {
             if isPreparing {
-                ProgressView("Building your atlas…")
+                ProgressView("Loading…")
                     .tint(BBTheme.oxblood)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if snapshot.loggedPlaceCount == 0 {
                 emptyAtlas(
-                    title: "Your atlas is waiting",
-                    message: "Log a meal and its place will become the first stop in your dining story.",
+                    title: "Nothing to map yet",
+                    message: "Log an outing and its restaurant shows up here.",
                     symbol: "map"
                 )
             } else if snapshot.stops.isEmpty {
                 emptyAtlas(
-                    title: "No places to pin yet",
-                    message: "Your logged places do not have map coordinates. Add a location from a place’s details to put it on the atlas.",
+                    title: "No map locations yet",
+                    message: "None of your restaurants have coordinates saved. Add one from a restaurant’s details.",
                     symbol: "mappin.slash"
                 )
             } else {
@@ -130,7 +130,7 @@ struct DiningAtlasView: View {
                     } label: {
                         Image(systemName: "arrow.up.left.and.arrow.down.right")
                     }
-                    .accessibilityLabel("Show every place")
+                    .accessibilityLabel("Show every restaurant")
                 }
             }
         }
@@ -160,7 +160,7 @@ struct DiningAtlasView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Stop \(stop.order), \(stop.name)")
-                    .accessibilityHint("Shows details for this place")
+                    .accessibilityHint("Shows details for this restaurant")
                 }
             }
         }
@@ -213,7 +213,7 @@ struct DiningAtlasView: View {
 
     private func atlasTitle(_ snapshot: DiningAtlasSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Eyebrow("The places we’ve been")
+            Eyebrow("Your restaurants")
             Text(placeCountLabel(snapshot))
                 .font(BBTheme.display(26))
                 .foregroundStyle(BBTheme.ink)
@@ -223,14 +223,15 @@ struct DiningAtlasView: View {
 
     private var routeKey: some View {
         HStack(spacing: 6) {
-            Circle().fill(BBTheme.oxblood).frame(width: 7, height: 7)
-            Text("FIRST VISITS")
+            Circle().fill(BBTheme.oxbloodFill).frame(width: 7, height: 7)
+            Text("FIRST OUTINGS")
                 .font(.system(size: 10, weight: .bold, design: .rounded))
                 .tracking(0.8)
                 .foregroundStyle(BBTheme.ink.opacity(0.66))
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Pins are ordered by first visit")
+        .accessibilityLabel("First outings. Pins are ordered by first outing.")
+        .accessibilityIdentifier("atlas-first-outings-legend")
     }
 
     @ViewBuilder
@@ -254,12 +255,12 @@ struct DiningAtlasView: View {
                             Image(systemName: stop.category.symbol)
                             Text(stop.city ?? stop.category.shortTitle)
                             Text("·")
-                            Text(stop.visitCount == 1 ? "1 visit" : "\(stop.visitCount) visits")
+                            Text(stop.visitCount == 1 ? "1 outing" : "\(stop.visitCount) outings")
                             if let reaction = stop.latestReaction {
                                 Text("·")
                                 Image(systemName: reaction.symbol)
                                     .foregroundStyle(BBTheme.oxblood)
-                                    .accessibilityLabel(reaction.rawValue)
+                                    .accessibilityLabel(reaction.title)
                             }
                         }
                         .font(.caption)
@@ -324,13 +325,13 @@ struct DiningAtlasView: View {
 
     private func placeCountLabel(_ snapshot: DiningAtlasSnapshot) -> String {
         let count = snapshot.loggedPlaceCount
-        return count == 1 ? "1 place on the record" : "\(count) places on the record"
+        return count == 1 ? "1 restaurant mapped" : "\(count) restaurants mapped"
     }
 
     private func headerDetail(_ snapshot: DiningAtlasSnapshot) -> String {
-        let mapped = "Numbered in the order you first ate there. The dotted line traces your discoveries."
+        let mapped = "Numbered in the order you first went."
         guard snapshot.unmappedPlaceCount > 0 else { return mapped }
-        let noun = snapshot.unmappedPlaceCount == 1 ? "place needs" : "places need"
+        let noun = snapshot.unmappedPlaceCount == 1 ? "restaurant needs" : "restaurants need"
         return "\(mapped) \(snapshot.unmappedPlaceCount) \(noun) a map location."
     }
 }
@@ -343,7 +344,7 @@ private struct DiningAtlasPin: View {
     var body: some View {
         ZStack(alignment: .top) {
             DiningAtlasPinShape()
-                .fill(isSelected ? BBTheme.oxblood : BBTheme.paper)
+                .fill(isSelected ? BBTheme.oxbloodFill : BBTheme.paper)
             DiningAtlasPinShape()
                 .stroke(BBTheme.oxblood, lineWidth: isSelected ? 2 : 1.5)
             Text("\(number)")

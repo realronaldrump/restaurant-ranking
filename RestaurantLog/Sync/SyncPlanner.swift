@@ -146,19 +146,41 @@ struct SyncBaseline: Codable, Equatable {
     var fingerprints: [String: String]
     var uploadedPhotoIDs: Set<UUID>
     var downloadedPhotoIDs: Set<UUID>
+    /// Storage deletions already completed by this device. Remote tombstones
+    /// remain in the pull overlap window, so this prevents every later pass
+    /// from issuing the same object deletion again.
+    var cleanedPhotoIDs: Set<UUID>
 
     init(
         circleID: UUID,
         watermark: Int64 = 0,
         fingerprints: [String: String] = [:],
         uploadedPhotoIDs: Set<UUID> = [],
-        downloadedPhotoIDs: Set<UUID> = []
+        downloadedPhotoIDs: Set<UUID> = [],
+        cleanedPhotoIDs: Set<UUID> = []
     ) {
         self.circleID = circleID
         self.watermark = watermark
         self.fingerprints = fingerprints
         self.uploadedPhotoIDs = uploadedPhotoIDs
         self.downloadedPhotoIDs = downloadedPhotoIDs
+        self.cleanedPhotoIDs = cleanedPhotoIDs
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case circleID, watermark, fingerprints, uploadedPhotoIDs, downloadedPhotoIDs, cleanedPhotoIDs
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        circleID = try values.decode(UUID.self, forKey: .circleID)
+        watermark = try values.decode(Int64.self, forKey: .watermark)
+        fingerprints = try values.decode([String: String].self, forKey: .fingerprints)
+        uploadedPhotoIDs = try values.decode(Set<UUID>.self, forKey: .uploadedPhotoIDs)
+        downloadedPhotoIDs = try values.decode(Set<UUID>.self, forKey: .downloadedPhotoIDs)
+        // Baselines from released builds predate this field. Treating them as
+        // having no completed cleanup makes the upgrade safe and retryable.
+        cleanedPhotoIDs = try values.decodeIfPresent(Set<UUID>.self, forKey: .cleanedPhotoIDs) ?? []
     }
 
     static func encodeKey(_ key: SyncKey) -> String {
@@ -193,6 +215,7 @@ struct SyncBaseline: Codable, Equatable {
 /// Core Data entity: it is device-local bookkeeping that must never itself sync,
 /// and losing it is harmless — the next pass rebuilds it from a full pull.
 enum SyncBaselineStore {
+    private static let maximumBaselineBytes = 32 * 1_024 * 1_024
     private static var directory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
@@ -206,7 +229,11 @@ enum SyncBaselineStore {
     }
 
     static func load(circleID: UUID) -> SyncBaseline {
-        guard let data = try? Data(contentsOf: url(for: circleID)),
+        let fileURL = url(for: circleID)
+        guard let fileSize = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+              fileSize <= maximumBaselineBytes,
+              let data = try? Data(contentsOf: fileURL, options: .mappedIfSafe),
+              data.count <= maximumBaselineBytes,
               let baseline = try? JSONDecoder().decode(SyncBaseline.self, from: data),
               baseline.circleID == circleID
         else { return SyncBaseline(circleID: circleID) }

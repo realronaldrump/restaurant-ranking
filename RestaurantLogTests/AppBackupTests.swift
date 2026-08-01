@@ -45,6 +45,7 @@ final class AppBackupTests: XCTestCase {
             value: .notForMe, wouldOrderAgain: false, hazy: true
         )
         _ = source.addRating(to: visit, personID: michelle.id, reaction: .liked)
+        XCTAssertTrue(source.setCoonReaction(.runItBack, to: michelle.id, in: visit))
         source.updateMemory("Michelle's own memory", for: visit, personID: michelle.id)
         _ = source.addDish(
             name: "Cardamom Bun", role: .dessert, reaction: .loved,
@@ -80,6 +81,7 @@ final class AppBackupTests: XCTestCase {
 
         let original = try await AppBackupService.makeArchive(from: source)
         XCTAssertEqual(try XCTUnwrap(original.participants).count, 3)
+        XCTAssertEqual(try XCTUnwrap(original.dinerEntryReactions).map(\.kind), [.runItBack])
         let originalComparison = try XCTUnwrap(original.comparisons.first { !$0.isAnchor })
         XCTAssertFalse(try XCTUnwrap(originalComparison.locationAEvidenceFingerprint).isEmpty)
         XCTAssertFalse(try XCTUnwrap(originalComparison.locationBEvidenceFingerprint).isEmpty)
@@ -126,6 +128,10 @@ final class AppBackupTests: XCTestCase {
         XCTAssertEqual(restoredRating.value, .notForMe)
         XCTAssertTrue(restoredRating.hasWouldOrderAgain)
         XCTAssertFalse(restoredRating.wouldOrderAgain)
+        let restoredCoonReaction = try XCTUnwrap(restoredVisit.dinerEntryReactionArray.first)
+        XCTAssertEqual(restoredCoonReaction.kind, .runItBack)
+        XCTAssertEqual(restoredCoonReaction.authorPersonID, me.id)
+        XCTAssertEqual(restoredCoonReaction.targetPersonID, michelle.id)
         XCTAssertEqual(restoredVisit.dishEntryArray.first?.dish?.name, "Cardamom Bun")
         XCTAssertEqual(restoredVisit.photoArray.first?.fullData, Data([1, 2, 3, 4]))
         XCTAssertEqual(restoredVisit.photoArray.first?.thumbnailData, Data([5, 6]))
@@ -165,6 +171,8 @@ final class AppBackupTests: XCTestCase {
             comparisons[index].removeValue(forKey: "locationBEvidenceFingerprint")
         }
         payload["comparisons"] = comparisons
+        payload["formatVersion"] = AppBackupArchive.minimumSupportedFormatVersion
+        payload.removeValue(forKey: "dinerEntryReactions")
         let legacyData = try JSONSerialization.data(withJSONObject: payload)
 
         let decoded = try AppBackupCodec.decode(legacyData)
@@ -179,6 +187,45 @@ final class AppBackupTests: XCTestCase {
         XCTAssertFalse(restored.locationBEvidenceFingerprint.isEmpty)
         let pairIDs = Set([first.id, second.id])
         XCTAssertFalse(destination.settleQuestions().contains { Set([$0.a.id, $0.b.id]) == pairIDs })
+    }
+
+    func testRestoreCanReconnectToLiveEnrollmentWithoutChangingMemberIdentity() async throws {
+        let backupStore = makeStore()
+        backupStore.bootstrap(myName: "Backup Davis", circleName: "Old Backup")
+        let backupDavisID = try XCTUnwrap(backupStore.currentPerson?.id)
+        let historicalKelsey = try XCTUnwrap(backupStore.addNamedCompanion(name: "Kelsey"))
+        let favorite = backupStore.createLocation(name: "Kelsey's Archived Favorite")
+        let visit = backupStore.logVisit(
+            at: favorite,
+            reaction: .liked,
+            personID: backupDavisID,
+            companionIDs: [historicalKelsey.id]
+        )
+        _ = backupStore.addRating(to: visit, personID: historicalKelsey.id, reaction: .loved)
+        let archive = try await AppBackupService.makeArchive(from: backupStore)
+
+        let liveStore = makeStore()
+        liveStore.bootstrap(myName: "Davis", circleName: "Big Beautiful Group")
+        let liveCircleID = try XCTUnwrap(liveStore.activeCircleID)
+        let liveDavisID = try XCTUnwrap(liveStore.currentPerson?.id)
+        liveStore.didCommit = nil
+
+        _ = try await AppBackupService.restore(archive, into: liveStore)
+        XCTAssertTrue(liveStore.reconnectRestoredLog(
+            to: liveCircleID,
+            circleName: "Big Beautiful Group",
+            memberPersonID: liveDavisID,
+            fallbackPersonName: "Davis"
+        ))
+
+        XCTAssertEqual(liveStore.activeCircleID, liveCircleID)
+        XCTAssertEqual(liveStore.currentPerson?.id, liveDavisID)
+        XCTAssertEqual(liveStore.currentPerson?.name, "Backup Davis")
+        XCTAssertNil(liveStore.person(id: backupDavisID))
+        XCTAssertNotNil(liveStore.namedCompanions.first { $0.name == "Kelsey" })
+        let restoredVisit = try XCTUnwrap(liveStore.visits.first { $0.id == visit.id })
+        XCTAssertEqual(restoredVisit.createdByID, liveDavisID)
+        XCTAssertNotNil(restoredVisit.rating(for: historicalKelsey.id))
     }
 
     func testInvalidBackupIsRejectedBeforeExistingDataChanges() async throws {
@@ -201,6 +248,31 @@ final class AppBackupTests: XCTestCase {
         XCTAssertEqual(destination.currentPerson?.name, "Keep Me")
     }
 
+    func testRestoreDiscardsInvalidCoordinates() async throws {
+        let source = makeStore()
+        source.bootstrap(myName: "Source")
+        let location = source.createLocation(name: "Coordinate Cafe")
+        _ = source.logVisit(at: location, reaction: .liked)
+        var archive = try await AppBackupService.makeArchive(from: source)
+        archive.locations[0].latitude = .nan
+        archive.locations[0].longitude = .infinity
+        archive.locations[0].hasCoordinates = true
+        archive.visits[0].latitude = 91
+        archive.visits[0].longitude = -181
+        archive.visits[0].hasCoordinates = true
+
+        let destination = makeStore()
+        _ = try await AppBackupService.restore(archive, into: destination)
+
+        let restoredLocation = try XCTUnwrap(destination.locations.first)
+        let restoredVisit = try XCTUnwrap(destination.visits.first)
+        XCTAssertNil(restoredLocation.coordinate)
+        XCTAssertFalse(restoredLocation.hasCoordinates)
+        XCTAssertFalse(restoredVisit.hasCoordinates)
+        XCTAssertEqual(restoredVisit.latitude, 0)
+        XCTAssertEqual(restoredVisit.longitude, 0)
+    }
+
     func testNewerBackupVersionGivesActionableError() async throws {
         let store = makeStore()
         store.bootstrap(myName: "Source")
@@ -216,7 +288,10 @@ final class AppBackupTests: XCTestCase {
         let futureData = try JSONSerialization.data(withJSONObject: payload)
 
         XCTAssertThrowsError(try AppBackupCodec.decode(futureData)) { error in
-            XCTAssertEqual(error as? AppBackupError, .unsupportedVersion(2))
+            XCTAssertEqual(
+                error as? AppBackupError,
+                .unsupportedVersion(AppBackupArchive.currentFormatVersion + 1)
+            )
         }
     }
 
@@ -263,7 +338,7 @@ final class AppBackupTests: XCTestCase {
         var missingLocation = archive
         missingLocation.visits[0].locationID = nil
         XCTAssertThrowsError(try AppBackupCodec.validate(missingLocation)) { error in
-            XCTAssertEqual(error as? AppBackupError, .missingReference("visit’s restaurant is missing"))
+            XCTAssertEqual(error as? AppBackupError, .missingReference("outing’s restaurant is missing"))
         }
 
         var crossCircle = archive
@@ -271,7 +346,7 @@ final class AppBackupTests: XCTestCase {
         crossCircle.circles.append(.init(id: secondCircleID, name: "Other", createdAt: .now))
         crossCircle.locations[0].circleID = secondCircleID
         XCTAssertThrowsError(try AppBackupCodec.validate(crossCircle)) { error in
-            XCTAssertEqual(error as? AppBackupError, .missingReference("visit and restaurant belong to different circles"))
+            XCTAssertEqual(error as? AppBackupError, .missingReference("outing and restaurant belong to different circles"))
         }
     }
 
@@ -294,6 +369,103 @@ final class AppBackupTests: XCTestCase {
         XCTAssertNil(decoded.participants)
         XCTAssertNil(decoded.photos.first?.captureDate)
         XCTAssertNil(decoded.photos.first?.personID)
+    }
+
+    func testBackupCodecRejectsSerializedPayloadBeforeDecoding() {
+        let limits = AppBackupLimits(
+            maximumSerializedBytes: 8,
+            maximumPhotoBytes: 8,
+            maximumTotalPhotoBytes: 16,
+            maximumRecordsPerCollection: 10,
+            maximumTotalRecords: 20
+        )
+
+        XCTAssertThrowsError(try AppBackupCodec.decode(Data(repeating: 0, count: 9), limits: limits)) { error in
+            XCTAssertEqual(error as? AppBackupError, .backupTooLarge(maximumBytes: 8))
+        }
+    }
+
+    func testBackupFilePreflightRejectsOversizedFileBeforeReading() throws {
+        let limits = AppBackupLimits(
+            maximumSerializedBytes: 8,
+            maximumPhotoBytes: 8,
+            maximumTotalPhotoBytes: 16,
+            maximumRecordsPerCollection: 10,
+            maximumTotalRecords: 20
+        )
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("oversized-backup-\(UUID().uuidString).bbrlog")
+        XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: Data(repeating: 0, count: 9)))
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        XCTAssertThrowsError(try AppBackupCodec.readBackupData(from: url, limits: limits)) { error in
+            XCTAssertEqual(error as? AppBackupError, .backupTooLarge(maximumBytes: 8))
+        }
+    }
+
+    func testBackupPolicyRejectsPerPhotoAndAggregatePhotoPayloads() async throws {
+        let store = makeStore()
+        store.bootstrap(myName: "Source")
+        let location = store.createLocation(name: "Photo Cafe")
+        let visit = store.logVisit(at: location, reaction: .liked)
+        store.addPhoto(fullData: Data(repeating: 1, count: 5), thumbnailData: nil, to: visit, createdAt: .now)
+        store.addPhoto(fullData: Data(repeating: 2, count: 4), thumbnailData: nil, to: visit, createdAt: .now)
+        let archive = try await AppBackupService.makeArchive(from: store)
+
+        let perPhotoLimits = AppBackupLimits(
+            maximumSerializedBytes: 1_000,
+            maximumPhotoBytes: 4,
+            maximumTotalPhotoBytes: 20,
+            maximumRecordsPerCollection: 20,
+            maximumTotalRecords: 40
+        )
+        XCTAssertThrowsError(try AppBackupCodec.validate(archive, limits: perPhotoLimits)) { error in
+            XCTAssertEqual(error as? AppBackupError, .photoTooLarge(maximumBytes: 4))
+        }
+
+        let aggregateLimits = AppBackupLimits(
+            maximumSerializedBytes: 1_000,
+            maximumPhotoBytes: 5,
+            maximumTotalPhotoBytes: 8,
+            maximumRecordsPerCollection: 20,
+            maximumTotalRecords: 40
+        )
+        XCTAssertThrowsError(try AppBackupCodec.validate(archive, limits: aggregateLimits)) { error in
+            XCTAssertEqual(error as? AppBackupError, .photoLibraryTooLarge(maximumBytes: 8))
+        }
+        XCTAssertThrowsError(try AppBackupCodec.encode(archive, limits: aggregateLimits)) { error in
+            XCTAssertEqual(error as? AppBackupError, .photoLibraryTooLarge(maximumBytes: 8))
+        }
+    }
+
+    func testBackupPolicyRejectsExcessiveRecordGraphBeforeRestoreChangesData() async throws {
+        let source = makeStore()
+        source.bootstrap(myName: "Source")
+        let archive = try await AppBackupService.makeArchive(from: source)
+        let restrictiveLimits = AppBackupLimits(
+            maximumSerializedBytes: 1_000,
+            maximumPhotoBytes: 100,
+            maximumTotalPhotoBytes: 100,
+            maximumRecordsPerCollection: 10,
+            maximumTotalRecords: 1
+        )
+
+        XCTAssertThrowsError(try AppBackupCodec.validate(archive, limits: restrictiveLimits)) { error in
+            XCTAssertEqual(error as? AppBackupError, .tooManyRecords(maximumCount: 1))
+        }
+
+        let destination = makeStore()
+        destination.bootstrap(myName: "Keep Me", circleName: "Current")
+        let currentCircleID = try XCTUnwrap(destination.activeCircleID)
+
+        do {
+            _ = try await AppBackupService.restore(archive, into: destination, limits: restrictiveLimits)
+            XCTFail("Expected an excessive record graph to be rejected")
+        } catch {
+            XCTAssertEqual(error as? AppBackupError, .tooManyRecords(maximumCount: 1))
+        }
+        XCTAssertEqual(destination.activeCircleID, currentCircleID)
+        XCTAssertEqual(destination.currentPerson?.name, "Keep Me")
     }
 
     func testReloadSelectsFirstCircleWhenStoredActiveCircleIsMissing() throws {

@@ -312,6 +312,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     private static func candidate(from item: MKMapItem) -> PlaceCandidate? {
         guard let name = item.name, !name.isEmpty else { return nil }
         let placemark = item.placemark
+        guard CLLocationCoordinate2DIsValid(placemark.coordinate) else { return nil }
         let address = [placemark.subThoroughfare, placemark.thoroughfare].compactMap { $0 }.joined(separator: " ")
         let fullAddress = ([address] + [placemark.locality, placemark.administrativeArea].compactMap { $0 })
             .filter { !$0.isEmpty }

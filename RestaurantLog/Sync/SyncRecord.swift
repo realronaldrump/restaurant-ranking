@@ -11,6 +11,7 @@ enum SyncKind: String, CaseIterable, Codable, Sendable {
     case visit
     case participant
     case rating
+    case dinerEntryReaction
     case dish
     case dishEntry
     case photo
@@ -23,7 +24,7 @@ enum SyncKind: String, CaseIterable, Codable, Sendable {
     /// is only applied after the records it points at already exist.
     static let applyOrder: [SyncKind] = [
         .circle, .brand, .person, .location, .dish, .visit,
-        .participant, .rating, .dishEntry, .photo,
+        .participant, .rating, .dinerEntryReaction, .dishEntry, .photo,
         .comparison, .want, .importSession, .importLink
     ]
 }

@@ -54,6 +54,18 @@ enum Reaction: String, CaseIterable, Codable, Identifiable, Sendable {
     case notForMe = "Not For Me"
 
     var id: String { rawValue }
+
+    /// Display name. Deliberately separate from `rawValue`, which is persisted in
+    /// Core Data and in sync records and must not change.
+    var title: String {
+        switch self {
+        case .loved: "Loved it"
+        case .liked: "Liked it"
+        case .fine: "It was fine"
+        case .notForMe: "Not for me"
+        }
+    }
+
     var anchor: Double {
         switch self {
         case .loved: 85
@@ -67,7 +79,7 @@ enum Reaction: String, CaseIterable, Codable, Identifiable, Sendable {
         case .loved: "heart.fill"
         case .liked: "hand.thumbsup.fill"
         case .fine: "equal.circle.fill"
-        case .notForMe: "arrow.uturn.backward.circle.fill"
+        case .notForMe: "hand.thumbsdown.fill"
         }
     }
     var compactTitle: String {
@@ -76,6 +88,53 @@ enum Reaction: String, CaseIterable, Codable, Identifiable, Sendable {
         case .liked: "Liked"
         case .fine: "Fine"
         case .notForMe: "Not for me"
+        }
+    }
+}
+
+/// A playful, social response to somebody else's diner entry.
+///
+/// These are intentionally separate from `Reaction`: a diner's own reaction is
+/// ranking evidence, while a Coon reaction is social decoration and must never
+/// influence a restaurant's score.
+enum CoonReaction: String, CaseIterable, Codable, Identifiable, Sendable {
+    case runItBack
+    case unexpectedlyWonderful
+    case merelyFine
+    case absolutelyNot
+    case topTableMaterial
+    case orderItAgain
+    case needsARematch
+    case culinaryBetrayal
+    case noNotes
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .runItBack: "Run It Back"
+        case .unexpectedlyWonderful: "Unexpectedly Wonderful"
+        case .merelyFine: "Merely Fine"
+        case .absolutelyNot: "Absolutely Not"
+        case .topTableMaterial: "Top-Table Material"
+        case .orderItAgain: "Order It Again"
+        case .needsARematch: "Needs a Rematch"
+        case .culinaryBetrayal: "Culinary Betrayal"
+        case .noNotes: "No Notes"
+        }
+    }
+
+    var assetName: String {
+        switch self {
+        case .runItBack: "CoonRunItBack"
+        case .unexpectedlyWonderful: "CoonUnexpectedlyWonderful"
+        case .merelyFine: "CoonMerelyFine"
+        case .absolutelyNot: "CoonAbsolutelyNot"
+        case .topTableMaterial: "CoonTopTableMaterial"
+        case .orderItAgain: "CoonOrderItAgain"
+        case .needsARematch: "CoonNeedsARematch"
+        case .culinaryBetrayal: "CoonCulinaryBetrayal"
+        case .noNotes: "CoonNoNotes"
         }
     }
 }
@@ -162,12 +221,12 @@ struct ScoreAnchor: Identifiable, Hashable {
     var id: Double { score }
 
     static let ladder: [ScoreAnchor] = [
-        .init(score: 95, statement: "I would plan around going here."),
-        .init(score: 85, statement: "I am genuinely excited to return."),
-        .init(score: 75, statement: "I would happily return."),
-        .init(score: 65, statement: "I would go under the right circumstances."),
-        .init(score: 50, statement: "I feel neutral about returning."),
-        .init(score: 35, statement: "I would usually choose somewhere else."),
-        .init(score: 15, statement: "I actively want to avoid returning.")
+        .init(score: 95, statement: "I would plan a trip around it."),
+        .init(score: 85, statement: "I am excited to go back."),
+        .init(score: 75, statement: "I would happily go back."),
+        .init(score: 65, statement: "I would go if it came up."),
+        .init(score: 50, statement: "I could take it or leave it."),
+        .init(score: 35, statement: "I would usually pick somewhere else."),
+        .init(score: 15, statement: "I would avoid going back.")
     ]
 }

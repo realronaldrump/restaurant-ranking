@@ -1,6 +1,14 @@
 import CoreData
 import Foundation
 
+enum StoredCoordinatePolicy {
+    static func isValid(latitude: Double, longitude: Double) -> Bool {
+        latitude.isFinite && longitude.isFinite
+            && (-90 ... 90).contains(latitude)
+            && (-180 ... 180).contains(longitude)
+    }
+}
+
 @objc(CircleEntity)
 final class CircleEntity: NSManagedObject, Identifiable {
     @NSManaged var id: UUID
@@ -21,6 +29,7 @@ final class PersonEntity: NSManagedObject, Identifiable {
     @NSManaged var name: String
     @NSManaged var isMe: Bool
     @NSManaged var isCircleMember: Bool
+    @NSManaged var isArchived: Bool
     @NSManaged var colorHex: String
     @NSManaged var createdAt: Date
     @NSManaged var circle: CircleEntity?
@@ -72,16 +81,23 @@ final class RestaurantLocation: NSManagedObject, Identifiable {
         set { tagBlob = try? JSONEncoder().encode(newValue.uniqued().sorted()) }
     }
     var visitArray: [VisitEntity] {
-        ((visits?.allObjects as? [VisitEntity]) ?? []).sorted { $0.date > $1.date }
+        ((visits?.allObjects as? [VisitEntity]) ?? [])
+            .filter(\.isAlive)
+            .sorted { $0.date > $1.date }
     }
     var dishArray: [DishEntity] {
-        ((dishes?.allObjects as? [DishEntity]) ?? []).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        ((dishes?.allObjects as? [DishEntity]) ?? [])
+            .filter(\.isAlive)
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
     func hasVisit(inPriceBand priceBand: Int) -> Bool {
-        (visits?.allObjects as? [VisitEntity])?.contains { Int($0.priceBand) == priceBand } ?? false
+        visitArray.contains { Int($0.priceBand) == priceBand }
     }
     var coordinate: (latitude: Double, longitude: Double)? {
-        hasCoordinates ? (latitude, longitude) : nil
+        guard hasCoordinates, StoredCoordinatePolicy.isValid(latitude: latitude, longitude: longitude) else {
+            return nil
+        }
+        return (latitude, longitude)
     }
     private static func decodeStrings(_ data: Data?) -> [String] {
         guard let data else { return [] }
@@ -108,6 +124,7 @@ final class VisitEntity: NSManagedObject, Identifiable {
     @NSManaged var circle: CircleEntity?
     @NSManaged var location: RestaurantLocation?
     @NSManaged var ratings: NSSet?
+    @NSManaged var dinerEntryReactions: NSSet?
     @NSManaged var dishEntries: NSSet?
     @NSManaged var photos: NSSet?
     @NSManaged var participants: NSSet?
@@ -135,17 +152,49 @@ final class VisitEntity: NSManagedObject, Identifiable {
             companionIDsBlob = try? JSONEncoder().encode(stableIDs)
         }
     }
-    var ratingArray: [RatingEntity] { (ratings?.allObjects as? [RatingEntity]) ?? [] }
-    var dishEntryArray: [DishEntryEntity] { (dishEntries?.allObjects as? [DishEntryEntity]) ?? [] }
+    var ratingArray: [RatingEntity] {
+        ((ratings?.allObjects as? [RatingEntity]) ?? []).filter(\.isAlive)
+    }
+    var dinerEntryReactionArray: [DinerEntryReactionEntity] {
+        ((dinerEntryReactions?.allObjects as? [DinerEntryReactionEntity]) ?? [])
+            .filter(\.isAlive)
+            .sorted {
+                if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+                return $0.id.uuidString < $1.id.uuidString
+            }
+    }
+    var dishEntryArray: [DishEntryEntity] {
+        ((dishEntries?.allObjects as? [DishEntryEntity]) ?? []).filter(\.isAlive)
+    }
     var participantArray: [VisitParticipantEntity] {
-        ((participants?.allObjects as? [VisitParticipantEntity]) ?? []).sorted { $0.createdAt < $1.createdAt }
+        ((participants?.allObjects as? [VisitParticipantEntity]) ?? [])
+            .filter(\.isAlive)
+            .sorted { $0.createdAt < $1.createdAt }
     }
     var photoArray: [PhotoEntity] {
-        ((photos?.allObjects as? [PhotoEntity]) ?? []).sorted { $0.createdAt < $1.createdAt }
+        ((photos?.allObjects as? [PhotoEntity]) ?? [])
+            .filter(\.isAlive)
+            .sorted { $0.createdAt < $1.createdAt }
     }
     func rating(for personID: UUID) -> RatingEntity? { ratingArray.first { $0.personID == personID } }
     func participant(for personID: UUID) -> VisitParticipantEntity? {
         participantArray.first { $0.personID == personID }
+    }
+}
+
+@objc(DinerEntryReactionEntity)
+final class DinerEntryReactionEntity: NSManagedObject, Identifiable {
+    @NSManaged var id: UUID
+    @NSManaged var authorPersonID: UUID
+    @NSManaged var targetPersonID: UUID
+    @NSManaged var kindRaw: String
+    @NSManaged var createdAt: Date
+    @NSManaged var updatedAt: Date
+    @NSManaged var visit: VisitEntity?
+
+    var kind: CoonReaction {
+        get { CoonReaction(rawValue: kindRaw) ?? .merelyFine }
+        set { kindRaw = newValue.rawValue }
     }
 }
 
@@ -198,7 +247,9 @@ final class DishEntity: NSManagedObject, Identifiable {
     @NSManaged var location: RestaurantLocation?
     @NSManaged var entries: NSSet?
     var role: DishRole { get { DishRole(rawValue: roleRaw) ?? .entree } set { roleRaw = newValue.rawValue } }
-    var entryArray: [DishEntryEntity] { (entries?.allObjects as? [DishEntryEntity]) ?? [] }
+    var entryArray: [DishEntryEntity] {
+        ((entries?.allObjects as? [DishEntryEntity]) ?? []).filter(\.isAlive)
+    }
 }
 
 @objc(DishEntryEntity)
@@ -281,7 +332,7 @@ final class ExternalImportSessionEntity: NSManagedObject, Identifiable {
     @NSManaged var links: NSSet?
 
     var linkArray: [ExternalImportLinkEntity] {
-        (links?.allObjects as? [ExternalImportLinkEntity]) ?? []
+        ((links?.allObjects as? [ExternalImportLinkEntity]) ?? []).filter(\.isAlive)
     }
 }
 
@@ -294,7 +345,7 @@ extension NSManagedObject {
     /// exception that no Swift `catch` can stop. SwiftUI can hold a row for one
     /// more render pass after the store has moved on, so every collection the
     /// interface reads is filtered through this first.
-    var isAlive: Bool { !isDeleted && managedObjectContext != nil }
+    var isAlive: Bool { managedObjectContext != nil && !isDeleted }
 }
 
 extension Array where Element: Hashable {

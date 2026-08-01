@@ -1,0 +1,23 @@
+{
+  "images" : [
+    {
+      "filename" : "CoonTopTableMaterial.png",
+      "idiom" : "universal",
+      "scale" : "1x"
+    },
+    {
+      "filename" : "CoonTopTableMaterial@2x.png",
+      "idiom" : "universal",
+      "scale" : "2x"
+    },
+    {
+      "filename" : "CoonTopTableMaterial@3x.png",
+      "idiom" : "universal",
+      "scale" : "3x"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}

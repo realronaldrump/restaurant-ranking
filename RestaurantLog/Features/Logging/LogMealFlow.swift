@@ -54,13 +54,21 @@ struct LogMealFlow: View {
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var mealPhoto: BackfillPhoto?
     @State private var photoMapResults: [PlaceCandidate] = []
+    @State private var photoSuggestionToConfirm: PlaceChoice?
     @State private var isReadingPhoto = false
     @State private var photoError: String?
+    @State private var saveError: String?
     @State private var photoRequestID = UUID()
     @State private var visitDate = Date.now
     @State private var visitDateKnowledge: VisitDateKnowledge = .known
+    @State private var selectedReaction: Reaction?
+    @State private var detailsExpanded = false
     @State private var savedVisit: VisitEntity?
     @State private var savedScore: LocationScore?
+    @State private var scoreBeforeSave: Double?
+    @State private var priorRatedVisitCount = 0
+    @State private var priorReaction: Reaction?
+    @State private var savedReaction: Reaction?
     @State private var oldRank: Int?
     @State private var taggedMemberIDs: Set<UUID> = []
     @State private var duplicateOuting: VisitEntity?
@@ -86,17 +94,15 @@ struct LogMealFlow: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     if stage != .payoff {
-                        Button(leadingButtonTitle) {
-                            if stage == .place { dismiss() }
-                            else if stage == .reaction { stage = .place }
-                            else if stage == .quickComparisons { refreshPayoff(); stage = .payoff }
-                        }
+                        Button(leadingButtonTitle, action: handleLeadingButton)
                     }
                 }
                 ToolbarItem(placement: .principal) { Eyebrow(stageTitle) }
             }
         }
-        .sheet(item: $addMoreVisit) { visit in AddMoreVisitView(visit: visit, personID: store.currentPerson?.id) }
+        .sheet(item: $addMoreVisit) { visit in
+            AddMoreVisitView(visit: visit, personID: store.currentPerson?.id, startsWithDetails: true)
+        }
         .onChange(of: selectedPhotoItem) { _, item in
             Task { await loadMealPhoto(item) }
         }
@@ -107,68 +113,106 @@ struct LogMealFlow: View {
                 stage = .reaction
             }
             guard !ProcessInfo.processInfo.arguments.contains("-resetForUITests") else { return }
-            locationService.requestNearby()
+            requestNearbyIfAlreadyAuthorized()
         }
-        .confirmationDialog(
-            "A shared outing already exists",
-            isPresented: Binding(
-                get: { duplicateOuting != nil },
-                set: { if !$0 { clearDuplicateChoice() } }
-            ),
-            presenting: duplicateOuting
-        ) { outing in
-            Button("Add My Entry to This Outing") { join(outing) }
-            Button("Keep as a Separate Outing") {
-                guard let reaction = duplicateReaction else { return }
-                clearDuplicateChoice()
-                saveNewVisit(reaction)
+        .editorialPrompt(item: $duplicateOuting) { outing in
+            guard outing.isAlive else {
+                return EditorialPrompt(
+                    "Outing unavailable",
+                    message: "That shared outing was removed on another device.",
+                    tone: .information,
+                    actions: [.primary("Continue") { clearDuplicateChoice() }]
+                )
             }
-            Button("Cancel", role: .cancel) { clearDuplicateChoice() }
-        } message: { outing in
             let author = store.person(id: outing.createdByID)?.name ?? "Someone in your circle"
-            Text("\(author) already logged \(outing.location?.name ?? "this restaurant") near this time and included you. Add your own reaction, dishes, and photos to the same outing?")
+            return EditorialPrompt(
+                "A shared outing already exists",
+                message: "\(author) already logged \(outing.location?.name ?? "this restaurant") around this time and included you. Add your reaction to that outing instead?",
+                tone: .decision,
+                actions: [
+                    .primary("Add my diner entry") { join(outing) },
+                    .secondary("Keep as a separate outing") {
+                        guard let reaction = duplicateReaction else { return }
+                        clearDuplicateChoice()
+                        saveNewVisit(reaction)
+                    },
+                    .cancel("Cancel") { clearDuplicateChoice() }
+                ]
+            )
+        }
+        .editorialPrompt(item: $photoSuggestionToConfirm) { suggestion in
+            EditorialPrompt(
+                "Confirm restaurant",
+                message: "\(suggestion.name)\n\(suggestion.subtitle)\n\nThe closest map match to your photo. Confirm only if the address is right.",
+                tone: .decision,
+                actions: [
+                    .primary("Use this restaurant") { select(suggestion) },
+                    .cancel("Choose another restaurant")
+                ]
+            )
         }
     }
 
     private var stageTitle: String {
-        switch stage { case .place: "Log a Meal · 1 of 2"; case .reaction: "Log a Meal · 2 of 2"; case .payoff: "Meal saved"; case .quickComparisons: "Optional comparisons" }
+        switch stage {
+        case .place: "Restaurant · 1 of 2"
+        case .reaction: "Reaction · 2 of 2"
+        case .payoff: "Outing saved"
+        case .quickComparisons: "Optional comparisons"
+        }
     }
 
     private var leadingButtonTitle: String {
         switch stage { case .place: "Cancel"; case .reaction: "Back"; case .payoff: "Done"; case .quickComparisons: "Back" }
     }
 
+    private func handleLeadingButton() {
+        switch stage {
+        case .place:
+            dismiss()
+        case .reaction:
+            stage = .place
+        case .quickComparisons:
+            refreshPayoff()
+            stage = .payoff
+        case .payoff:
+            break
+        }
+    }
+
     private var placePicker: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 22) {
                 VStack(alignment: .leading, spacing: 7) {
-                    stepProgress(current: 1)
                     Text("Where did you eat?")
                         .font(BBTheme.display(37))
-                    Text(mealPhoto == nil ? "Choose a nearby place, search by name, or let a photo fill in the clues." : "Review the photo clues, then confirm the restaurant.")
+                    Text(mealPhoto == nil ? "Search by name, pick a nearby restaurant, or choose one from your log." : "Check the photo details, then confirm the restaurant.")
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if mealPhoto != nil { photoFirstCard }
                 searchField
-                if mealPhoto == nil { photoFirstCard }
-                if trimmedQuery.isEmpty {
-                    if mealPhoto != nil {
-                        photoPlaceSuggestions
-                    } else {
-                        placeSection("Nearby now", choices: nearbyChoices, empty: nearbyEmptyMessage)
+                if !trimmedQuery.isEmpty {
+                    placeSection("Your restaurants", choices: existingChoices, empty: nil)
+                    placeSection("Map results", choices: mapChoices, empty: locationService.isSearching ? "Searching…" : "No map matches yet.")
+                    VStack(alignment: .leading, spacing: 8) {
+                        Eyebrow("Not listed?")
+                        Button { select(manualChoice) } label: {
+                            Label("Create “\(trimmedQuery)” as a new restaurant", systemImage: "plus.circle.fill")
+                                .font(.headline)
+                                .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("manual-place-choice")
                     }
-                    placeSection("From your log", choices: Array(existingChoices.prefix(8)), empty: "Your visited places will appear here.")
-                } else if !trimmedQuery.isEmpty {
-                    Button { select(manualChoice) } label: {
-                        Label("Add “\(trimmedQuery)” as a new place", systemImage: "plus.circle.fill")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("manual-place-choice")
-                    placeSection("Your places", choices: existingChoices, empty: nil)
-                    placeSection("Map results", choices: mapChoices, empty: locationService.isSearching ? "Searching…" : "No outside match yet.")
+                    .editorialCard(padding: 12)
+                } else if mealPhoto != nil {
+                    photoFirstCard
+                    photoPlaceSuggestions
+                    placeSection("Your restaurants", choices: Array(existingChoices.prefix(8)), empty: "Your saved restaurants will appear here.")
+                } else {
+                    nearbySection
+                    placeSection("Your restaurants", choices: Array(existingChoices.prefix(8)), empty: "Your saved restaurants will appear here.")
+                    photoFirstCard
                 }
             }.padding(20).readablePageWidth()
         }
@@ -184,21 +228,6 @@ struct LogMealFlow: View {
         }
     }
 
-    private func stepProgress(current: Int) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                Eyebrow("Quick log")
-                Spacer()
-                Text("\(current) OF 2").font(.caption2.weight(.bold)).tracking(0.7).foregroundStyle(.secondary)
-            }
-            ProgressView(value: Double(current), total: 2)
-                .tint(BBTheme.oxblood)
-        }
-        .frame(maxWidth: .infinity)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Quick log step \(current) of 2")
-    }
-
     @ViewBuilder
     private var photoFirstCard: some View {
         if let mealPhoto {
@@ -208,7 +237,7 @@ struct LogMealFlow: View {
                         .frame(maxWidth: .infinity)
                         .frame(height: 190)
                         .clipped()
-                    Eyebrow("Photo first")
+                    Eyebrow("Photo selected")
                         .padding(.horizontal, 10)
                         .frame(minHeight: 30)
                         .background(BBTheme.paper.opacity(0.94))
@@ -216,17 +245,17 @@ struct LogMealFlow: View {
                 }
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Label(mealPhoto.captureDate == nil ? "Review the meal date" : "Date found in photo", systemImage: "calendar")
+                    Label(mealPhoto.captureDate == nil ? "Check the date and time" : "Date and time from the photo", systemImage: "calendar")
                         .font(.callout.weight(.semibold))
                     DatePicker(
-                        "Meal date and time",
+                        "Outing date and time",
                         selection: $visitDate,
                         displayedComponents: [.date, .hourAndMinute]
                     )
                     .labelsHidden()
                     .frame(minHeight: 44, alignment: .leading)
                     .accessibilityIdentifier("photo-meal-date")
-                    Text(mealPhoto.captureDate == nil ? "No original capture time was available, so today is filled in. You can change it." : "Filled from the original capture time. You can change it before saving.")
+                    Text(mealPhoto.captureDate == nil ? "The photo had no date, so today is filled in. You can change it." : "Taken from the photo. You can change it before saving.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -252,37 +281,42 @@ struct LogMealFlow: View {
                         .frame(minWidth: 44, minHeight: 44)
                 }
 
-                Text("The saved copy is resized and stripped of embedded GPS metadata.")
+                Text("The saved copy is resized, and its location data is removed.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
             .editorialCard(padding: 14)
             .accessibilityIdentifier("photo-meal-context")
         } else {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top, spacing: 14) {
-                    Image(systemName: "photo.badge.plus")
-                        .font(.system(size: 30, weight: .light))
-                        .foregroundStyle(BBTheme.oxblood)
-                        .frame(width: 44, height: 44)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Eyebrow("Photo first")
-                        Text("Let the photo remember")
-                            .font(BBTheme.display(25))
-                        Text("Its capture time can fill the date. If it contains a location, the closest restaurants will appear below.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+            VStack(alignment: .leading, spacing: 8) {
                 PhotosPicker(
                     selection: $selectedPhotoItem,
                     matching: .images,
                     preferredItemEncoding: .current
                 ) {
-                    Label("Start with a Photo", systemImage: "photo.on.rectangle.angled")
-                        .frame(maxWidth: .infinity)
+                    HStack(spacing: 12) {
+                        Image(systemName: "photo.badge.plus")
+                            .font(.title3)
+                            .foregroundStyle(BBTheme.oxblood)
+                            .frame(width: 36, height: 36)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Or start with a photo")
+                                .font(.headline)
+                                .foregroundStyle(BBTheme.ink)
+                            Text("Its date and location can fill in the details.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.leading)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
-                .buttonStyle(PrimaryButtonStyle())
+                .buttonStyle(.plain)
                 .accessibilityIdentifier("start-meal-with-photo")
                 if isReadingPhoto {
                     HStack(spacing: 10) {
@@ -297,7 +331,8 @@ struct LogMealFlow: View {
                         .foregroundStyle(BBTheme.oxblood)
                 }
             }
-            .editorialCard()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .editorialCard(padding: 12)
         }
     }
 
@@ -313,46 +348,47 @@ struct LogMealFlow: View {
         } else if mealPhoto?.coordinate == nil {
             VStack(alignment: .leading, spacing: 7) {
                 Eyebrow("Restaurant")
-                Text("This photo did not include a location. Search by name below or choose one from your log.")
+                Text("This photo has no location. Search by name or pick one from your log.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
         } else if let suggestion = photoChoices.first {
             VStack(alignment: .leading, spacing: 10) {
-                Eyebrow("Closest match · review before saving")
-                Button { select(suggestion) } label: {
+                Eyebrow("Closest match")
+                Button { photoSuggestionToConfirm = suggestion } label: {
                     HStack(spacing: 13) {
                         Image(systemName: suggestion.category.symbol)
                             .font(.title3)
-                            .foregroundStyle(BBTheme.paper)
+                            .foregroundStyle(BBTheme.cream)
                             .frame(width: 38, height: 38)
-                            .background(BBTheme.paper.opacity(0.13), in: Circle())
+                            .background(BBTheme.cream.opacity(0.13), in: Circle())
                         VStack(alignment: .leading, spacing: 3) {
                             Text(suggestion.name).font(BBTheme.display(23))
-                            Text(suggestion.subtitle).font(.caption).foregroundStyle(BBTheme.paper.opacity(0.75)).lineLimit(2)
+                            Text(suggestion.subtitle).font(.caption).foregroundStyle(BBTheme.cream.opacity(0.75)).lineLimit(2)
                         }
                         Spacer()
                         Image(systemName: "arrow.right")
                     }
                     .padding(16)
-                    .foregroundStyle(BBTheme.paper)
-                    .background(BBTheme.oxblood)
+                    .foregroundStyle(BBTheme.cream)
+                    .background(BBTheme.oxbloodFill)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.pressable)
+                .accessibilityHint("Asks you to confirm the name and address before selecting it.")
                 .accessibilityIdentifier("photo-place-suggestion")
-                Text("The restaurant name comes from an Apple Maps lookup around the photo’s GPS location—not from analyzing the image. Tap only if it looks right.")
+                Text("This comes from an Apple Maps search around the photo’s location, not from the photo itself. Tap only if it looks right.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 let alternatives = Array(photoChoices.dropFirst().prefix(5))
                 if !alternatives.isEmpty {
-                    placeSection("Other places near the photo", choices: alternatives, empty: nil)
+                    placeSection("Other restaurants near the photo", choices: alternatives, empty: nil)
                 }
             }
         } else {
             VStack(alignment: .leading, spacing: 7) {
                 Eyebrow("Restaurant")
-                Text("No dining place was found close enough to prefill. Search below to name it yourself.")
+                Text("Nothing close enough to suggest. Search for it below.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -405,26 +441,35 @@ struct LogMealFlow: View {
                 if choice.id != choices.last?.id { Divider() }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .editorialCard(padding: 12)
     }
 
     private var reactionPicker: some View {
         ScrollView {
-            VStack(spacing: 24) {
+            VStack(alignment: .leading, spacing: 20) {
                 if let choice {
-                    stepProgress(current: 2)
-                    if let mealPhoto {
-                        DraftMealPhoto(photo: mealPhoto)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 190)
-                            .clipped()
-                    } else {
-                        CategoryArtwork(category: choice.category, height: 170)
-                    }
-                    VStack(spacing: 6) {
-                        Text(choice.name).font(BBTheme.display(34)).multilineTextAlignment(.center)
-                        Text(choice.subtitle).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                        if mealPhoto != nil {
+                    HStack(spacing: 14) {
+                        if let mealPhoto {
+                            DraftMealPhoto(photo: mealPhoto)
+                                .frame(width: 76, height: 76)
+                                .clipped()
+                                .clipShape(RoundedRectangle(cornerRadius: BBTheme.Radius.control, style: .continuous))
+                        } else {
+                            Image(systemName: choice.category.symbol)
+                                .font(.title2)
+                                .foregroundStyle(BBTheme.oxblood)
+                                .frame(width: 54, height: 54)
+                                .background(BBTheme.oxblood.opacity(0.08), in: Circle())
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(choice.name)
+                                .font(BBTheme.display(29))
+                                .fixedSize(horizontal: false, vertical: true)
+                            Text(choice.subtitle)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
                             Label(
                                 visitDate.formatted(date: .abbreviated, time: .shortened),
                                 systemImage: "calendar"
@@ -433,32 +478,65 @@ struct LogMealFlow: View {
                             .foregroundStyle(.secondary)
                         }
                     }
-                    if !store.otherCircleMembers.isEmpty { circleMemberTags }
-                    VStack(alignment: .leading, spacing: 10) {
-                        Toggle("Date unknown", isOn: Binding(
-                            get: { visitDateKnowledge == .unknown },
-                            set: { visitDateKnowledge = $0 ? .unknown : .known }
-                        ))
-                        if visitDateKnowledge == .known {
-                            DatePicker("Outing date", selection: $visitDate, displayedComponents: .date)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .editorialCard(padding: 12)
+
+                    VStack(alignment: .leading, spacing: 14) {
+                        Eyebrow("Your reaction · required")
+                        Text("Pick one, then tap Save outing.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        ReactionPicker(selected: selectedReaction) { reaction in
+                            selectedReaction = reaction
+                            Haptics.selection()
+                        }
+                        Button("Save outing") {
+                            guard let selectedReaction else { return }
+                            save(selectedReaction)
+                        }
+                        .buttonStyle(PrimaryButtonStyle())
+                        .disabled(selectedReaction == nil)
+                        .accessibilityIdentifier("save-outing")
+                        if let saveError {
+                            Label(saveError, systemImage: "exclamationmark.triangle.fill")
+                                .font(.callout)
+                                .foregroundStyle(BBTheme.oxblood)
                         }
                     }
-                    .editorialCard()
-                    VStack(alignment: .leading, spacing: 14) {
-                        Eyebrow("Your immediate verdict")
-                        ReactionPicker(selected: nil) { reaction in save(reaction) }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                    Text("That’s enough to save the visit. Everything else is optional.")
-                        .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    DisclosureGroup(isExpanded: $detailsExpanded) {
+                        VStack(alignment: .leading, spacing: 16) {
+                            if !store.otherCircleMembers.isEmpty { circleMemberTags }
+                            VStack(alignment: .leading, spacing: 10) {
+                                Toggle("Date unknown", isOn: Binding(
+                                    get: { visitDateKnowledge == .unknown },
+                                    set: { visitDateKnowledge = $0 ? .unknown : .known }
+                                ))
+                                if visitDateKnowledge == .known {
+                                    DatePicker("Outing date and time", selection: $visitDate, displayedComponents: [.date, .hourAndMinute])
+                                }
+                            }
+                        }
+                        .padding(.top, 14)
+                    } label: {
+                        Label("Add people or change details", systemImage: "slider.horizontal.3")
+                            .font(.headline)
+                    }
+                    .accessibilityIdentifier("log-optional-details")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .editorialCard(padding: 14)
                 }
-            }.padding(20).readablePageWidth()
+            }
+            .padding(20)
+            .readablePageWidth()
         }
     }
 
     private var circleMemberTags: some View {
         VStack(alignment: .leading, spacing: 10) {
             Eyebrow("Who was there?")
-            Text("Add circle members who shared this outing. They can contribute their own entry.")
+            Text("People in your circle can add their own reaction to this outing.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             ScrollView(.horizontal, showsIndicators: false) {
@@ -474,8 +552,8 @@ struct LogMealFlow: View {
                                 .font(.callout.weight(.semibold))
                                 .padding(.horizontal, 12)
                                 .frame(minHeight: 44)
-                                .foregroundStyle(isSelected ? BBTheme.paper : BBTheme.ink)
-                                .background(isSelected ? BBTheme.oxblood : BBTheme.ink.opacity(0.06), in: Capsule())
+                                .foregroundStyle(isSelected ? BBTheme.cream : BBTheme.ink)
+                                .background(isSelected ? BBTheme.oxbloodFill : BBTheme.ink.opacity(0.06), in: Capsule())
                         }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("visit-member-\(person.id.uuidString)")
@@ -490,23 +568,28 @@ struct LogMealFlow: View {
         ScrollView {
             VStack(spacing: 24) {
                 Spacer(minLength: 16)
-                if let visit = savedVisit, let location = visit.location, let score = savedScore {
+                if let visit = savedVisit, visit.isAlive, let location = visit.location, let score = savedScore {
                     VStack(spacing: 8) {
-                        Eyebrow("Current ranking")
+                        Image(systemName: "checkmark.seal.fill")
+                            .font(.system(size: 42, weight: .light))
+                            .foregroundStyle(BBTheme.oxblood)
+                        Eyebrow("Outing saved")
                         Text(location.name).font(BBTheme.display(35)).multilineTextAlignment(.center)
-                        ScoreMark(score: score.score, caption: "current score", size: 74, provisional: score.isProvisional)
+                        ScoreMark(score: score.score, caption: "return score", size: 74, provisional: score.isProvisional)
                     }
                     .padding(.bottom, 4)
                     .scaleEffect(payoffAppeared ? 1 : 0.85)
                     .opacity(payoffAppeared ? 1 : 0)
+                    scoreChangeSummary(score)
                     rankingInsertion(score)
                     if !quickQuestions.isEmpty {
                         Button { quickIndex = 0; stage = .quickComparisons } label: {
-                            Label("Place It More Precisely", systemImage: "arrow.left.arrow.right")
+                            Label("Compare", systemImage: "arrow.left.arrow.right")
                         }
                         .buttonStyle(SecondaryButtonStyle())
                     }
-                    Button(mealPhoto == nil ? "Add Dishes, Photos & Details" : "Add Dishes & Details") { addMoreVisit = visit }.buttonStyle(PrimaryButtonStyle())
+                    Button("Add outing details") { addMoreVisit = visit }
+                        .buttonStyle(PrimaryButtonStyle())
                     Button("Done") { dismiss() }.font(.headline).frame(minHeight: 48)
                 }
                 Spacer(minLength: 20)
@@ -527,7 +610,7 @@ struct LogMealFlow: View {
                     Image(systemName: "checkmark.seal.fill").font(.system(size: 54, weight: .light)).foregroundStyle(BBTheme.oxblood)
                     Eyebrow("Done")
                     Text("Ranking updated").font(BBTheme.display(34)).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
-                    Button("Return to the Result") { refreshPayoff(); stage = .payoff }.buttonStyle(PrimaryButtonStyle())
+                    Button("Back to the return score") { refreshPayoff(); stage = .payoff }.buttonStyle(PrimaryButtonStyle())
                     Spacer(minLength: 12)
                 }.padding(22).readablePageWidth()
             } else {
@@ -535,13 +618,19 @@ struct LogMealFlow: View {
                 VStack(spacing: 18) {
                     HStack { Eyebrow("Optional \(quickIndex + 1) of \(quickQuestions.count)"); Spacer() }
                     Spacer(minLength: 12)
-                    Text("Which would you rather revisit tonight?").font(BBTheme.display(33)).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                    Text("Which would you rather go back to?").font(BBTheme.display(33)).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
                     quickChoice(question.a, outcome: .a, question: question)
                     Text("OR").font(.caption2.weight(.bold)).tracking(2).foregroundStyle(.secondary)
                     quickChoice(question.b, outcome: .b, question: question)
-                    Button("Too Close to Call") { recordQuick(.tie, question: question) }.buttonStyle(SecondaryButtonStyle())
-                    Button("Skip") { quickIndex += 1 }.frame(minHeight: 44)
-                    Button("Finish Now") { refreshPayoff(); stage = .payoff }.font(.callout).foregroundStyle(.secondary).frame(minHeight: 44)
+                    HStack(spacing: 22) {
+                        Button("Too close to call") { recordQuick(.tie, question: question) }
+                        Button("Skip") { quickIndex += 1 }
+                    }
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .buttonStyle(.plain)
+                    .frame(minHeight: 44)
+                    Button("Finish now") { refreshPayoff(); stage = .payoff }.font(.callout).foregroundStyle(.secondary).frame(minHeight: 44)
                 }.padding(22).padding(.bottom, 12).readablePageWidth()
             }
         }
@@ -549,9 +638,100 @@ struct LogMealFlow: View {
 
     private func quickChoice(_ location: RestaurantLocation, outcome: ComparisonOutcome, question: ComparisonQuestion) -> some View {
         Button { recordQuick(outcome, question: question) } label: {
-            HStack { Image(systemName: location.category.symbol); Text(location.name).font(BBTheme.display(22)); Spacer(); if let score = store.score(for: location) { Text(score.displayScore).font(BBTheme.score(21)) } }
-                .padding(18).foregroundStyle(BBTheme.paper).background(BBTheme.oxblood)
+            HStack {
+                Image(systemName: location.category.symbol)
+                Text(location.name).font(BBTheme.display(22))
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption)
+            }
+            .padding(18)
+            .foregroundStyle(BBTheme.cream)
+            .background(BBTheme.oxbloodFill)
         }.buttonStyle(.pressable)
+    }
+
+    /// Describes the move in the same whole numbers the ranking shows.
+    ///
+    /// The engine works in fractions, but the ranking rounds, so quoting the
+    /// precise delta here would announce a change the list then declines to
+    /// show — or call a move "0.2 points" right before the list jumps a whole
+    /// number. Both readings are avoided by letting the rounded values, not the
+    /// raw ones, decide what this screen claims happened.
+    private struct ScoreMove {
+        let before: Int
+        let after: Int
+        let nudgedWithinTheSameNumber: Bool
+
+        var didMove: Bool { before != after }
+        var isIncrease: Bool { after > before }
+
+        init(from before: Double, to after: Double) {
+            self.before = Int(before.rounded())
+            self.after = Int(after.rounded())
+            nudgedWithinTheSameNumber = self.before == self.after && abs(after - before) >= 0.05
+        }
+
+        var summary: String {
+            if didMove {
+                let size = abs(after - before)
+                return "\(isIncrease ? "Up" : "Down") \(size) \(size == 1 ? "point" : "points")."
+            }
+            if nudgedWithinTheSameNumber {
+                return "Still \(after). This outing nudged the score, but not enough to change the number."
+            }
+            return "The score held steady."
+        }
+    }
+
+    private func scoreChangeSummary(_ score: LocationScore) -> some View {
+        VStack(spacing: 8) {
+            if let scoreBeforeSave {
+                let move = ScoreMove(from: scoreBeforeSave, to: score.score)
+                HStack(spacing: 8) {
+                    Text("\(move.before)")
+                    Image(systemName: "arrow.right")
+                        .accessibilityLabel("to")
+                    Text("\(move.after)")
+                    if move.didMove {
+                        Image(systemName: move.isIncrease ? "arrow.up.right" : "arrow.down.right")
+                            .foregroundStyle(move.isIncrease ? BBTheme.sage : BBTheme.oxblood)
+                            .accessibilityLabel(move.isIncrease ? "increased" : "decreased")
+                    }
+                }
+                .font(.headline.monospacedDigit())
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Return score \(move.before) to \(move.after)")
+                Text(move.summary)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("This is its starting score.")
+                    .font(.headline)
+            }
+            Text(scoreExplanation)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity)
+        .editorialCard(padding: 14)
+    }
+
+    private var scoreExplanation: String {
+        let current = savedReaction?.title.lowercased() ?? "new"
+        if scoreBeforeSave == nil {
+            return "Your reaction, “\(current)”, sets the starting score. More outings and comparisons will move it."
+        }
+        if priorRatedVisitCount == 1, let priorReaction {
+            return "This score now blends two outings: “\(priorReaction.title.lowercased())” last time and “\(current)” this time."
+        }
+        if priorRatedVisitCount > 1 {
+            return "This score now blends “\(current)” with your \(priorRatedVisitCount) earlier outings here."
+        }
+        return "This score now blends “\(current)” with your earlier outings and comparisons here."
     }
 
     private func rankingInsertion(_ score: LocationScore) -> some View {
@@ -563,26 +743,63 @@ struct LogMealFlow: View {
             if let oldRank, oldRank != score.categoryRank {
                 Text("Moved from #\(oldRank) to #\(score.categoryRank)").font(.callout.weight(.semibold))
             } else if oldRank == nil { Text("Added to your ranking.").font(BBTheme.display(18, weight: .regular)) }
-            HStack(spacing: 14) {
-                neighbor(above, label: "Just ahead")
-                Divider().frame(height: 50)
-                neighbor(below, label: "Just behind")
+            if above != nil || below != nil {
+                HStack(spacing: 14) {
+                    if let above { neighbor(above, label: "Just ahead") }
+                    if above != nil, below != nil { Divider().frame(height: 50) }
+                    if let below { neighbor(below, label: "Just behind") }
+                }
             }
         }.editorialCard()
     }
 
-    private func neighbor(_ score: LocationScore?, label: String) -> some View {
+    private func neighbor(_ score: LocationScore, label: String) -> some View {
         VStack(spacing: 4) {
             Text(label.uppercased()).font(.caption2.weight(.bold)).foregroundStyle(.secondary)
-            Text(score?.location.name ?? "None").font(.callout.weight(.semibold)).multilineTextAlignment(.center).lineLimit(2)
+            Text(score.location.name).font(.callout.weight(.semibold)).multilineTextAlignment(.center).lineLimit(2)
         }.frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private var nearbySection: some View {
+        if locationService.authorization == .notDetermined {
+            VStack(alignment: .leading, spacing: 10) {
+                Eyebrow("Nearby restaurants")
+                Text("See what is around you")
+                    .font(.headline)
+                Text("Your location is only used while you pick a restaurant. You can always search instead.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Button {
+                    locationService.requestNearby()
+                } label: {
+                    Label("Show nearby restaurants", systemImage: "location.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryButtonStyle())
+                .accessibilityIdentifier("show-nearby-restaurants")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .editorialCard(padding: 14)
+        } else {
+            placeSection("Nearby now", choices: nearbyChoices, empty: nearbyEmptyMessage)
+        }
+    }
+
+    private func requestNearbyIfAlreadyAuthorized() {
+        switch locationService.authorization {
+        case .authorizedAlways, .authorizedWhenInUse:
+            locationService.requestNearby()
+        default:
+            break
+        }
     }
 
     private var nearbyEmptyMessage: String {
         if let errorMessage = locationService.errorMessage { return errorMessage }
         return switch locationService.authorization {
         case .denied, .restricted: "Location is off. You can still search."
-        case .notDetermined: "Turn on location for nearby results, or search instead."
+        case .notDetermined: "Tap Show nearby restaurants to use your location."
         default: locationService.isSearching || locationService.usableCurrentLocation == nil ? "Looking around…" : "No nearby matches. Search below."
         }
     }
@@ -616,11 +833,19 @@ struct LogMealFlow: View {
             }
     }
     private var trimmedQuery: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
-    private var manualChoice: PlaceChoice { .init(source: .manual(trimmedQuery), id: "manual-\(trimmedQuery)", name: trimmedQuery, subtitle: "New establishment · details editable later", category: DiningCategory.suggested(for: trimmedQuery)) }
+    private var manualChoice: PlaceChoice { .init(source: .manual(trimmedQuery), id: "manual-\(trimmedQuery)", name: trimmedQuery, subtitle: "New restaurant · details can be added later", category: DiningCategory.suggested(for: trimmedQuery)) }
     private func choice(for candidate: PlaceCandidate) -> PlaceChoice {
         .init(source: .map(candidate), id: "map-\(candidate.id)", name: candidate.name, subtitle: candidate.address ?? candidate.suggestedCategory.shortTitle, category: candidate.suggestedCategory)
     }
-    private func select(_ choice: PlaceChoice) { self.choice = choice; stage = .reaction; Haptics.selection() }
+    private func select(_ choice: PlaceChoice) {
+        if self.choice?.id != choice.id {
+            selectedReaction = nil
+            detailsExpanded = false
+        }
+        self.choice = choice
+        stage = .reaction
+        Haptics.selection()
+    }
 
     private func save(_ reaction: Reaction) {
         guard let choice else { return }
@@ -652,8 +877,15 @@ struct LogMealFlow: View {
 
     private func saveNewVisit(_ reaction: Reaction) {
         guard let choice else { return }
+        guard let personID = store.resolveLoggingPersonID() else {
+            saveError = AppStore.missingLoggingIdentityMessage
+            store.reportError(AppStore.missingLoggingIdentityMessage)
+            return
+        }
+        saveError = nil
         let existing = existingLocation(for: choice)
-        oldRank = existing.flatMap { location in store.score(for: location)?.categoryRank }
+        savedReaction = reaction
+        capturePriorEvidence(for: existing, personID: personID)
         let (location, visit) = store.performBatch { () -> (RestaurantLocation, VisitEntity) in
             let location: RestaurantLocation
             switch choice.source {
@@ -672,6 +904,7 @@ struct LogMealFlow: View {
             let visit = store.logVisit(
                 at: location,
                 reaction: reaction,
+                personID: personID,
                 date: visitDate,
                 dateKnowledge: visitDateKnowledge,
                 companionIDs: store.circleMembers.filter { taggedMemberIDs.contains($0.id) }.map(\.id),
@@ -690,21 +923,16 @@ struct LogMealFlow: View {
         }
         savedVisit = visit
         savedScore = store.score(for: location)
-        if existing == nil, let score = savedScore {
-            quickQuestions = store.ranked()
-                .filter { $0.id != location.id && $0.location.category == location.category }
-                .sorted { abs($0.score - score.score) < abs($1.score - score.score) }
-                .prefix(3)
-                .map { ComparisonQuestion(a: location, b: $0.location) }
-        }
+        prepareQuickQuestions(for: location, score: savedScore)
         stage = .payoff
         Haptics.success()
     }
 
     private func join(_ outing: VisitEntity) {
-        guard let reaction = duplicateReaction, let personID = store.currentPerson?.id,
+        guard outing.isAlive, let reaction = duplicateReaction, let personID = store.currentPerson?.id,
               let location = outing.location else { return }
-        oldRank = store.score(for: location, personID: personID)?.categoryRank
+        savedReaction = reaction
+        capturePriorEvidence(for: location, personID: personID)
         store.performBatch {
             _ = store.addRating(to: outing, personID: personID, reaction: reaction)
             if let mealPhoto {
@@ -720,10 +948,47 @@ struct LogMealFlow: View {
         }
         savedVisit = outing
         savedScore = store.score(for: location, personID: personID)
-        quickQuestions = []
+        prepareQuickQuestions(for: location, score: savedScore)
         clearDuplicateChoice()
         stage = .payoff
         Haptics.success()
+    }
+
+    private func capturePriorEvidence(for location: RestaurantLocation?, personID: UUID?) {
+        guard let location else {
+            oldRank = nil
+            scoreBeforeSave = nil
+            priorRatedVisitCount = 0
+            priorReaction = nil
+            return
+        }
+        let before = store.score(for: location, personID: personID)
+        oldRank = before?.categoryRank
+        scoreBeforeSave = before?.score
+        priorRatedVisitCount = before?.ratedVisitCount ?? 0
+        guard let personID else {
+            priorReaction = nil
+            return
+        }
+        priorReaction = location.visitArray
+            .compactMap { visit -> (date: Date, reaction: Reaction)? in
+                guard let rating = visit.rating(for: personID) else { return nil }
+                return (visit.date, rating.reaction)
+            }
+            .max { $0.date < $1.date }?
+            .reaction
+    }
+
+    private func prepareQuickQuestions(for location: RestaurantLocation, score: LocationScore?) {
+        guard let score else {
+            quickQuestions = []
+            return
+        }
+        quickQuestions = store.ranked()
+            .filter { $0.id != location.id && $0.location.category == location.category }
+            .sorted { abs($0.score - score.score) < abs($1.score - score.score) }
+            .prefix(3)
+            .map { ComparisonQuestion(a: location, b: $0.location) }
     }
 
     private func clearDuplicateChoice() {
@@ -739,13 +1004,16 @@ struct LogMealFlow: View {
         photoError = nil
         photoMapResults = []
 
-        guard let data = try? await item.loadTransferable(type: Data.self),
-              let photo = await ImageSanitizer.processOffMain(data, date: .now) else {
+        guard let photo = await ImageSanitizer.processSelected(
+            [item],
+            fallbackDate: .now,
+            maxConcurrent: 1
+        ).first else {
             guard photoRequestID == requestID else { return }
             mealPhoto = nil
             selectedPhotoItem = nil
             isReadingPhoto = false
-            photoError = "That image could not be read. Try choosing a different photo."
+            photoError = "That photo could not be read. Try another one."
             return
         }
         guard photoRequestID == requestID, !Task.isCancelled else { return }
@@ -784,7 +1052,9 @@ struct LogMealFlow: View {
     }
 
     private func refreshPayoff() {
-        if let location = savedVisit?.location { savedScore = store.score(for: location) }
+        if let visit = savedVisit, visit.isAlive, let location = visit.location {
+            savedScore = store.score(for: location)
+        }
     }
 }
 
@@ -803,7 +1073,7 @@ private struct DraftMealPhoto: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Selected meal photo")
+        .accessibilityLabel("Selected outing photo")
         .task(id: photo.id) {
             image = await PhotoImageCache.display(
                 key: "meal-draft-\(photo.id.uuidString)",
@@ -830,22 +1100,28 @@ private struct ChangeVisitRestaurantView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 22) {
                     VStack(alignment: .leading, spacing: 7) {
-                        Text("Choose the right place").font(BBTheme.display(34))
-                        Text("Search by restaurant, address, or branch.").foregroundStyle(.secondary)
+                        Text("Choose the restaurant").font(BBTheme.display(34))
+                        Text("Search by name or address.").foregroundStyle(.secondary)
                     }
                     searchField
                     if query.isEmpty {
-                        placeSection("Nearby now", choices: nearbyChoices, empty: nearbyEmptyMessage)
-                        placeSection("From your log", choices: Array(existingChoices.prefix(12)), empty: "No other saved places yet.")
+                        nearbySection
+                        placeSection("From your log", choices: Array(existingChoices.prefix(12)), empty: "No other saved restaurants yet.")
                     } else {
-                        Button { choose(manualChoice) } label: {
-                            Label("Add “\(query)” as a new place", systemImage: "plus.circle.fill")
-                                .font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 13)
+                        placeSection("Your restaurants", choices: existingChoices, empty: nil)
+                        placeSection("Map results", choices: mapChoices, empty: locationService.isSearching ? "Searching…" : "No map matches yet.")
+                        VStack(alignment: .leading, spacing: 8) {
+                            Eyebrow("Not listed?")
+                            Button { choose(manualChoice) } label: {
+                                Label("Create “\(query)” as a new restaurant", systemImage: "plus.circle.fill")
+                                    .font(.headline)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.vertical, 13)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("change-visit-manual-place")
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("change-visit-manual-place")
-                        placeSection("Your places", choices: existingChoices, empty: nil)
-                        placeSection("Map results", choices: mapChoices, empty: locationService.isSearching ? "Searching…" : "No outside match yet.")
+                        .editorialCard(padding: 12)
                     }
                 }
                 .padding(20)
@@ -858,7 +1134,7 @@ private struct ChangeVisitRestaurantView: View {
         }
         .task {
             guard !ProcessInfo.processInfo.arguments.contains("-resetForUITests") else { return }
-            locationService.requestNearby()
+            requestNearbyIfAlreadyAuthorized()
         }
         .task(id: query) {
             guard !query.isEmpty else { mapResults = []; return }
@@ -875,7 +1151,7 @@ private struct ChangeVisitRestaurantView: View {
     private var searchField: some View {
         HStack(spacing: 11) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Restaurant, address, or branch", text: $query)
+            TextField("Restaurant or address", text: $query)
                 .textInputAutocapitalization(.words)
                 .submitLabel(.search)
                 .focused($searchFocused)
@@ -916,6 +1192,40 @@ private struct ChangeVisitRestaurantView: View {
                 .buttonStyle(.plain)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var nearbySection: some View {
+        if locationService.authorization == .notDetermined {
+            VStack(alignment: .leading, spacing: 10) {
+                Eyebrow("Nearby restaurants")
+                Text("Your location is only used while you pick a restaurant. You can always search instead.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Button {
+                    locationService.requestNearby()
+                } label: {
+                    Label("Show nearby restaurants", systemImage: "location.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryButtonStyle())
+                .accessibilityIdentifier("change-visit-show-nearby")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .editorialCard(padding: 14)
+        } else {
+            placeSection("Nearby now", choices: nearbyChoices, empty: nearbyEmptyMessage)
+        }
+    }
+
+    private func requestNearbyIfAlreadyAuthorized() {
+        switch locationService.authorization {
+        case .authorizedAlways, .authorizedWhenInUse:
+            locationService.requestNearby()
+        default:
+            break
+        }
     }
 
     private var existingChoices: [PlaceChoice] {
@@ -927,14 +1237,14 @@ private struct ChangeVisitRestaurantView: View {
     private var nearbyChoices: [PlaceChoice] { locationService.nearby.map(choice(for:)) }
     private var mapChoices: [PlaceChoice] { mapResults.map(choice(for:)) }
     private var manualChoice: PlaceChoice {
-        .init(source: .manual(query), id: "manual-\(query)", name: query, subtitle: "New establishment · details editable later", category: DiningCategory.suggested(for: query))
+        .init(source: .manual(query), id: "manual-\(query)", name: query, subtitle: "New restaurant · details can be added later", category: DiningCategory.suggested(for: query))
     }
 
     private var nearbyEmptyMessage: String {
         if let errorMessage = locationService.errorMessage { return errorMessage }
         return switch locationService.authorization {
         case .denied, .restricted: "Location is off. You can still search."
-        case .notDetermined: "Turn on location for nearby results, or search instead."
+        case .notDetermined: "Tap Show nearby restaurants to use your location."
         default: locationService.isSearching || locationService.usableCurrentLocation == nil ? "Looking around…" : "No nearby matches. Search below."
         }
     }
@@ -964,6 +1274,7 @@ struct AddMoreVisitView: View {
     @Environment(AppStore.self) private var store
     let visit: VisitEntity
     private let personID: UUID?
+    private let startsWithDetails: Bool
     @State private var reaction: Reaction?
     @State private var visitType: VisitType?
     @State private var visitDate: Date
@@ -984,10 +1295,30 @@ struct AddMoreVisitView: View {
     @State private var isSaving = false
     @State private var restaurantChoice: PlaceChoice?
     @State private var isChangingRestaurant = false
+    @State private var isConfirmingDiscard = false
 
-    init(visit: VisitEntity, personID: UUID?) {
+    init(visit: VisitEntity, personID: UUID?, startsWithDetails: Bool = false) {
         self.visit = visit
         self.personID = personID
+        self.startsWithDetails = startsWithDetails
+        guard visit.isAlive else {
+            _reaction = State(initialValue: nil)
+            _visitType = State(initialValue: nil)
+            _visitDate = State(initialValue: .now)
+            _visitDateKnowledge = State(initialValue: .unknown)
+            _priceBand = State(initialValue: 0)
+            _occasion = State(initialValue: nil)
+            _service = State(initialValue: nil)
+            _atmosphere = State(initialValue: nil)
+            _value = State(initialValue: nil)
+            _wouldOrderAgain = State(initialValue: nil)
+            _hazy = State(initialValue: false)
+            _memory = State(initialValue: "")
+            _memoryExpanded = State(initialValue: false)
+            _companions = State(initialValue: [])
+            _restaurantChoice = State(initialValue: nil)
+            return
+        }
         let rating = personID.flatMap(visit.rating(for:))
         _reaction = State(initialValue: rating?.reaction)
         _visitType = State(initialValue: visit.visitType)
@@ -1009,34 +1340,47 @@ struct AddMoreVisitView: View {
     }
 
     var body: some View {
+        Group {
+            if visit.isAlive {
+                editorContent
+            } else {
+                ContentUnavailableView("Outing unavailable", systemImage: "fork.knife.circle")
+                    .task {
+                        await Task.yield()
+                        dismiss()
+                    }
+            }
+        }
+    }
+
+    private var editorContent: some View {
         NavigationStack {
             Form {
-                if canEditOuting { restaurantSection }
-                verdictSection
-                if canEditOuting {
-                    Section {
-                        Toggle("Date unknown", isOn: Binding(
-                            get: { visitDateKnowledge == .unknown },
-                            set: { visitDateKnowledge = $0 ? .unknown : .known }
-                        ))
-                        if visitDateKnowledge == .known {
-                            DatePicker("Date", selection: $visitDate, displayedComponents: .date)
-                        }
-                        detailPicker("Visit type", selection: $visitType, values: VisitType.allCases)
-                        pricePicker
-                        detailPicker("Occasion", selection: $occasion, values: Occasion.allCases)
-                    } header: { Text("The outing") }
+                if startsWithDetails {
+                    dishSection
+                    photoSection
+                    particularsSection
+                    memorySection
+                    if canEditOuting { companySection }
+                    if canEditOuting { outingSection }
+                    verdictSection
+                    if canEditOuting { restaurantSection }
+                } else {
+                    if canEditOuting { restaurantSection }
+                    verdictSection
+                    if canEditOuting { outingSection }
+                    dishSection
+                    particularsSection
+                    if canEditOuting { companySection }
+                    photoSection
+                    memorySection
                 }
-                dishSection
-                particularsSection
-                if canEditOuting { companySection }
-                photoSection
-                memorySection
             }
             .editorialForm()
-            .navigationTitle(canEditOuting ? "Edit Outing" : "Your Entry").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle(startsWithDetails ? "Add Outing Details" : (canEditOuting ? "Edit Outing" : "Your Diner Entry"))
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Not Now") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { cancel() } }
                 ToolbarItem(placement: .confirmationAction) { Button(isSaving ? "Saving…" : "Save") { Task { await save() } }.disabled(isSaving) }
             }
         }
@@ -1045,6 +1389,34 @@ struct AddMoreVisitView: View {
                 restaurantChoice = choice
             }
         }
+        .editorialPrompt(isPresented: $isConfirmingDiscard) {
+            EditorialPrompt.destructive(
+                "Discard unsaved changes?",
+                message: "Anything you typed or selected here will be lost.",
+                actionTitle: "Discard changes",
+                cancelTitle: "Keep Editing"
+            ) {
+                dismiss()
+            }
+        }
+    }
+
+    private var outingSection: some View {
+        Section {
+            Toggle("Date unknown", isOn: Binding(
+                get: { visitDateKnowledge == .unknown },
+                set: { visitDateKnowledge = $0 ? .unknown : .known }
+            ))
+            if visitDateKnowledge == .known {
+                DatePicker("Outing date and time", selection: $visitDate, displayedComponents: [.date, .hourAndMinute])
+            }
+            detailPicker("Outing type", selection: $visitType, values: VisitType.allCases)
+            pricePicker
+            detailPicker("Occasion", selection: $occasion, values: Occasion.allCases)
+        } header: {
+            Eyebrow("Details")
+        }
+        .listRowBackground(BBTheme.surface)
     }
 
     private var restaurantSection: some View {
@@ -1069,29 +1441,68 @@ struct AddMoreVisitView: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("change-visit-restaurant")
         } header: {
-            Text("Restaurant")
+            Eyebrow("Restaurant")
         } footer: {
-            Text("Changing the restaurant keeps this visit’s ratings, dishes, photos, and notes together.")
+            Text("Reactions, dishes, photos, and notes move with the outing.")
         }
+        .listRowBackground(BBTheme.surface)
     }
 
     private var canEditOuting: Bool {
-        store.canEditOuting(visit, personID: personID)
+        visit.isAlive && store.canEditOuting(visit, personID: personID)
+    }
+
+    private var hasUnsavedChanges: Bool {
+        guard visit.isAlive else { return false }
+        let rating = personID.flatMap(visit.rating(for:))
+        let storedWouldOrderAgain = rating?.hasWouldOrderAgain == true ? rating?.wouldOrderAgain : nil
+        let participantMemory = personID.flatMap { visit.participant(for: $0)?.memory }
+        let storedMemory = participantMemory ?? (personID == visit.createdByID ? visit.memory : nil) ?? ""
+        return reaction != rating?.reaction ||
+            visitType != visit.visitType ||
+            abs(visitDate.timeIntervalSince(visit.date)) > 0.5 ||
+            visitDateKnowledge != visit.dateKnowledge ||
+            priceBand != Int(visit.priceBand) ||
+            occasion != visit.occasion ||
+            service != rating?.service ||
+            atmosphere != rating?.atmosphere ||
+            value != rating?.value ||
+            wouldOrderAgain != storedWouldOrderAgain ||
+            hazy != (rating?.hazyMemory ?? false) ||
+            memory != storedMemory ||
+            companions != Set(visit.companionIDs) ||
+            !newCompanion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+            !dishes.isEmpty ||
+            !photoItems.isEmpty ||
+            restaurantChoice?.id != visit.location?.placeChoice.id
+    }
+
+    private func cancel() {
+        guard visit.isAlive else {
+            dismiss()
+            return
+        }
+        if hasUnsavedChanges {
+            isConfirmingDiscard = true
+        } else {
+            dismiss()
+        }
     }
 
     private var verdictSection: some View {
         Section {
             ReactionPicker(selected: reaction) { reaction = $0 }
                 .listRowInsets(EdgeInsets(top: 10, leading: 10, bottom: 10, trailing: 10))
-                .listRowBackground(Color.clear)
-            Toggle("Hazy memory · weight it lightly", isOn: $hazy)
-        } header: { Text("Your verdict") } footer: {
-            if reaction == nil { Text("A visit can stay unrated forever. Choose a reaction only when you have one.") }
+                .listRowBackground(BBTheme.surface)
+            Toggle("Hazy memory · counts less", isOn: $hazy)
+        } header: { Eyebrow("Your reaction") } footer: {
+            if reaction == nil { Text("You can leave this blank. An outing without a reaction still shows in history.") }
         }
+        .listRowBackground(BBTheme.surface)
     }
 
     private var dishSection: some View {
-        Section("Dishes") {
+        Section {
             ForEach(myDishEntries) { entry in
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
@@ -1100,7 +1511,7 @@ struct AddMoreVisitView: View {
                     }
                     Spacer()
                     Image(systemName: entry.reaction.symbol).foregroundStyle(BBTheme.oxblood)
-                        .accessibilityLabel(entry.reaction.rawValue)
+                        .accessibilityLabel(entry.reaction.title)
                 }
                 .swipeActions(edge: .trailing) {
                     Button(role: .destructive) { store.deleteDishEntry(entry) } label: { Label("Remove", systemImage: "trash") }
@@ -1134,7 +1545,10 @@ struct AddMoreVisitView: View {
                 }.padding(.vertical, 6)
             }
             Button { dishes.append(.init()) } label: { Label("Add a dish", systemImage: "plus") }
+        } header: {
+            Eyebrow("Dishes")
         }
+        .listRowBackground(BBTheme.surface)
     }
 
     private var particularsSection: some View {
@@ -1145,9 +1559,10 @@ struct AddMoreVisitView: View {
             Picker("Would eat here again", selection: $wouldOrderAgain) {
                 Text("Not set").tag(Bool?.none); Text("Yes").tag(Bool?.some(true)); Text("No").tag(Bool?.some(false))
             }
-        } header: { Text("Optional ratings") } footer: {
-            if reaction == nil { Text("Choose an overall reaction before adding these ratings.") }
+        } header: { Eyebrow("Optional details") } footer: {
+            if reaction == nil { Text("Pick an overall reaction first.") }
         }
+        .listRowBackground(BBTheme.surface)
     }
 
     private var companySection: some View {
@@ -1158,6 +1573,11 @@ struct AddMoreVisitView: View {
             ForEach(store.namedCompanions.filter { $0.id != visit.createdByID }) { person in
                 companionRow(person, detail: "Guest")
             }
+            ForEach(store.people.filter {
+                $0.isArchived && !$0.isCircleMember && visit.companionIDs.contains($0.id)
+            }) { person in
+                companionRow(person, detail: "Added before")
+            }
             HStack {
                 TextField("Add someone else", text: $newCompanion)
                 Button("Add") {
@@ -1167,10 +1587,11 @@ struct AddMoreVisitView: View {
                 .disabled(newCompanion.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         } header: {
-            Text("At the table")
+            Eyebrow("At the table")
         } footer: {
-            Text("Tagged circle members will see this visit and can add their own rating. Other people are saved by name for future visits.")
+            Text("People in your circle will see this outing and can add their own reaction. Everyone else is just saved as a name.")
         }
+        .listRowBackground(BBTheme.surface)
     }
 
     private func companionRow(_ person: PersonEntity, detail: String? = nil) -> some View {
@@ -1193,7 +1614,7 @@ struct AddMoreVisitView: View {
 
     private var photoSection: some View {
         let photos = visit.photoArray
-        return Section("Photos") {
+        return Section {
             if !photos.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
@@ -1206,9 +1627,11 @@ struct AddMoreVisitView: View {
                                     .lineLimit(1)
                             }
                             .contextMenu {
-                                if store.canEditPhoto(photo, personID: personID) {
-                                    Button("Remove My Photo", systemImage: "trash", role: .destructive) {
-                                        store.deletePhoto(photo, personID: personID)
+                                if photo.isAlive, store.canEditPhoto(photo, personID: personID) {
+                                    Button("Remove my photo", systemImage: "trash", role: .destructive) {
+                                        if photo.isAlive {
+                                            store.deletePhoto(photo, personID: personID)
+                                        }
                                     }
                                 }
                             }
@@ -1223,9 +1646,12 @@ struct AddMoreVisitView: View {
                 matching: .images,
                 preferredItemEncoding: .current
             ) {
-                Label(pendingCount == 0 ? "Choose photos" : "\(pendingCount) selected to add", systemImage: "photo.on.rectangle")
+                Label(pendingCount == 0 ? "Choose photos" : "\(pendingCount) selected", systemImage: "photo.on.rectangle")
             }
+        } header: {
+            Eyebrow("Photos")
         }
+        .listRowBackground(BBTheme.surface)
     }
 
     private var memorySection: some View {
@@ -1233,9 +1659,14 @@ struct AddMoreVisitView: View {
             DisclosureGroup(isExpanded: $memoryExpanded) {
                 TextField("What do you want to remember?", text: $memory, axis: .vertical).lineLimit(3...8)
             } label: {
-                Label(memory.isEmpty ? "Add a Memory" : "Memory", systemImage: "text.quote")
+                Label(memory.isEmpty ? "Add a memory" : "Memory", systemImage: "text.quote")
             }
-        } footer: { Text("This memory belongs to your entry. It is searchable and never affects the score.") }
+        } header: {
+            Eyebrow("Memory")
+        } footer: {
+            Text("Just for you. Searchable, and it never affects the score.")
+        }
+        .listRowBackground(BBTheme.surface)
     }
 
     private func photoContributorName(_ photo: PhotoEntity) -> String {
@@ -1245,7 +1676,8 @@ struct AddMoreVisitView: View {
     }
 
     private var myDishEntries: [DishEntryEntity] {
-        visit.dishEntryArray.filter { $0.personID == personID }.sorted { $0.createdAt < $1.createdAt }
+        guard visit.isAlive else { return [] }
+        return visit.dishEntryArray.filter { $0.personID == personID }.sorted { $0.createdAt < $1.createdAt }
     }
 
     private func dishSuggestions(for text: String) -> [DishEntity] {
@@ -1260,6 +1692,7 @@ struct AddMoreVisitView: View {
     }
 
     private var selectedExistingLocation: RestaurantLocation? {
+        guard visit.isAlive else { return nil }
         guard let restaurantChoice else { return visit.location }
         if case .existing(let location) = restaurantChoice.source { return location }
         return nil
@@ -1279,10 +1712,21 @@ struct AddMoreVisitView: View {
     }
 
     private func save() async {
+        guard visit.isAlive else {
+            dismiss()
+            return
+        }
         isSaving = true
-        let sanitizedPhotos = await ImageSanitizer.processSelected(photoItems, fallbackDate: visit.date)
+        defer { isSaving = false }
+        let fallbackDate = visit.date
+        let sanitizedPhotos = await ImageSanitizer.processSelected(photoItems, fallbackDate: fallbackDate)
+        guard !Task.isCancelled, visit.isAlive else {
+            dismiss()
+            return
+        }
 
         store.performBatch {
+            guard visit.isAlive else { return }
             if canEditOuting, let restaurantChoice {
                 let selectedLocation: RestaurantLocation
                 switch restaurantChoice.source {
@@ -1333,6 +1777,6 @@ struct AddMoreVisitView: View {
                 )
             }
         }
-        Haptics.success(); isSaving = false; dismiss()
+        Haptics.success(); dismiss()
     }
 }

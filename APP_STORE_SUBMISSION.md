@@ -5,17 +5,18 @@
 - Product: Big Beautiful Restaurant Log
 - Bundle identifier: `com.davis.bigbeautifulranking`
 - Sync service: Supabase project (host and anon key supplied through `Config/Supabase.local.xcconfig`)
-- Version: 3.1.3 (build 17)
+- Version: 3.2 (build 21)
+- Release date: August 1, 2026
 - Devices: iPhone only
 - Minimum OS: iOS 17.0
 
 ## App Privacy answers
 
-> **Completed for 3.0.2 on July 29, 2026 and unchanged for 3.1.3.** Earlier
+> **Completed for 3.0.2 on July 29, 2026 and unchanged for 3.2.** Earlier
 > releases answered **Data Not Collected** because sharing ran entirely through
 > the user's own iCloud account. App Store Connect publishes the seven data types
 > below as linked to the user, used for App Functionality, and not used for
-> tracking. 3.1.3 collects nothing new: it fixes a sync serialization edge case;
+> tracking. 3.2 collects nothing new: it fixes sync and sharing lifecycle defects;
 > it changes no data categories and does not change what leaves the device.
 
 The developer cannot read dining records: every payload and photo is encrypted on
@@ -85,17 +86,22 @@ reading user-selected imports and backups.
 
 ## Final release gates
 
-- App Store build: version 3.1.3, build 17. It supersedes submitted build 3.1.2
-  (build 16), whose mixed live-record/tombstone sync batches could be rejected by
-  the production payload-presence constraint, and build 13, whose invitation
-  links could open the app and then do nothing, and which could crash while a
-  circle was being deleted.
+- App Store build: version 3.2, build 21. It supersedes version 3.1.3, build 19,
+  whose circle reset/leave recovery could retain stale memberships, whose member
+  identity could be reassigned after a leave, and whose repeated photo cleanup
+  surfaced a misleading Storage 400 on the Sharing screen. It also supersedes
+  submitted build 3.1.2 (build 16), whose mixed live-record/tombstone sync batches
+  could be rejected by the production payload-presence constraint.
 - **Apply `supabase/migrations/0010_join_codes.sql` before this build reaches
   anybody.** Join codes cannot be created or redeemed without it. The migration
   is additive and leaves the 3.0.2 functions in place, so build 13 keeps working
   until it is replaced. Applied to the production project on July 30, 2026;
   verified by the six-row check in `supabase/README.md`.
-- TestFlight: assign build 17 to the external **Big Beautiful Testers** group,
+- Confirm `supabase/migrations/20260801161054_lock_circle_member_identity.sql`
+  remains applied. It prevents any client, including an older build, from
+  reassigning an enrolled account to another person's profile. Applied to the
+  production project on August 1, 2026.
+- TestFlight: assign build 21 to the external **Big Beautiful Testers** group,
   complete the two-device soak below, and only then submit the App Store draft.
 - EU Digital Services Act: completed by the Account Holder and shown as
   **Active** for all 27 applicable countries or regions on July 29, 2026.
@@ -109,7 +115,7 @@ Two iPhones on different Apple Accounts. Steps 3 to 6 cover the 3.1.1
 invitation/merge fixes and the 3.1.3 mixed-record sync fix, so do not sign off
 without them.
 
-1. Install version 3.1.3, build 17 on both phones.
+1. Install version 3.2, build 21 on both phones.
 2. On the upgrading phone, confirm the existing restaurants, visits, rankings,
    relationships, and photos survive, and that a log left behind in a second
    circle by an older build has been folded into the one log.
@@ -132,11 +138,19 @@ without them.
    syncing, keeps its local copy, and that their outings remain in the owner's
    log.
 10. Re-invite with a new code and confirm the rejoin works.
-11. Leave the circle from the member phone. Confirm no crash, that the dining log
+11. If the log contains an older companion profile for the joining person, use
+    **Connect History** beside the enrolled member, select that profile, and
+    confirm its rankings move to the enrolled member without changing either
+    account's identity.
+12. While still sharing, export a backup, add a distinctive newer visit, restore
+    the backup, and confirm both phones remain in the same circle under their
+    original identities. Confirm the next sync does not erase the other phone's
+    newer visit.
+13. Leave the circle from the member phone. Confirm no crash, that the dining log
     is intact, and that it resumes syncing privately under a new circle.
-12. Sign out and back in on both phones and confirm each log is still complete.
+14. Sign out and back in on both phones and confirm each log is still complete.
 
-## What’s New in Version 3.1.3
+## What’s New in Version 3.2
 
 - Rebuilt sharing around a join code you can read out, text, or tap. Invitation
   links that opened the app and did nothing are fixed, including from a cold
@@ -157,6 +171,16 @@ without them.
 - Fixed mixed live-record and tombstone uploads so every bulk sync payload
   includes the required `payload` field and deletions are accepted by the
   production constraint.
+- Made member identity immutable, made Reset retire server memberships before
+  erasing the phone, and made leave/rejoin preserve the correct person and log.
+- Made repeated photo cleanup idempotent so an already-deleted photo no longer
+  produces a misleading sync error on the Sharing screen.
+- Added an explicit Connect History action that safely folds a saved companion's
+  visits, rankings, dishes, photos, comparisons, and Want to Try history into the
+  authenticated circle member selected by the user.
+- Kept the authenticated member and live circle authoritative when restoring a
+  backup, preventing the restored archive from replacing enrollment identity or
+  turning absent backup rows into server deletions.
 
 ## Capabilities to configure in the Apple Developer portal
 
@@ -185,7 +209,7 @@ migration accompanies it.
 
 ## Permission behavior
 
-- Location: When In Use only. There is no Always authorization or background visit detection in 3.1.3.
+- Location: When In Use only. There is no Always authorization or background visit detection in 3.2.
 - Photos: the primary Backfill path uses PhotosPicker without library permission. The optional date-range scan requests read access.
 - Notifications: no user-visible notifications are requested.
 
@@ -194,7 +218,7 @@ migration accompanies it.
 The dining log is kept in the person's own account, so setup asks for a name and
 then offers Sign in with Apple. **A reviewer does not need an account to inspect
 the app:** tapping **Sign in with Apple** and cancelling the system sheet reveals
-**Continue Without an Account**, which completes setup with the log kept on the
+**Continue without signing in**, which completes setup with the log kept on the
 device. From the final setup screen, **Preview with a sample Salt Lake log**
 fills every primary screen with sample data.
 

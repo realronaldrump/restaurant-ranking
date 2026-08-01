@@ -60,6 +60,120 @@ final class BeliImporterTests: XCTestCase {
         }
     }
 
+    func testParseFilesRejectsCSVLargerThanThePreflightLimit() {
+        let oversized = Data(repeating: UInt8(ascii: "x"), count: Int(BeliImporter.maximumCSVBytes) + 1)
+
+        XCTAssertThrowsError(try BeliImporter.parse(files: ["rankings.csv": oversized])) { error in
+            XCTAssertEqual(error as? BeliImporter.ImportError, .oversizedEntry("rankings.csv"))
+        }
+    }
+
+    func testRejectsMoreVisitDatesThanOneRankingCanSafelyExpand() {
+        let visits = (0...BeliImporter.maximumVisitDatesPerRanking)
+            .map { "datetime.date(2025, 1, \(($0 % 28) + 1))" }
+            .joined(separator: ", ")
+        let rankings = """
+        Rank,Restaurant Name,City,Created Date,Visit Dates
+        1,Place,City,2025-01-01 00:00:00+00:00,"[\(visits)]"
+        """
+
+        XCTAssertThrowsError(try BeliImporter.parse(files: ["rankings.csv": Data(rankings.utf8)])) { error in
+            XCTAssertEqual(
+                error as? BeliImporter.ImportError,
+                .invalidRow(file: "rankings.csv", row: 2, detail: "Visit Dates contains too many dates.")
+            )
+        }
+    }
+
+    func testRejectsArchiveWhoseRowsExpandBeyondTheTotalOutingLimit() {
+        let visits = (0..<BeliImporter.maximumVisitDatesPerRanking)
+            .map { "datetime.date(2025, 1, \(($0 % 28) + 1))" }
+            .joined(separator: ", ")
+        let rowCount = (BeliImporter.maximumTotalOutings / BeliImporter.maximumVisitDatesPerRanking) + 1
+        let rows = (1...rowCount).map {
+            "\($0),Place \($0),City,2025-01-01 00:00:00+00:00,\"[\(visits)]\""
+        }
+        let rankings = (["Rank,Restaurant Name,City,Created Date,Visit Dates"] + rows).joined(separator: "\n")
+
+        XCTAssertThrowsError(try BeliImporter.parse(files: ["rankings.csv": Data(rankings.utf8)])) { error in
+            XCTAssertEqual(error as? BeliImporter.ImportError, .tooManyOutings)
+        }
+    }
+
+    func testPhotoDownloaderStopsFetchingAfterRetainedDataReachesItsLimit() async throws {
+        let tracker = DownloadConcurrencyTracker()
+        let rows = try (0..<8).map { index in
+            BeliPhotoRow(
+                id: "photo-\(index)", restaurantName: "Place", city: "City",
+                caption: nil, isFavoriteDish: false, uploadDate: .now,
+                imageURL: try XCTUnwrap(URL(string: "https://example.com/\(index).jpg"))
+            )
+        }
+        let limits = BeliPhotoDownloader.Limits(
+            maximumConcurrentDownloads: 2,
+            maximumResponseBytes: 32,
+            maximumPreparedPhotoBytes: 8,
+            maximumRetainedPhotoCount: 8,
+            maximumRetainedPreparedBytes: 10
+        )
+
+        let result = await BeliPhotoDownloader.download(rows, maxConcurrent: 100, limits: limits) { row, _ in
+            await tracker.started()
+            try? await Task.sleep(for: .milliseconds(20))
+            await tracker.finished()
+            let photo = BackfillPhoto(
+                id: UUID(), fullData: Data(repeating: 1, count: 4), thumbnailData: Data(repeating: 2, count: 2),
+                date: row.uploadDate, coordinate: nil, captureDate: nil
+            )
+            return .success(.init(row: row, photo: photo, contentHash: row.id))
+        }
+
+        let peak = await tracker.peak
+        let totalStarted = await tracker.totalStarted
+        XCTAssertEqual(peak, 2)
+        XCTAssertEqual(totalStarted, 2)
+        XCTAssertEqual(result.photos.count, 1)
+        XCTAssertEqual(result.failures.count, 7)
+        XCTAssertTrue(result.failures.values.allSatisfy { $0.contains("memory limit") })
+    }
+
+    func testDownloadedFileValidationRejectsOversizedBodyBeforeLoadingIt() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data(repeating: 7, count: 9).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let response = try XCTUnwrap(HTTPURLResponse(
+            url: XCTUnwrap(URL(string: "https://example.com/final.jpg")),
+            statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "image/jpeg"]
+        ))
+        let limits = BeliPhotoDownloader.Limits(
+            maximumConcurrentDownloads: 1,
+            maximumResponseBytes: 8,
+            maximumPreparedPhotoBytes: 8,
+            maximumRetainedPhotoCount: 1,
+            maximumRetainedPreparedBytes: 8
+        )
+
+        XCTAssertThrowsError(try BeliPhotoDownloader.loadDownloadedFile(file, response: response, limits: limits)) { error in
+            XCTAssertEqual(error as? BeliPhotoDownloader.DownloadError, .responseTooLarge)
+        }
+    }
+
+    func testDownloadedFileValidationRejectsNonHTTPSRedirectDestination() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data([1]).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let response = try XCTUnwrap(HTTPURLResponse(
+            url: XCTUnwrap(URL(string: "http://example.com/final.jpg")),
+            statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "image/jpeg"]
+        ))
+
+        XCTAssertThrowsError(
+            try BeliPhotoDownloader.loadDownloadedFile(file, response: response, limits: .default)
+        ) { error in
+            XCTAssertEqual(error as? BeliPhotoDownloader.DownloadError, .insecureRedirect)
+        }
+    }
+
     func testImportIsIdempotentAndKeepsUnknownDateOuting() throws {
         let persistence = PersistenceController(inMemory: true)
         let store = AppStore(persistence: persistence)
@@ -101,6 +215,65 @@ final class BeliImporterTests: XCTestCase {
         XCTAssertEqual(deleted.rankingsDeleted, 1)
         XCTAssertTrue(store.locations.isEmpty)
         XCTAssertTrue(store.visits.isEmpty)
+    }
+
+    func testReimportDownloadsOnlyPhotosThatAreStillMissing() throws {
+        let store = AppStore(persistence: PersistenceController(inMemory: true))
+        store.bootstrap(myName: "Davis")
+        let date = Date(timeIntervalSince1970: 1_750_000_000)
+        let ranking = BeliRankingRow(
+            id: "restaurant-key", rank: 1, restaurantName: "Resume Cafe",
+            city: "Waco, TX", createdAt: date, visitDates: []
+        )
+        let photoRows = try (0..<2).map { index in
+            BeliPhotoRow(
+                id: "photo-\(index)", restaurantName: ranking.restaurantName, city: ranking.city,
+                caption: nil, isFavoriteDish: false,
+                uploadDate: date.addingTimeInterval(Double(index)),
+                imageURL: try XCTUnwrap(URL(string: "https://example.com/\(index).jpg"))
+            )
+        }
+        let archive = BeliParsedArchive(
+            namespace: "namespace", exportDate: date,
+            rankings: [ranking], photos: photoRows, dishNotes: []
+        )
+        func downloaded(_ row: BeliPhotoRow) -> BeliDownloadedPhoto {
+            BeliDownloadedPhoto(
+                row: row,
+                photo: BackfillPhoto(
+                    id: UUID(), fullData: Data([1, 2, 3]), thumbnailData: Data([1]),
+                    date: date, coordinate: nil, captureDate: nil
+                ),
+                contentHash: row.id
+            )
+        }
+        func request(with photos: [String: BeliDownloadedPhoto]) -> BeliImportRequest {
+            BeliImportRequest(
+                archive: archive,
+                resolutions: [ranking.id: .unresolved(markClosed: false)],
+                photoRankingAssignments: [:],
+                dishRankingAssignments: [:],
+                downloadedPhotos: photos
+            )
+        }
+
+        _ = store.importBeli(request(with: [photoRows[0].id: downloaded(photoRows[0])]))
+
+        XCTAssertEqual(store.beliPhotosNeedingDownload(from: archive).map(\.id), [photoRows[1].id])
+
+        _ = store.importBeli(request(with: [photoRows[1].id: downloaded(photoRows[1])]))
+
+        XCTAssertTrue(store.beliPhotosNeedingDownload(from: archive).isEmpty)
+        XCTAssertEqual(store.visits.first?.photoArray.count, 2)
+
+        let deletedPhoto = try XCTUnwrap(store.visits.first?.photoArray.first)
+        XCTAssertTrue(store.deletePhoto(deletedPhoto))
+        XCTAssertEqual(store.beliPhotosNeedingDownload(from: archive).map(\.id), [photoRows[0].id])
+
+        _ = store.importBeli(request(with: [photoRows[0].id: downloaded(photoRows[0])]))
+
+        XCTAssertTrue(store.beliPhotosNeedingDownload(from: archive).isEmpty)
+        XCTAssertEqual(store.visits.first?.photoArray.count, 2)
     }
 
     func testUnknownDateRatingUsesNeutralRecency() throws {
@@ -215,5 +388,21 @@ final class BeliImporterTests: XCTestCase {
         XCTAssertEqual(archive.unknownVisitCount, 51)
         XCTAssertEqual(archive.photos.count, 24)
         XCTAssertEqual(archive.dishNotes.count, 1)
+    }
+}
+
+private actor DownloadConcurrencyTracker {
+    private var active = 0
+    private(set) var peak = 0
+    private(set) var totalStarted = 0
+
+    func started() {
+        active += 1
+        totalStarted += 1
+        peak = max(peak, active)
+    }
+
+    func finished() {
+        active -= 1
     }
 }

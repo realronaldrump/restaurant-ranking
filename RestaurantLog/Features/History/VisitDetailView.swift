@@ -7,13 +7,18 @@ struct VisitDetailView: View {
     let visit: VisitEntity
     @State private var editingVisit: VisitEntity?
     @State private var confirmDelete = false
-    @State private var selectedPhoto: PhotoEntity?
+    @State private var selectedPhoto: PhotoViewerSnapshot?
     @State private var pendingDeletionID: UUID?
+    @State private var coonReactionTarget: CoonReactionTarget?
 
     var body: some View {
         Group {
-            if visit.managedObjectContext == nil || visit.isDeleted {
-                EmptyView()
+            if !visit.isAlive {
+                ContentUnavailableView("Outing unavailable", systemImage: "fork.knife.circle")
+                    .task {
+                        await Task.yield()
+                        dismiss()
+                    }
             } else {
                 visitContent
             }
@@ -31,7 +36,7 @@ struct VisitDetailView: View {
                 photosSection(photoValues)
                 if store.canEditOuting(visit) {
                     Button(role: .destructive) { confirmDelete = true } label: {
-                        Label("Delete Entire Outing", systemImage: "trash")
+                        Label("Delete entire outing", systemImage: "trash")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(SecondaryButtonStyle())
@@ -42,19 +47,33 @@ struct VisitDetailView: View {
             .readablePageWidth()
         }
         .editorialPage().navigationTitle("Outing").navigationBarTitleDisplayMode(.inline)
-        .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Edit") { editingVisit = visit } } }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(store.canEditOuting(visit) ? "Edit outing" : "Edit your diner entry") {
+                    if visit.isAlive { editingVisit = visit }
+                }
+            }
+        }
         .sheet(item: $editingVisit) { AddMoreVisitView(visit: $0, personID: store.currentPerson?.id) }
+        .sheet(item: $coonReactionTarget) { target in
+            CoonReactionPickerSheet(visit: visit, target: target)
+        }
         .fullScreenCover(item: $selectedPhoto) { PhotoViewer(photo: $0) }
-        .confirmationDialog("Delete this entire outing?", isPresented: $confirmDelete, titleVisibility: .visible) {
-            Button("Delete Outing", role: .destructive) { deleteVisit() }
-        } message: {
-            Text("Every diner’s entry, dishes, and app-stored photos for this outing will be removed. The restaurant remains in the log.")
+        .editorialPrompt(isPresented: $confirmDelete) {
+            EditorialPrompt.destructive(
+                "Delete this entire outing?",
+                message: "Every diner entry, dish, and photo saved for this outing will be removed. The restaurant stays in your log.",
+                actionTitle: "Delete outing",
+                cancelTitle: "Cancel"
+            ) {
+                deleteVisit()
+            }
         }
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Eyebrow(visit.dateKnowledge == .known ? visit.date.formatted(date: .complete, time: .omitted) : "Date unknown")
+            Eyebrow(visit.dateKnowledge == .known ? visit.date.formatted(date: .complete, time: .shortened) : "Outing date unknown")
             if let location = visit.location {
                 NavigationLink(value: AppRoute.location(location.id)) {
                     HStack(alignment: .top, spacing: 10) {
@@ -71,7 +90,7 @@ struct VisitDetailView: View {
                 .buttonStyle(.plain)
                 .accessibilityHint("Opens the restaurant record")
             } else {
-                Text("Unknown place").font(BBTheme.display(38))
+                Text("Unknown restaurant").font(BBTheme.display(38))
             }
             FlowLayout(items: headerChips) { chip in
                 RankChip(text: chip.text, emphasized: chip.emphasized)
@@ -96,7 +115,11 @@ struct VisitDetailView: View {
 
     private var dinerEntriesSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            EditorialSectionHeader("Diner entries", eyebrow: "Each person rates only what they tried")
+            EditorialSectionHeader("Who ate what")
+            Text("Everyone at the table keeps their own reaction and dishes. Stickers are just for fun and never change a score.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             ForEach(store.attendees(for: visit)) { person in
                 dinerEntryCard(person)
             }
@@ -111,29 +134,32 @@ struct VisitDetailView: View {
         let memory = store.memory(for: visit, personID: person.id)
         let status = visit.participant(for: person.id)?.status
         let isCurrentPerson = person.id == store.currentPerson?.id
+        let socialReactions = store.coonReactions(to: person.id, in: visit)
 
         return VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text(isCurrentPerson ? "Your entry" : person.name).font(.headline)
+                Text(isCurrentPerson ? "Your diner entry" : person.name).font(.headline)
                 if person.id == visit.createdByID {
-                    Text("OUTING CREATOR").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+                    Text("Outing creator").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
                 }
                 Spacer()
                 if let rating {
-                    Label(rating.reaction.rawValue, systemImage: rating.reaction.symbol)
+                    Label(rating.reaction.title, systemImage: rating.reaction.symbol)
                         .font(.callout.weight(.semibold))
                         .foregroundStyle(BBTheme.oxblood)
                 }
             }
             if let rating {
                 if rating.hazyMemory {
-                    Label("Hazy memory · lightly weighted", systemImage: "cloud.fog")
+                    Label("Hazy memory · counts less", systemImage: "cloud.fog")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 10)], alignment: .leading, spacing: 10) {
-                    subrating("Value", rating.value)
-                    subrating("Service", rating.service)
-                    subrating("Atmosphere", rating.atmosphere)
+                if rating.value != nil || rating.service != nil || rating.atmosphere != nil {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 10)], alignment: .leading, spacing: 10) {
+                        if let value = rating.value { subrating("Value", value) }
+                        if let service = rating.service { subrating("Service", service) }
+                        if let atmosphere = rating.atmosphere { subrating("Atmosphere", atmosphere) }
+                    }
                 }
             } else {
                 Text(participationDescription(status))
@@ -154,7 +180,7 @@ struct VisitDetailView: View {
                         Spacer()
                         Image(systemName: entry.reaction.symbol)
                             .foregroundStyle(BBTheme.oxblood)
-                            .accessibilityLabel(entry.reaction.rawValue)
+                            .accessibilityLabel(entry.reaction.title)
                         if entry.wouldOrderAgain {
                             Image(systemName: "arrow.clockwise.circle.fill")
                                 .foregroundStyle(BBTheme.sage)
@@ -169,9 +195,13 @@ struct VisitDetailView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
-            if isCurrentPerson && rating == nil {
+            if !socialReactions.isEmpty || store.canReactWithCoon(to: person.id, in: visit) {
+                Divider()
+                coonReactionSection(for: person, reactions: socialReactions)
+            }
+            if isCurrentPerson && store.needsEntryResponse(for: visit, personID: person.id) {
                 Button { editingVisit = visit } label: {
-                    Label("Complete Your Entry", systemImage: "plus.circle.fill")
+                    Label("Complete your diner entry", systemImage: "plus.circle.fill")
                 }
                 .buttonStyle(SecondaryButtonStyle())
             }
@@ -179,31 +209,87 @@ struct VisitDetailView: View {
         .editorialCard(padding: 14)
     }
 
+    private func coonReactionSection(
+        for person: PersonEntity,
+        reactions: [DinerEntryReactionEntity]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Eyebrow("Sticker reactions")
+                Spacer()
+                if store.canReactWithCoon(to: person.id, in: visit) {
+                    let hasMine = store.myCoonReaction(to: person.id, in: visit) != nil
+                    Button {
+                        coonReactionTarget = .init(personID: person.id, personName: person.name)
+                    } label: {
+                        Label(hasMine ? "Change sticker" : "Add sticker", systemImage: "pawprint.fill")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(BBTheme.oxblood)
+                }
+            }
+
+            if reactions.isEmpty {
+                Text("No stickers yet.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(alignment: .top, spacing: 12) {
+                        ForEach(reactions) { reaction in
+                            VStack(spacing: 3) {
+                                CoonReactionArtwork(reaction: reaction.kind, size: 68)
+                                Text(reaction.kind.title)
+                                    .font(.caption2.weight(.semibold))
+                                    .multilineTextAlignment(.center)
+                                    .lineLimit(2)
+                                Text(reactionAuthorName(reaction))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            .frame(width: 104)
+                            .accessibilityElement(children: .combine)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func reactionAuthorName(_ reaction: DinerEntryReactionEntity) -> String {
+        if reaction.authorPersonID == store.currentPerson?.id { return "You" }
+        return store.person(id: reaction.authorPersonID)?.name ?? "Someone"
+    }
+
     private func participationDescription(_ status: VisitParticipationStatus?) -> String {
         switch status {
-        case .pending: "Waiting for their response"
-        case .declined: "Attended · chose not to rate"
-        case .attended: "Attended · no overall rating"
-        case .notThere: "Marked as not there"
-        case nil: "No overall rating"
+        case .pending: "No reaction yet"
+        case .declined: "Was there · no reaction"
+        case .attended: "Was there · no reaction yet"
+        case .notThere: "Was not there"
+        case nil: "No reaction yet"
         }
     }
 
     @ViewBuilder private func photosSection(_ photos: [PhotoEntity]) -> some View {
         if !photos.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
-                EditorialSectionHeader("Photos", eyebrow: "\(photos.count) \(photos.count == 1 ? "frame" : "frames")")
+                EditorialSectionHeader("Photos", eyebrow: "\(photos.count) \(photos.count == 1 ? "photo" : "photos")")
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(spacing: 6) {
                         ForEach(photos, id: \.objectID) { photo in
                             VStack(alignment: .leading, spacing: 4) {
-                                Button { selectedPhoto = photo } label: {
+                                Button {
+                                    selectedPhoto = PhotoViewerSnapshot(photo: photo)
+                                } label: {
                                     PhotoImage(photo: photo)
                                         .frame(width: 170, height: 150)
                                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                                 }
                                 .buttonStyle(.plain)
-                                .accessibilityLabel("Open meal photo")
+                                .accessibilityLabel("Open outing photo")
                                 Text(photoContributorName(photo))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -212,9 +298,9 @@ struct VisitDetailView: View {
                                 }
                             }
                             .contextMenu {
-                                if store.canEditPhoto(photo) {
-                                    Button("Remove My Photo", systemImage: "trash", role: .destructive) {
-                                        store.deletePhoto(photo)
+                                if photo.isAlive, store.canEditPhoto(photo) {
+                                    Button("Remove my photo", systemImage: "trash", role: .destructive) {
+                                        if photo.isAlive { store.deletePhoto(photo) }
                                     }
                                 }
                             }
@@ -226,9 +312,9 @@ struct VisitDetailView: View {
     }
 
     private func photoContributorName(_ photo: PhotoEntity) -> String {
-        guard let contributorID = photo.personID ?? photo.visit?.createdByID else { return "Added by a diner" }
+        guard let contributorID = photo.personID ?? photo.visit?.createdByID else { return "Added by someone else" }
         if contributorID == store.currentPerson?.id { return "Added by you" }
-        return "Added by \(store.person(id: contributorID)?.name ?? "a diner")"
+        return "Added by \(store.person(id: contributorID)?.name ?? "someone else")"
     }
 
     @ViewBuilder private var companions: some View {
@@ -249,11 +335,19 @@ struct VisitDetailView: View {
         }
     }
 
-    private func subrating(_ title: String, _ reaction: Reaction?) -> some View {
-        VStack(alignment: .leading, spacing: 2) { Text(title.uppercased()).font(.caption2.weight(.bold)).foregroundStyle(.secondary); Text(reaction?.compactTitle ?? "Not rated").font(.caption) }.frame(maxWidth: .infinity, alignment: .leading)
+    private func subrating(_ title: String, _ reaction: Reaction) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title.uppercased()).font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+            Text(reaction.compactTitle).font(.caption)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func deleteVisit() {
+        guard visit.isAlive else {
+            dismiss()
+            return
+        }
         pendingDeletionID = visit.id
         confirmDelete = false
         Task { @MainActor in
@@ -269,5 +363,114 @@ struct VisitDetailView: View {
             await Task.yield()
             store.deleteVisit(id: visitID)
         }
+    }
+}
+
+private struct CoonReactionTarget: Identifiable {
+    let personID: UUID
+    let personName: String
+    var id: UUID { personID }
+}
+
+@MainActor
+private struct CoonReactionPickerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(AppStore.self) private var store
+    let visit: VisitEntity
+    let target: CoonReactionTarget
+
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 3)
+
+    var body: some View {
+        Group {
+            if visit.isAlive {
+                pickerContent
+            } else {
+                ContentUnavailableView("Outing unavailable", systemImage: "fork.knife.circle")
+                    .task {
+                        await Task.yield()
+                        dismiss()
+                    }
+            }
+        }
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private var pickerContent: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("React to \(target.personName)")
+                            .font(BBTheme.display(30))
+                        Text("One sticker per person. Stickers are just for fun and never change a score.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    LazyVGrid(columns: columns, spacing: 12) {
+                        ForEach(CoonReaction.allCases) { reaction in
+                            Button { choose(reaction) } label: {
+                                VStack(spacing: 6) {
+                                    CoonReactionArtwork(reaction: reaction, size: 88)
+                                    Text(reaction.title)
+                                        .font(.caption.weight(.semibold))
+                                        .multilineTextAlignment(.center)
+                                        .lineLimit(2)
+                                        .minimumScaleFactor(0.8)
+                                }
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 9)
+                                .frame(maxWidth: .infinity, minHeight: 130, alignment: .top)
+                                .background(
+                                    selected == reaction ? BBTheme.oxblood.opacity(0.1) : BBTheme.surface,
+                                    in: RoundedRectangle(cornerRadius: BBTheme.Radius.control, style: .continuous)
+                                )
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: BBTheme.Radius.control, style: .continuous)
+                                        .stroke(selected == reaction ? BBTheme.oxblood : BBTheme.hairline, lineWidth: selected == reaction ? 2 : 1)
+                                }
+                            }
+                            .buttonStyle(.pressable)
+                            .accessibilityIdentifier("coon-reaction-\(reaction.rawValue)")
+                            .accessibilityValue(selected == reaction ? "Selected" : "Not selected")
+                        }
+                    }
+
+                    if selected != nil {
+                        Button("Remove my sticker", role: .destructive) { remove() }
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                }
+                .padding(BBTheme.Spacing.page)
+                .readablePageWidth()
+            }
+            .editorialPage()
+            .navigationTitle("Sticker Reaction")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+            }
+        }
+    }
+
+    private var selected: CoonReaction? {
+        guard visit.isAlive else { return nil }
+        return store.myCoonReaction(to: target.personID, in: visit)?.kind
+    }
+
+    private func choose(_ reaction: CoonReaction) {
+        guard visit.isAlive else { dismiss(); return }
+        guard store.setCoonReaction(reaction, to: target.personID, in: visit) else { return }
+        Haptics.selection()
+        dismiss()
+    }
+
+    private func remove() {
+        guard visit.isAlive else { dismiss(); return }
+        guard store.setCoonReaction(nil, to: target.personID, in: visit) else { return }
+        Haptics.selection()
+        dismiss()
     }
 }

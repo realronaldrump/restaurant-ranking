@@ -59,7 +59,7 @@ struct BeliImportView: View {
         VStack(spacing: 16) {
             ProgressView().controlSize(.large).tint(BBTheme.oxblood)
             Text(message).font(.headline).multilineTextAlignment(.center)
-            Text("The export stays on this device. Restaurant matching uses Apple Maps, and photo URLs are downloaded directly from Beli.")
+            Text("Your export stays on this device. Matching uses Apple Maps, and photos download from Beli.")
                 .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
         .padding(28)
@@ -70,10 +70,10 @@ struct BeliImportView: View {
             if let archive {
                 Section("Import preview") {
                     LabeledContent("Ranked restaurants", value: "\(archive.rankings.count)")
-                    LabeledContent("Known outing dates", value: "\(archive.knownVisitCount)")
-                    LabeledContent("Date unknown", value: "\(archive.unknownVisitCount)")
+                    LabeledContent("Outings with known dates", value: "\(archive.knownVisitCount)")
+                    LabeledContent("Outings with unknown dates", value: "\(archive.unknownVisitCount)")
                     LabeledContent("Photos", value: "\(archive.photos.count)")
-                    Text("Beli's rank will seed the initial order. Future ratings and comparisons can change it.")
+                    Text("Your Beli rank sets the starting order. Reactions and comparisons will change it from there.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
@@ -84,7 +84,7 @@ struct BeliImportView: View {
                                 Text("#\(row.rank) · \(row.restaurantName)").font(.headline)
                                 Spacer()
                                 if row.visitDates.isEmpty {
-                                    Text("DATE UNKNOWN").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+                                    Text("Date unknown").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
                                 }
                             }
                             Text(row.city).font(.caption).foregroundStyle(.secondary)
@@ -99,7 +99,7 @@ struct BeliImportView: View {
                 } header: {
                     Text("Review restaurant matches")
                 } footer: {
-                    Text("Choose separate locations for branches in the same city, or assign several Beli rows to the same existing/Maps restaurant to merge them.")
+                    Text("Pick separate restaurants for different branches, or point several rows at the same one to merge them.")
                 }
 
                 if !ambiguousPhotos.isEmpty {
@@ -118,12 +118,12 @@ struct BeliImportView: View {
                     Button {
                         Task { await importArchive(archive) }
                     } label: {
-                        Label("Download Photos and Import", systemImage: "square.and.arrow.down")
+                        Label("Download photos and import", systemImage: "square.and.arrow.down")
                             .frame(maxWidth: .infinity)
                     }
                     .disabled(resolutions.values.allSatisfy { $0 == .skip })
                 } footer: {
-                    Text("Importing again is safe: existing Beli records are linked or updated instead of duplicated. Failed photo downloads can be retried by importing the ZIP again.")
+                    Text("Importing again is safe — existing records are updated, not duplicated. Re-import to retry any photos that failed.")
                 }
             }
         }
@@ -164,7 +164,7 @@ struct BeliImportView: View {
         } description: {
             Text(message)
         } actions: {
-            Button("Try Again") { Task { await prepare() } }.buttonStyle(.borderedProminent)
+            Button("Try again") { Task { await prepare() } }.buttonStyle(.borderedProminent)
         }
     }
 
@@ -224,8 +224,9 @@ struct BeliImportView: View {
     }
 
     private func importArchive(_ archive: BeliParsedArchive) async {
-        status = .importing(archive.photos.isEmpty ? "Importing dining history…" : "Downloading and preparing Beli photos…")
-        let downloads = await BeliPhotoDownloader.download(archive.photos)
+        let photosToDownload = store.beliPhotosNeedingDownload(from: archive)
+        status = .importing(photosToDownload.isEmpty ? "Importing dining history…" : "Downloading and preparing Beli photos…")
+        let downloads = await BeliPhotoDownloader.download(photosToDownload)
         if Task.isCancelled { return }
         status = .importing("Saving dining history…")
         let request = BeliImportRequest(

@@ -41,7 +41,7 @@ enum SyncSnapshotBuilder {
         for person in people {
             add(try SyncPayloadCodec.record(.person, person.id, AppBackupArchive.PersonRecord(
                 id: person.id, name: person.name, isMe: person.isMe,
-                isCircleMember: person.isCircleMember, colorHex: person.colorHex,
+                isCircleMember: person.isCircleMember, isArchived: person.isArchived, colorHex: person.colorHex,
                 createdAt: person.createdAt, circleID: circleID
             )))
         }
@@ -113,6 +113,26 @@ enum SyncSnapshotBuilder {
                 hasWouldOrderAgain: rating.hasWouldOrderAgain, createdAt: rating.createdAt,
                 visitID: rating.visit?.id
             )))
+        }
+
+        // Social reactions to diner entries. They are separate records so a
+        // sticker authored by one member can never overwrite another member's
+        // ranking evidence during an offline merge.
+        let dinerEntryReactions: [DinerEntryReactionEntity] = try fetch(in: context, predicate: visitScope)
+        for reaction in dinerEntryReactions {
+            add(try SyncPayloadCodec.record(
+                .dinerEntryReaction,
+                reaction.id,
+                AppBackupArchive.DinerEntryReactionRecord(
+                    id: reaction.id,
+                    authorPersonID: reaction.authorPersonID,
+                    targetPersonID: reaction.targetPersonID,
+                    kind: reaction.kind,
+                    createdAt: reaction.createdAt,
+                    updatedAt: reaction.updatedAt,
+                    visitID: reaction.visit?.id
+                )
+            ))
         }
 
         // Dish entries
@@ -203,6 +223,8 @@ enum SyncError: LocalizedError, Equatable {
     case notSignedIn
     case circleKeyMissing
     case noActiveCircle
+    case deviceIdentityMissing
+    case deviceIdentityConflict
     case entityMismatch(String)
 
     var errorDescription: String? {
@@ -215,6 +237,10 @@ enum SyncError: LocalizedError, Equatable {
             "This iPhone does not hold the key for that circle. Ask somebody in it for a new join code."
         case .noActiveCircle:
             "Choose a circle before syncing."
+        case .deviceIdentityMissing:
+            "This iPhone could not determine which person owns its dining log. Your data is unchanged."
+        case .deviceIdentityConflict:
+            "This iPhone's saved person does not match the member profile assigned to its account. Sync stopped so one person's data cannot be assigned to somebody else."
         case let .entityMismatch(name):
             "A synced record did not match the local model for \(name)."
         }

@@ -43,7 +43,7 @@ struct MainTabView: View {
         case .log: HomeView()
         case .rankings: RankingsView()
         case .history: HistoryView()
-        case .want: WantToTryView()
+        case .settle: SettleScoreView { router.selectedTab = .rankings }
         case .more: MoreView()
         }
     }
@@ -63,15 +63,18 @@ private struct DestinationView: View {
     let route: AppRoute
     var body: some View {
         switch route {
-        case .location(let id):
-            if let location = store.locations.first(where: { $0.id == id }) { EstablishmentDetailView(location: location) }
-            else { ContentUnavailableView("Place not found", systemImage: "mappin.slash") }
+        case .location(let id, let rankingScope):
+            if let location = store.locations.first(where: { $0.id == id }) {
+                EstablishmentDetailView(location: location, rankingScope: rankingScope)
+            }
+            else { ContentUnavailableView("Restaurant not found", systemImage: "mappin.slash") }
         case .visit(let id):
             if let visit = store.visits.first(where: { $0.id == id }) { VisitDetailView(visit: visit) }
-            else { ContentUnavailableView("Visit not found", systemImage: "calendar.badge.exclamationmark") }
+            else { ContentUnavailableView("Outing not found", systemImage: "calendar.badge.exclamationmark") }
         case .atlas: DiningAtlasView()
         case .stats: StatsView()
         case .settleScore: SettleScoreView()
+        case .wantToTry: WantToTryView()
         case .backfill: BackfillView()
         case .settings: SettingsView()
         case .merge: MergeLocationsView()

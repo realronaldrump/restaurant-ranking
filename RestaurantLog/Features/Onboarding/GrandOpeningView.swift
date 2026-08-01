@@ -72,17 +72,15 @@ struct GrandOpeningView: View {
         .fileImporter(isPresented: $isImportingBackup, allowedContentTypes: [.restaurantLogBackup]) { result in
             importBackup(result)
         }
-        .confirmationDialog(
-            "Restore from backup?",
-            isPresented: $isShowingBackupRestoreConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button("Choose Backup and Replace Everything", role: .destructive) {
+        .editorialPrompt(isPresented: $isShowingBackupRestoreConfirmation) {
+            EditorialPrompt.destructive(
+                "Restore from backup?",
+                message: "The selected backup will replace every current dining log on this iPhone. Export anything you may need before continuing.",
+                actionTitle: "Choose backup and replace everything",
+                cancelTitle: "Cancel"
+            ) {
                 isImportingBackup = true
             }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("The selected backup will replace every current dining log on this iPhone. Export anything you may need before continuing.")
         }
     }
 
@@ -117,14 +115,14 @@ struct GrandOpeningView: View {
                 Spacer(minLength: 60)
                 ZStack {
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(BBTheme.oxblood)
+                        .fill(BBTheme.oxbloodFill)
                         .frame(width: 64, height: 64)
                     Image(systemName: "book.closed.fill")
                         .font(.title2)
-                        .foregroundStyle(BBTheme.paper)
+                        .foregroundStyle(BBTheme.cream)
                 }
                 VStack(alignment: .leading, spacing: 10) {
-                    Eyebrow("Your personal dining log")
+                    Eyebrow("Your dining log")
                     Text("Big Beautiful Restaurant Log")
                         .font(BBTheme.display(48)).minimumScaleFactor(0.62).lineSpacing(-3)
                     Text("Keep track of where you’ve eaten and where you’d go back.")
@@ -132,18 +130,18 @@ struct GrandOpeningView: View {
                 }
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 18) {
-                        principle("bolt.fill", "Fast logging", "Place and reaction")
-                        principle("lock.fill", "Private by design", "Encrypted end to end")
-                        principle("list.number", "Personal rankings", "Built from your choices")
+                        principle("bolt.fill", "Quick to log", "A restaurant and a reaction")
+                        principle("lock.fill", "Private", "Encrypted end to end")
+                        principle("list.number", "Your ranking", "Built from your reactions")
                     }
                     VStack(alignment: .leading, spacing: 12) {
-                        principle("bolt.fill", "Fast logging", "Place and reaction")
-                        principle("lock.fill", "Private by design", "Encrypted end to end")
-                        principle("list.number", "Personal rankings", "Built from your choices")
+                        principle("bolt.fill", "Quick to log", "A restaurant and a reaction")
+                        principle("lock.fill", "Private", "Encrypted end to end")
+                        principle("list.number", "Your ranking", "Built from your reactions")
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                Button("Get Started") { page = 1 }
+                Button("Get started") { page = 1 }
                     .buttonStyle(PrimaryButtonStyle())
                 Text("No ads, no feed, no public profile. Only you can read your log.")
                     .font(.footnote)
@@ -162,48 +160,57 @@ struct GrandOpeningView: View {
             VStack(alignment: .leading, spacing: 24) {
                 pageHeading(
                     number: "01",
-                    title: "Make it yours",
-                    detail: "Your name goes on the meals you log, and your account keeps them safe. You can add the people you dine with later."
+                    title: "Your name",
+                    detail: "Your name goes on the outings you log. You can add the people you dine with later."
                 )
                 VStack(spacing: 0) {
                     editorialField("Your name", text: $myName)
                 }
                 .editorialCard(padding: 0)
+                if nameIsEmpty {
+                    Label("Enter your name above to continue.", systemImage: "info.circle")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Name required. Enter your name above to continue.")
+                        .accessibilityIdentifier("onboarding-name-required")
+                }
                 if sync.isConfigured {
                     signInStep
                 } else {
                     Button("Continue") { continueFromName() }
                         .buttonStyle(PrimaryButtonStyle())
                         .disabled(nameIsEmpty)
+                        .accessibilityHint(nameIsEmpty ? "Enter your name above to continue" : "Continues to import options")
                 }
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Dining with somebody who already uses this?").font(.callout.weight(.semibold))
-                    Text("Join them with their code and you will share one log, each keeping your own reactions and rankings.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Button("Join With a Code") {
-                        store.bootstrap(myName: myName)
-                        isJoining = true
+                if sync.isConfigured {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Someone already using this app?").font(.callout.weight(.semibold))
+                        Text(CircleJoinDisclosure(store: store).onboardingDisclosure)
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button("Join with a code") {
+                            store.bootstrap(myName: myName)
+                            isJoining = true
+                        }
+                        .buttonStyle(SecondaryButtonStyle())
+                        .disabled(nameIsEmpty || isSigningIn)
+                        .accessibilityHint(nameIsEmpty ? "Enter your name above to continue" : "Opens the invitation code form")
                     }
-                    .buttonStyle(SecondaryButtonStyle())
-                    .disabled(nameIsEmpty || isSigningIn)
+                    .editorialCard()
                 }
-                .editorialCard()
             }
             .padding(24).padding(.bottom, 12).readablePageWidth()
         }
         .scrollDismissesKeyboard(.interactively)
     }
 
-    /// Signing in is the step, not a suggestion: the log lives in the account,
-    /// which is what makes it survive a lost phone and what makes sharing it
-    /// possible at all. The way past this without an account only appears if
-    /// Apple's sign-in actually fails, so a person is never stranded in setup.
+    /// Signing in protects the log across devices and enables encrypted sharing,
+    /// but a person can continue locally and sign in later from Settings.
     private var signInStep: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Eyebrow("Your account")
+            Eyebrow("Back up your log")
             Text("Sign in to keep your log")
                 .font(.headline)
-            Text("Your dining history is encrypted on this iPhone and kept in your account, so a lost or replaced phone never takes it with it. Signing in is also what lets you share a log with somebody you dine with.")
+            Text("Signing in encrypts your log on this iPhone and keeps a copy safe if you lose your phone. It also lets you share your log with a circle.")
                 .font(.callout).foregroundStyle(.secondary)
             Button {
                 signInAndContinue()
@@ -217,26 +224,18 @@ struct GrandOpeningView: View {
             .buttonStyle(PrimaryButtonStyle())
             .disabled(nameIsEmpty || isSigningIn)
             .accessibilityIdentifier("onboarding-sign-in-button")
+            .accessibilityHint(nameIsEmpty ? "Enter your name above to continue" : "Signs in, then continues to import options")
             if let signInError {
                 Text(signInError).font(.caption).foregroundStyle(BBTheme.oxblood)
             }
-            if canContinueWithoutAccount {
-                Button("Continue Without an Account") { continueFromName() }
-                    .buttonStyle(SecondaryButtonStyle())
-                    .disabled(nameIsEmpty)
-                Text("Your log stays on this iPhone until you sign in from Settings, and uploads itself as soon as you do.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+            Button("Continue without signing in") { continueFromName() }
+                .buttonStyle(SecondaryButtonStyle())
+                .disabled(nameIsEmpty)
+                .accessibilityHint(nameIsEmpty ? "Enter your name above to continue" : "Keeps this log on this iPhone and continues")
+            Text("Your log stays on this iPhone until you sign in from Settings.")
+                .font(.caption).foregroundStyle(.secondary)
         }
         .editorialCard()
-    }
-
-    /// Signing in is the way through this step. The way past it appears only
-    /// when Apple's sign-in has actually failed — nobody should be stuck in
-    /// setup because a service was unreachable — and in UI tests, which cannot
-    /// drive the system sign-in sheet.
-    private var canContinueWithoutAccount: Bool {
-        signInError != nil || ProcessInfo.processInfo.arguments.contains("-resetForUITests")
     }
 
     private func continueFromName() {
@@ -265,16 +264,16 @@ struct GrandOpeningView: View {
     private var importPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                pageHeading(number: "02", title: "Bring your history", detail: "Restore a complete Big Beautiful backup, import Beli's ZIP export, or start fresh.")
+                pageHeading(number: "02", title: "Bring your history", detail: "Restore a backup, import a Beli export, or start fresh.")
                 VStack(spacing: 0) {
                     Button { isShowingBackupRestoreConfirmation = true } label: {
                         VStack(alignment: .leading, spacing: 5) {
                             Label(
-                                isProcessingImport ? "Importing…" : "Restore a Full Backup",
+                                isProcessingImport ? "Importing…" : "Restore a full backup",
                                 systemImage: isProcessingImport ? "hourglass" : "arrow.down.doc"
                             )
                             .font(.headline)
-                            Text("Restores every circle, rating, ranking, dish, and photo.")
+                            Text("Restores every reaction, ranking, dish, and photo.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading).padding(20)
@@ -284,9 +283,9 @@ struct GrandOpeningView: View {
                     Divider()
                     Button { isImporting = true } label: {
                         VStack(alignment: .leading, spacing: 5) {
-                            Label("Import a Beli ZIP Export", systemImage: "archivebox")
+                            Label("Import a Beli ZIP export", systemImage: "archivebox")
                                 .font(.headline)
-                            Text("Reviews restaurant matches, preserves rank order and unknown dates, and downloads your Beli photos.")
+                            Text("Review the restaurant matches. Your rank order stays intact, and your photos are downloaded.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading).padding(20)
@@ -301,7 +300,7 @@ struct GrandOpeningView: View {
                 }
                 VStack(alignment: .leading, spacing: 10) {
                     Label("Files are processed on this device", systemImage: "lock.shield")
-                    Text("The selected file is left unchanged. Restored records stay on this iPhone and are published through encrypted circle syncing only for circles where syncing is enabled.")
+                    Text("Your file is left unchanged. Restored records stay on this iPhone unless you have syncing turned on.")
                         .font(.callout).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -310,7 +309,7 @@ struct GrandOpeningView: View {
                 HStack {
                     Button("Back") { page = 1 }.buttonStyle(.borderless)
                     Spacer()
-                    Button(restoredBackup ? "Backup restored. Continue" : (importedCount > 0 ? "Imported \(importedCount). Continue" : "Continue without import")) { page = 3 }
+                    Button(restoredBackup ? "Backup restored. Continue" : (importedCount > 0 ? "Imported \(importedCount). Continue" : "Continue without importing")) { page = 3 }
                         .font(.headline)
                         .disabled(isProcessingImport)
                 }
@@ -333,9 +332,9 @@ struct GrandOpeningView: View {
                 }
                 Eyebrow("Setup complete")
                 Text("Your restaurant log is ready.").font(BBTheme.display(36)).multilineTextAlignment(.center)
-                Text("Log a place and choose a reaction. You can add details or compare places later.")
+                Text("Pick a restaurant and a reaction. Details and comparisons can come later.")
                     .font(.title3).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 520)
-                Button("Open Restaurant Log") { finish(useSample: false) }.buttonStyle(PrimaryButtonStyle())
+                Button("Open restaurant log") { finish(useSample: false) }.buttonStyle(PrimaryButtonStyle())
                 if store.locations.isEmpty {
                     Button("Preview with a sample Salt Lake log") { finish(useSample: true) }
                         .font(.callout.weight(.semibold))
@@ -350,14 +349,14 @@ struct GrandOpeningView: View {
     private var calibration: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                pageHeading(number: "03", title: "Set up your first ranking", detail: "Add a few familiar places, then answer as many comparisons as you like.")
+                pageHeading(number: "03", title: "Your first ranking", detail: "Add a few restaurants you know, then answer as many comparisons as you like.")
                 if store.locations.count < 2 {
                     VStack(alignment: .leading, spacing: 14) {
                         Eyebrow("Quick add")
-                        Text("Name up to three places you already know.").font(BBTheme.display(24))
+                        Text("Name up to three restaurants you know.").font(BBTheme.display(24))
                         ForEach(seedNames.indices, id: \.self) { index in
                             HStack(spacing: 12) {
-                                TextField("Establishment \(index + 1)", text: $seedNames[index])
+                                TextField("Restaurant \(index + 1)", text: $seedNames[index])
                                     .textInputAutocapitalization(.words)
                                 Picker("Reaction", selection: $seedReactions[index]) {
                                     ForEach(Reaction.allCases) { Label($0.compactTitle, systemImage: $0.symbol).tag($0) }
@@ -368,12 +367,16 @@ struct GrandOpeningView: View {
                             .padding(.vertical, 4)
                             if index < seedNames.count - 1 { Divider() }
                         }
-                        Button("Add Places") { seedQuickPlaces() }.buttonStyle(PrimaryButtonStyle())
+                        Button("Add restaurants") { seedQuickPlaces() }.buttonStyle(PrimaryButtonStyle())
                     }.editorialCard()
                 } else if calibrationPairs.isEmpty, !openingAnchorAnswered, let location = pendingOpeningAnchorLocation {
                     VStack(spacing: 12) {
-                        Eyebrow("Score check")
+                        Eyebrow("Settle the Score")
                         Text("Which statement best fits \(location.name)?").font(BBTheme.display(27)).multilineTextAlignment(.center)
+                        Text("Pick the one that comes closest.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
                         ForEach(ScoreAnchor.ladder) { anchor in
                             Button {
                                 store.recordAnchor(for: location, value: anchor.score)
@@ -388,18 +391,23 @@ struct GrandOpeningView: View {
                     let question = calibrationPairs[calibrationIndex]
                     VStack(spacing: 15) {
                         Eyebrow("Comparison \(calibrationIndex + 1) of \(calibrationPairs.count)")
-                        Text("Which would you rather revisit tonight?").font(BBTheme.display(27)).multilineTextAlignment(.center)
+                        Text("Which would you rather go back to?").font(BBTheme.display(27)).multilineTextAlignment(.center)
                         calibrationChoice(question.a, outcome: .a, question: question)
                         Text("OR").font(.caption2.weight(.bold)).tracking(2).foregroundStyle(.secondary)
                         calibrationChoice(question.b, outcome: .b, question: question)
-                        Button("Too Close to Call") { answerCalibration(.tie, question: question) }.buttonStyle(SecondaryButtonStyle())
+                        Button("Too close to call") { answerCalibration(.tie, question: question) }
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(minHeight: 44)
+                            .buttonStyle(.plain)
+                            .accessibilityHint("Records these restaurants as roughly even")
                         Button("Skip") { calibrationIndex += 1 }.frame(minHeight: 44)
                     }.editorialCard()
                 } else {
                     VStack(spacing: 12) {
                         Image(systemName: "checkmark.seal.fill").font(.system(size: 38, weight: .light)).foregroundStyle(BBTheme.oxblood)
                         Text("Your first ranking is ready.").font(BBTheme.display(27))
-                        Text("You can compare places anytime from More.").font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                        Text("You can compare restaurants anytime from the Settle tab.").font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     }.frame(maxWidth: .infinity).editorialCard()
                 }
                 HStack {
@@ -436,7 +444,10 @@ struct GrandOpeningView: View {
                 Text(detail).font(.caption).foregroundStyle(.secondary)
             }
         }
-        .frame(maxWidth: 180, alignment: .leading)
+        // Keep the horizontal variant honest: on compact screens each principle
+        // needs enough room to remain readable, so ViewThatFits chooses the
+        // full-width vertical layout instead of compressing three narrow columns.
+        .frame(minWidth: 180, maxWidth: .infinity, alignment: .leading)
     }
 
     private func editorialField(_ title: String, text: Binding<String>, prompt: String? = nil) -> some View {
@@ -462,14 +473,49 @@ struct GrandOpeningView: View {
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             let archive = try await Task.detached(priority: .userInitiated) {
-                let data = try Data(contentsOf: url, options: .mappedIfSafe)
+                let data = try AppBackupCodec.readBackupData(from: url)
                 return try AppBackupCodec.decode(data)
             }.value
             try Task.checkCancellation()
+
+            var liveEnrollment: (circleID: UUID, circleName: String, personID: UUID, personName: String)?
+            if sync.isConfigured, sync.isSignedIn, let circle = store.activeCircle {
+                if let membership = try await sync.authenticatedMembership(circleID: circle.id) {
+                    guard sync.hasKey(circleID: circle.id) else { throw SyncError.circleKeyMissing }
+                    liveEnrollment = (
+                        circle.id,
+                        circle.name,
+                        membership.personID,
+                        store.person(id: membership.personID)?.name ?? store.currentPerson?.name ?? "Me"
+                    )
+                }
+                await sync.prepareForBackupRestore(circleID: circle.id)
+            }
+
+            let commitHandler = store.didCommit
+            store.didCommit = nil
+            defer { store.didCommit = commitHandler }
             let summary = try await AppBackupService.restore(archive, into: store)
+            if let liveEnrollment {
+                guard store.reconnectRestoredLog(
+                    to: liveEnrollment.circleID,
+                    circleName: liveEnrollment.circleName,
+                    memberPersonID: liveEnrollment.personID,
+                    fallbackPersonName: liveEnrollment.personName
+                ) else {
+                    throw SyncError.deviceIdentityMissing
+                }
+            }
+            if sync.isConfigured, sync.isSignedIn,
+               let circle = store.activeCircle, let personID = store.currentPerson?.id {
+                let activation = await sync.activate(circleID: circle.id, name: circle.name, personID: personID)
+                guard case let .ready(serverPersonID) = activation, serverPersonID == personID else {
+                    throw SyncError.deviceIdentityMissing
+                }
+            }
             importedCount = summary.visits
             restoredBackup = true
-            importMessage = "Restored \(summary.visits) visits, \(summary.locations) restaurants, and \(summary.photos) photos."
+            importMessage = "Restored \(summary.visits) outings, \(summary.locations) restaurants, and \(summary.photos) photos."
             Haptics.success()
         } catch {
             importMessageIsError = true
@@ -490,8 +536,7 @@ struct GrandOpeningView: View {
             for index in seedNames.indices {
                 let name = seedNames[index].trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !name.isEmpty else { continue }
-                let location = store.createLocation(name: name, category: DiningCategory.suggested(for: name))
-                _ = store.logVisit(at: location, reaction: seedReactions[index], date: .now.addingTimeInterval(Double(-index) * 60))
+                store.seedFamiliarRestaurant(name: name, reaction: seedReactions[index])
             }
         }
         prepareCalibration()
@@ -511,9 +556,27 @@ struct GrandOpeningView: View {
 
     private func calibrationChoice(_ location: RestaurantLocation, outcome: ComparisonOutcome, question: ComparisonQuestion) -> some View {
         Button { answerCalibration(outcome, question: question) } label: {
-            HStack { Image(systemName: location.category.symbol); Text(location.name).font(BBTheme.display(21)); Spacer(); if let score = store.score(for: location) { Text(score.displayScore).font(BBTheme.score(20)) } }
-                .padding(16).foregroundStyle(BBTheme.paper).background(BBTheme.oxblood)
-        }.buttonStyle(.pressable)
+            HStack(spacing: 12) {
+                Image(systemName: location.category.symbol)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(location.name)
+                        .font(BBTheme.display(21))
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(location.category.shortTitle)
+                        .font(.caption)
+                        .foregroundStyle(BBTheme.cream.opacity(0.72))
+                }
+                .layoutPriority(1)
+                Spacer(minLength: 0)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, minHeight: 68, alignment: .leading)
+            .foregroundStyle(BBTheme.cream)
+            .background(BBTheme.oxbloodFill, in: RoundedRectangle(cornerRadius: BBTheme.Radius.control, style: .continuous))
+        }
+        .buttonStyle(.pressable)
+        .accessibilityLabel("\(location.name), \(location.category.shortTitle)")
     }
 
     private func answerCalibration(_ outcome: ComparisonOutcome, question: ComparisonQuestion) {

@@ -26,7 +26,7 @@ struct BackfillView: View {
                 if clusters.isEmpty { introduction } else if index < clusters.count { confirmationCard(clusters[index]) } else { completion }
             }.padding(18).padding(.bottom, 28).readablePageWidth()
         }
-        .editorialPage().navigationTitle("Backfill").navigationBarTitleDisplayMode(.inline)
+        .editorialPage().navigationTitle("Find Outings in Photos").navigationBarTitleDisplayMode(.inline)
         .onChange(of: selectedItems) { _, items in if !items.isEmpty { Task { await loadSelected(items) } } }
         .sheet(item: $pendingRatingVisit, onDismiss: { advance() }) { visit in
             BackfillRatingView(visit: visit)
@@ -35,18 +35,18 @@ struct BackfillView: View {
 
     private var introduction: some View {
         VStack(alignment: .leading, spacing: 22) {
-            VStack(alignment: .leading, spacing: 8) { Eyebrow("Add past visits"); Text("Find meals in your photos").font(BBTheme.display(38)); Text("Choose photos, then confirm the restaurant. Nothing is added until you approve it.").foregroundStyle(.secondary) }
+            VStack(alignment: .leading, spacing: 8) { Eyebrow("Add past outings"); Text("Find outings in your photos").font(BBTheme.display(38)); Text("Choose photos, then confirm the restaurant. Nothing is added until you approve it.").foregroundStyle(.secondary) }
             VStack(alignment: .leading, spacing: 15) {
                 Eyebrow("Recommended")
                 Text("Choose specific photos").font(BBTheme.display(25))
-                Text("The standard picker grants access only to what you select. No library permission is needed.").font(.callout).foregroundStyle(.secondary)
+                Text("The picker only shares the photos you choose. No library access needed.").font(.callout).foregroundStyle(.secondary)
                 PhotosPicker(
                     selection: $selectedItems,
                     maxSelectionCount: BackfillImportPolicy.maxPhotoCount,
                     matching: .images,
                     preferredItemEncoding: .current
                 ) {
-                    Label("Choose Meal Photos", systemImage: "photo.badge.plus").frame(maxWidth: .infinity)
+                    Label("Choose outing photos", systemImage: "photo.badge.plus").frame(maxWidth: .infinity)
                 }
                 .buttonStyle(PrimaryButtonStyle())
             }.editorialCard()
@@ -56,7 +56,7 @@ struct BackfillView: View {
                 Text("This scans photos on your device and requires Photo Library access.").font(.callout).foregroundStyle(.secondary)
                 DatePicker("From", selection: $startDate, displayedComponents: .date)
                 DatePicker("Through", selection: $endDate, in: startDate..., displayedComponents: .date)
-                Button { Task { await scanLibrary() } } label: { Label("Scan This Range", systemImage: "calendar.badge.magnifyingglass") }.buttonStyle(SecondaryButtonStyle())
+                Button { Task { await scanLibrary() } } label: { Label("Scan this range", systemImage: "calendar.badge.magnifyingglass") }.buttonStyle(SecondaryButtonStyle())
             }.editorialCard()
             if isProcessing { HStack { ProgressView(); Text("Reading photo dates and locations…") }.font(.callout) }
             if let errorMessage { Label(errorMessage, systemImage: "exclamationmark.triangle.fill").font(.callout).foregroundStyle(BBTheme.oxblood) }
@@ -69,11 +69,11 @@ struct BackfillView: View {
             confirmationProgress
             photoStrip(cluster.photos)
             Text("\(cluster.photos.count) \(cluster.photos.count == 1 ? "photo" : "photos") from \(cluster.date.formatted(date: .long, time: .shortened))").font(BBTheme.display(24))
-            if cluster.coordinate == nil { Text("These selected copies did not include coordinates. Search for the place below.").font(.callout).foregroundStyle(.secondary) }
+            if cluster.coordinate == nil { Text("These photos have no location. Search for the restaurant below.").font(.callout).foregroundStyle(.secondary) }
             searchField
             candidateList(for: cluster)
             confirmationActions
-            Text("Confirming adds an unrated visit at the photo’s date and time. You can rate it now or later.").font(.footnote).foregroundStyle(.secondary)
+            Text("This adds an outing at the photo’s date and time. You can react now or later.").font(.footnote).foregroundStyle(.secondary)
         }
         .task(id: "\(index)-\(query)") {
             try? await Task.sleep(for: .milliseconds(query.isEmpty ? 10 : 260))
@@ -124,7 +124,7 @@ struct BackfillView: View {
     private var searchField: some View {
         HStack {
             Image(systemName: "magnifyingglass")
-            TextField("Search nearby establishments", text: $query)
+            TextField("Search nearby restaurants", text: $query)
             if !query.isEmpty {
                 Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
             }
@@ -143,7 +143,7 @@ struct BackfillView: View {
         VStack(alignment: .leading, spacing: 7) {
             Eyebrow("Which was it?")
             if candidates.isEmpty {
-                Text(locationService.isSearching ? "Looking for nearby food establishments…" : "Search above to find the place.")
+                Text(locationService.isSearching ? "Looking for nearby restaurants…" : "Search above to find the restaurant.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 12)
@@ -177,7 +177,7 @@ struct BackfillView: View {
 
     private var confirmationActions: some View {
         HStack {
-            Button("Not a Meal", role: .destructive) { rejected += 1; advance() }
+            Button("Not an outing", role: .destructive) { rejected += 1; advance() }
                 .frame(minHeight: 44)
             Spacer()
             Button("Skip") { advance() }
@@ -189,15 +189,15 @@ struct BackfillView: View {
         VStack(spacing: 18) {
             Spacer(minLength: 60); Image(systemName: "photo.stack.fill").font(.system(size: 55, weight: .light)).foregroundStyle(BBTheme.oxblood)
             Eyebrow("Finished")
-            Text("Backfill complete").font(BBTheme.display(36)).multilineTextAlignment(.center)
-            Text("\(importedVisits) visits added · \(rejected) skipped").foregroundStyle(.secondary).multilineTextAlignment(.center)
-            Button("Scan More Photos") { clusters = []; index = 0; selectedItems = []; candidates = []; importedVisits = 0; rejected = 0 }.buttonStyle(PrimaryButtonStyle())
+            Text("Photo search complete").font(BBTheme.display(36)).multilineTextAlignment(.center)
+            Text("\(importedVisits) outings added · \(rejected) skipped").foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Button("Scan more photos") { clusters = []; index = 0; selectedItems = []; candidates = []; importedVisits = 0; rejected = 0 }.buttonStyle(PrimaryButtonStyle())
             Spacer(minLength: 40)
         }.frame(maxWidth: .infinity)
     }
 
     private var privacyNote: some View {
-        VStack(alignment: .leading, spacing: 7) { Label("Photo privacy", systemImage: "lock.shield.fill").font(.headline); Text("Originals are unchanged. Saved copies have GPS metadata removed. Apple Maps receives coordinates only when you search for a place.").font(.callout).foregroundStyle(.secondary) }.padding(.vertical, 8)
+        VStack(alignment: .leading, spacing: 7) { Label("Photo privacy", systemImage: "lock.shield.fill").font(.headline); Text("Your originals are unchanged, and saved copies have their location removed. Apple Maps only sees a coordinate when you search.").font(.callout).foregroundStyle(.secondary) }.padding(.vertical, 8)
     }
 
     private func loadSelected(_ items: [PhotosPickerItem]) async {
@@ -207,7 +207,7 @@ struct BackfillView: View {
         clusters = ImageSanitizer.clusters(photos); index = 0; isProcessing = false
         let skippedCount = selected.count - photos.count
         if clusters.isEmpty {
-            errorMessage = "The selected photos did not include readable original capture dates. Try Scan a Date Range so Photos can provide the dates directly."
+            errorMessage = "These photos have no readable date. Try scanning a date range instead."
         } else if skippedCount > 0 {
             errorMessage = "Skipped \(skippedCount) \(skippedCount == 1 ? "photo" : "photos") without a readable original capture date."
         }
@@ -221,10 +221,21 @@ struct BackfillView: View {
     }
 
     private func confirm(_ cluster: BackfillCluster, candidate: PlaceCandidate) {
+        guard let personID = store.resolveLoggingPersonID() else {
+            errorMessage = AppStore.missingLoggingIdentityMessage
+            store.reportError(AppStore.missingLoggingIdentityMessage)
+            return
+        }
         let visit = store.performBatch {
             let location = store.createLocation(name: candidate.name, category: candidate.suggestedCategory, address: candidate.address, city: candidate.city, coordinate: (candidate.latitude, candidate.longitude), phone: candidate.phone, url: candidate.url, sourceIdentifier: candidate.id, cuisines: candidate.cuisines)
             let visitCoordinate = cluster.coordinate.map { ($0.latitude, $0.longitude) }
-            let visit = store.logVisit(at: location, reaction: nil, date: cluster.date, coordinate: visitCoordinate)
+            let visit = store.logVisit(
+                at: location,
+                reaction: nil,
+                personID: personID,
+                date: cluster.date,
+                coordinate: visitCoordinate
+            )
             for photo in cluster.photos {
                 store.addPhoto(
                     fullData: photo.fullData,
@@ -274,25 +285,42 @@ private struct BackfillRatingView: View {
     @State private var hazy = false
 
     var body: some View {
+        Group {
+            if visit.isAlive {
+                ratingContent
+            } else {
+                ContentUnavailableView("Outing unavailable", systemImage: "fork.knife.circle")
+                    .task {
+                        await Task.yield()
+                        dismiss()
+                    }
+            }
+        }
+    }
+
+    private var ratingContent: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    Eyebrow("Past visit")
-                    Text(visit.location?.name ?? "Meal").font(BBTheme.display(35))
+                    Eyebrow("Past outing")
+                    Text(visit.location?.name ?? "Outing").font(BBTheme.display(35))
                     Text(visit.dateKnowledge == .known ? visit.date.formatted(date: .complete, time: .shortened) : "Date unknown").foregroundStyle(.secondary)
                     Text("How clearly do you remember it?").font(BBTheme.display(24))
                     ReactionPicker(selected: reaction) { reaction = $0 }
-                    Toggle("Hazy memory · weight this lightly", isOn: $hazy)
-                    Button("Save Rating") { save() }.buttonStyle(PrimaryButtonStyle()).disabled(reaction == nil)
-                    Button("Leave This Visit Unrated") { dismiss() }.frame(maxWidth: .infinity).frame(minHeight: 48)
-                    Text("An unrated visit still counts fully in history and not at all in rankings.").font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: .infinity)
+                    Toggle("Hazy memory · count it less", isOn: $hazy)
+                    Button("Save reaction") { save() }.buttonStyle(PrimaryButtonStyle()).disabled(reaction == nil)
+                    Button("Leave without a reaction") { dismiss() }.frame(maxWidth: .infinity).frame(minHeight: 48)
+                    Text("An outing without a reaction shows in history but not in rankings.").font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: .infinity)
                 }.padding(20).readablePageWidth()
-            }.editorialPage().navigationTitle("Backfill Rating").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Unrated") { dismiss() } } }
+            }.editorialPage().navigationTitle("Past Outing Reaction").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("No reaction") { dismiss() } } }
         }
     }
     private func save() {
-        guard let reaction, let personID = store.currentPerson?.id else { return }
+        guard visit.isAlive, let reaction, let personID = store.currentPerson?.id else {
+            dismiss()
+            return
+        }
         _ = store.addRating(to: visit, personID: personID, reaction: reaction, hazy: hazy)
         Haptics.success(); dismiss()
     }

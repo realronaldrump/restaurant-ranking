@@ -49,7 +49,7 @@ struct VisitDetailView: View {
         .editorialPage().navigationTitle("Outing").navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button(store.canEditOuting(visit) ? "Edit outing" : "Edit your diner entry") {
+                Button(store.canEditOuting(visit) ? "Edit outing" : "Edit") {
                     if visit.isAlive { editingVisit = visit }
                 }
             }

@@ -2,6 +2,8 @@ import SwiftUI
 
 @MainActor
 struct SettleScoreView: View {
+    private static let roundSize = 5
+
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -10,6 +12,9 @@ struct SettleScoreView: View {
     @State private var index = 0
     @State private var answered = 0
     @State private var isReady = false
+    @State private var hasMorePrompts = false
+    @State private var isShowingCompletion = false
+    @State private var didLoadInitialRound = false
     /// What each answered question recorded, so going back can withdraw it.
     /// A skipped question records nothing and stores `nil`, which keeps the
     /// stack aligned with the questions the person actually moved through.
@@ -23,21 +28,28 @@ struct SettleScoreView: View {
         ZStack {
             PaperBackground()
             if !isReady { ProgressView().tint(BBTheme.oxblood) }
+            else if isShowingCompletion { complete }
             else if prompts.isEmpty { empty }
-            else if index >= prompts.count { complete }
             else { promptView(prompts[index]) }
         }
         .navigationTitle("Settle the Score").navigationBarTitleDisplayMode(.inline)
-        .task { buildPrompts(); isReady = true }
+        .onAppear { refreshIfIdle() }
+        .onChange(of: store.revision) { _, _ in refreshIfIdle() }
+        .task {
+            guard !didLoadInitialRound else { return }
+            didLoadInitialRound = true
+            loadRound()
+        }
     }
 
     private var empty: some View {
         EmptyLogView(
-            title: "All settled",
+            title: "All caught up",
             message: "Your ranking is up to date. New reactions will bring more questions.",
             symbol: "checkmark.seal"
         )
             .padding(20)
+            .accessibilityIdentifier("settle-all-caught-up")
     }
 
     @ViewBuilder
@@ -142,6 +154,7 @@ struct SettleScoreView: View {
                     Text(location.category.shortTitle)
                         .font(.caption)
                         .foregroundStyle(BBTheme.cream.opacity(0.72))
+                    RestaurantPickerMetadata(location: location)
                 }
                 .layoutPriority(1)
                 Spacer(minLength: 0)
@@ -152,12 +165,60 @@ struct SettleScoreView: View {
                 .background(BBTheme.oxbloodFill, in: RoundedRectangle(cornerRadius: BBTheme.Radius.card, style: .continuous))
         }
         .buttonStyle(.pressable)
-        .accessibilityLabel("\(location.name), \(location.category.shortTitle)")
+        .accessibilityLabel(location.pickerAccessibilityLabel)
     }
 
     private var complete: some View {
         ScrollView {
-            VStack(spacing: 19) { Image(systemName: "checkmark.seal.fill").font(.system(size: 58, weight: .light)).foregroundStyle(BBTheme.oxblood); Eyebrow("Done"); Text("Ranking updated").font(BBTheme.display(36)).multilineTextAlignment(.center); Text("\(answered) \(answered == 1 ? "answer" : "answers") added.").foregroundStyle(.secondary).multilineTextAlignment(.center); Button("Done") { finish() }.buttonStyle(PrimaryButtonStyle()) }.padding(24).readablePageWidth()
+            VStack(spacing: 19) {
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.system(size: 58, weight: .light))
+                    .foregroundStyle(BBTheme.oxblood)
+                    .accessibilityHidden(true)
+                Eyebrow(hasMorePrompts ? "Round complete" : "All settled")
+                Text(hasMorePrompts ? "Keep the momentum going" : "Ranking updated")
+                    .font(BBTheme.display(36))
+                    .multilineTextAlignment(.center)
+                Text("\(answered) of \(prompts.count) answered this round.")
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+
+                if hasMorePrompts {
+                    Text("More close calls are ready whenever you are. Keep the next round short, or take a break and come back later.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 2)
+
+                    Button {
+                        startNextRound()
+                    } label: {
+                        Label("Keep settling", systemImage: "arrow.right")
+                    }
+                    .buttonStyle(PrimaryButtonStyle())
+                    .accessibilityIdentifier("settle-continue-button")
+                    .accessibilityHint("Starts another round with up to five questions")
+
+                    Button("Done for now") { finish() }
+                        .buttonStyle(SecondaryButtonStyle())
+                        .accessibilityIdentifier("settle-done-button")
+                        .accessibilityHint("Leaves settling and returns to your rankings")
+                } else {
+                    Text("Your ranking is up to date. New reactions will bring more questions.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 2)
+
+                    Button("Done") { finish() }
+                        .buttonStyle(PrimaryButtonStyle())
+                        .accessibilityIdentifier("settle-done-button")
+                }
+            }
+            .padding(24)
+            .readablePageWidth()
         }
     }
     private func answer(_ outcome: ComparisonOutcome, question: ComparisonQuestion) {
@@ -169,8 +230,17 @@ struct SettleScoreView: View {
 
     private func advance(recording recordedID: UUID? = nil) {
         recordedAnswers.append(recordedID)
-        if reduceMotion { index += 1 }
-        else { withAnimation(.snappy) { index += 1 } }
+        let nextIndex = index + 1
+        if reduceMotion { index = nextIndex }
+        else { withAnimation(.snappy) { index = nextIndex } }
+
+        // Keep the current round stable. Only check for another batch after
+        // the last prompt has been completed, so a ranking reorder cannot make
+        // the question sequence jump underneath somebody.
+        if nextIndex >= prompts.count {
+            hasMorePrompts = !store.settleScorePrompts(limit: 1).isEmpty
+            isShowingCompletion = true
+        }
     }
 
     private var canGoBack: Bool { index > 0 && !recordedAnswers.isEmpty }
@@ -204,16 +274,104 @@ struct SettleScoreView: View {
         }
     }
 
-    private func buildPrompts() {
-        prompts = store.settleScorePrompts()
+    private func loadRound() {
+        prompts = store.settleScorePrompts(limit: Self.roundSize)
+        index = 0
+        answered = 0
+        recordedAnswers.removeAll(keepingCapacity: true)
+        hasMorePrompts = false
+        isShowingCompletion = false
+        isReady = true
+    }
+
+    private func startNextRound() {
+        if reduceMotion {
+            loadRound()
+        } else {
+            withAnimation(.snappy) {
+                loadRound()
+            }
+        }
     }
 
     private func finish() {
+        // Preload the next state before leaving so returning to the Settle tab
+        // never lands on the completed round again.
+        loadRound()
         if let onDone {
             onDone()
         } else {
             dismiss()
         }
+    }
+
+    private func refreshIfIdle() {
+        guard didLoadInitialRound, !isShowingCompletion, prompts.isEmpty else { return }
+        loadRound()
+    }
+}
+
+private struct RestaurantPickerMetadata: View {
+    let location: RestaurantLocation
+
+    private var dateText: String? {
+        location.latestKnownVisit.map {
+            DiningDateContext.format(
+                $0.date,
+                dateStyle: .short,
+                timeStyle: .none,
+                offsetSeconds: $0.dateTimeZoneOffsetSeconds?.intValue
+            )
+        }
+    }
+
+    var body: some View {
+        if location.pickerCity != nil || dateText != nil {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                if let city = location.pickerCity {
+                    Label(city, systemImage: "mappin.and.ellipse")
+                }
+                if location.pickerCity != nil, dateText != nil {
+                    Text("·")
+                        .accessibilityHidden(true)
+                }
+                if let dateText {
+                    Label(dateText, systemImage: "calendar")
+                }
+            }
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(BBTheme.cream.opacity(0.78))
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+private extension RestaurantLocation {
+    var pickerCity: String? {
+        guard let city = city?.trimmingCharacters(in: .whitespacesAndNewlines), !city.isEmpty else {
+            return nil
+        }
+        return city
+    }
+
+    var latestKnownVisit: VisitEntity? {
+        visitArray.first(where: \.hasKnownDate)
+    }
+
+    var pickerAccessibilityLabel: String {
+        var context = [String]()
+        if let pickerCity { context.append("in \(pickerCity)") }
+        if let latestKnownVisit {
+            let latestVisitText = DiningDateContext.format(
+                latestKnownVisit.date,
+                dateStyle: .short,
+                timeStyle: .none,
+                offsetSeconds: latestKnownVisit.dateTimeZoneOffsetSeconds?.intValue
+            )
+            context.append("last visited \(latestVisitText)")
+        }
+        let suffix = context.isEmpty ? "" : ", " + context.joined(separator: ", ")
+        return "\(name), \(category.shortTitle)\(suffix)"
     }
 }
 

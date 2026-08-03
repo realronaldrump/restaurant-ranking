@@ -36,10 +36,37 @@ final class RestaurantLogUITests: XCTestCase {
 
         app.tabBars.buttons["More"].tap()
         XCTAssertTrue(app.navigationBars["More"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Activity"].exists)
         XCTAssertTrue(app.staticTexts["Statistics"].exists)
         XCTAssertTrue(app.staticTexts["Want to Try"].exists)
         XCTAssertTrue(app.staticTexts["Find outings in photos"].exists)
         XCTAssertFalse(app.staticTexts["Merge Duplicates"].exists)
+    }
+
+    func testActivityInboxIsReachableAndStartsQuiet() {
+        app.buttons["notifications-button"].tap()
+
+        XCTAssertTrue(app.navigationBars["Activity"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["notifications-empty"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["mark-all-notifications-read"].exists)
+    }
+
+    func testHistoryCanSortByCity() {
+        app.tabBars.buttons["History"].tap()
+        XCTAssertTrue(app.navigationBars["History"].waitForExistence(timeout: 5))
+
+        let sortButton = app.buttons["history-sort"]
+        XCTAssertTrue(sortButton.waitForExistence(timeout: 3))
+        XCTAssertTrue(sortButton.label.contains("Newest first"))
+        sortButton.tap()
+
+        let cityOption = app.buttons["City"]
+        XCTAssertTrue(cityOption.waitForExistence(timeout: 3))
+        cityOption.tap()
+
+        XCTAssertTrue(sortButton.waitForExistence(timeout: 3))
+        XCTAssertTrue(sortButton.label.contains("City"))
+        XCTAssertTrue(app.staticTexts["Salt Lake City"].waitForExistence(timeout: 3))
     }
 
     func testLongRestaurantNameDoesNotCollapseRankingScoreColumn() {
@@ -108,7 +135,7 @@ final class RestaurantLogUITests: XCTestCase {
         XCTAssertTrue(footer.waitForExistence(timeout: 3))
         XCTAssertNotNil(
             footer.label.range(
-                of: #"^Big Beautiful Restaurant Log 3\.2 \(build [0-9]+\) • Released August 1, 2026$"#,
+                of: #"^Big Beautiful Restaurant Log [0-9]+\.[0-9]+(?:\.[0-9]+)? \(build [0-9]+\) • Released August 3, 2026$"#,
                 options: .regularExpression
             )
         )

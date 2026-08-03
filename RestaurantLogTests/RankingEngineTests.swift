@@ -378,6 +378,7 @@ final class RankingEngineTests: XCTestCase {
         let expectedDate = try XCTUnwrap(ISO8601DateFormatter().date(from: "2024-07-17T18:30:00+10:00"))
         XCTAssertEqual(photo.date.timeIntervalSince1970, expectedDate.timeIntervalSince1970, accuracy: 0.001)
         XCTAssertEqual(try XCTUnwrap(photo.captureDate).timeIntervalSince1970, expectedDate.timeIntervalSince1970, accuracy: 0.001)
+        XCTAssertEqual(photo.captureTimeZoneOffsetSeconds, 10 * 60 * 60)
 
         let sanitizedSource = try XCTUnwrap(CGImageSourceCreateWithData(photo.fullData as CFData, nil))
         let sanitizedProperties = try XCTUnwrap(
@@ -387,6 +388,52 @@ final class RankingEngineTests: XCTestCase {
         let sanitizedExif = sanitizedProperties[kCGImagePropertyExifDictionary] as? [CFString: Any]
         XCTAssertNil(sanitizedExif?[kCGImagePropertyExifDateTimeOriginal])
         XCTAssertNil(sanitizedExif?[kCGImagePropertyExifOffsetTimeOriginal])
+    }
+
+    func testCaptureOffsetKeepsTwoPMMealAtTwoPMAfterTravelingOneTimeZoneEast() throws {
+        let instant = try XCTUnwrap(ISO8601DateFormatter().date(from: "2024-07-17T20:00:00Z"))
+        let originalOffset = -6 * 60 * 60 // 2:00 PM MDT
+        let travelOffset = -5 * 60 * 60 // 3:00 PM CDT for the same instant
+
+        let originalHour = DiningDateContext.calendar(offsetSeconds: originalOffset).component(.hour, from: instant)
+        let travelHour = DiningDateContext.calendar(offsetSeconds: travelOffset).component(.hour, from: instant)
+        XCTAssertEqual(originalHour, 14)
+        XCTAssertEqual(travelHour, 15)
+        XCTAssertEqual(
+            DiningDateContext.stableDayKey(for: instant, offsetSeconds: originalOffset),
+            "2024-07-17"
+        )
+
+        let location = store.createLocation(name: "Timezone Supper", category: .fullService)
+        let visit = store.logVisit(
+            at: location,
+            reaction: .loved,
+            date: instant,
+            dateTimeZoneOffsetSeconds: originalOffset
+        )
+        store.addPhoto(
+            fullData: Data([0x01]),
+            thumbnailData: nil,
+            to: visit,
+            createdAt: instant,
+            captureDate: instant,
+            captureTimeZoneOffsetSeconds: originalOffset
+        )
+
+        XCTAssertEqual(visit.dateTimeZoneOffsetSeconds?.intValue, originalOffset)
+        XCTAssertEqual(
+            visit.formattedDateTime(dateStyle: .short, timeStyle: .short),
+            DiningDateContext.format(instant, dateStyle: .short, timeStyle: .short, offsetSeconds: originalOffset)
+        )
+        XCTAssertNotEqual(
+            visit.formattedDateTime(dateStyle: .short, timeStyle: .short),
+            DiningDateContext.format(instant, dateStyle: .short, timeStyle: .short, offsetSeconds: travelOffset)
+        )
+        XCTAssertEqual(visit.photoArray.first?.captureTimeZoneOffsetSeconds?.intValue, originalOffset)
+        XCTAssertEqual(
+            DiningDateContext.calendar(offsetSeconds: visit.dateTimeZoneOffsetSeconds?.intValue).component(.hour, from: visit.date),
+            14
+        )
     }
 
     func testPhotoMetadataUpdatesVisitDateToEarliestCaptureAndResortsHistory() throws {
@@ -436,6 +483,81 @@ final class RankingEngineTests: XCTestCase {
         store.updateVisitDateFromPhotoMetadata(visit, photos: [photo])
 
         XCTAssertEqual(visit.date, originalDate)
+    }
+
+    func testLaterPhotoMetadataCannotReplaceAnEarlierVisitDateOrItsOffset() {
+        let location = store.createLocation(name: "Paired Photo Time", category: .fullService)
+        let originalDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let originalOffset = -7 * 60 * 60
+        let laterDate = originalDate.addingTimeInterval(3_600)
+        let laterOffset = -6 * 60 * 60
+
+        let directVisit = store.logVisit(
+            at: location,
+            reaction: .liked,
+            date: originalDate,
+            dateTimeZoneOffsetSeconds: originalOffset
+        )
+        store.updateVisitDateFromPhotoMetadata(
+            directVisit,
+            photos: [BackfillPhoto(
+                id: UUID(),
+                fullData: Data([0x01]),
+                thumbnailData: nil,
+                date: laterDate,
+                coordinate: nil,
+                captureDate: laterDate,
+                captureTimeZoneOffsetSeconds: laterOffset
+            )]
+        )
+
+        XCTAssertEqual(directVisit.date, originalDate)
+        XCTAssertEqual(directVisit.dateTimeZoneOffsetSeconds?.intValue, originalOffset)
+
+        let storedVisit = store.logVisit(
+            at: location,
+            reaction: .loved,
+            date: originalDate,
+            dateTimeZoneOffsetSeconds: originalOffset
+        )
+        store.addPhoto(
+            fullData: Data([0x02]),
+            thumbnailData: nil,
+            to: storedVisit,
+            createdAt: laterDate,
+            captureDate: laterDate,
+            captureTimeZoneOffsetSeconds: laterOffset
+        )
+
+        XCTAssertEqual(store.photoDateSyncCandidateCount, 0)
+        XCTAssertEqual(store.syncVisitDatesWithStoredPhotoTimes(), 0)
+        XCTAssertEqual(storedVisit.date, originalDate)
+        XCTAssertEqual(storedVisit.dateTimeZoneOffsetSeconds?.intValue, originalOffset)
+    }
+
+    func testPhotoLibraryMetadataKeepsEmbeddedDateAndOffsetTogether() {
+        let embeddedDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let assetDate = embeddedDate.addingTimeInterval(24 * 60 * 60)
+        let embeddedOffset = 9 * 60 * 60
+        let photo = BackfillPhoto(
+            id: UUID(),
+            fullData: Data([0x01]),
+            thumbnailData: nil,
+            date: embeddedDate,
+            coordinate: nil,
+            captureDate: embeddedDate,
+            captureTimeZoneOffsetSeconds: embeddedOffset
+        )
+
+        let corrected = PhotoLibraryScanner.photoByApplyingLibraryMetadata(
+            photo,
+            assetCreationDate: assetDate,
+            assetCoordinate: nil
+        )
+
+        XCTAssertEqual(corrected.date, embeddedDate)
+        XCTAssertEqual(corrected.captureDate, embeddedDate)
+        XCTAssertEqual(corrected.captureTimeZoneOffsetSeconds, embeddedOffset)
     }
 
     func testPreviousVisitsCanSyncToTheirEarliestVerifiedPhotoCaptureTime() {
@@ -790,16 +912,20 @@ final class RankingEngineTests: XCTestCase {
 
         let location = store.createLocation(name: "Concurrent Table")
         let visit = store.logVisit(at: location, reaction: .loved)
-        visit.companionIDs = [concurrentMichelle.id]
-        _ = store.addRating(to: visit, personID: michelle.id, reaction: .fine)
-        _ = store.addRating(to: visit, personID: concurrentMichelle.id, reaction: .liked)
+        visit.companionIDs = [michelle.id, concurrentMichelle.id]
+        try persistence.save()
+        store.reload()
+
+        let editableVisit = try XCTUnwrap(store.visits.first { $0.id == visit.id })
+        _ = store.addRating(to: editableVisit, personID: michelle.id, reaction: .fine)
+        _ = store.addRating(to: editableVisit, personID: concurrentMichelle.id, reaction: .liked)
         _ = store.addDish(
             name: "Shared Soup", role: .appetizer, reaction: .fine,
-            wouldOrderAgain: false, to: visit, personID: michelle.id
+            wouldOrderAgain: false, to: editableVisit, personID: michelle.id
         )
         _ = store.addDish(
             name: "Shared Soup", role: .appetizer, reaction: .loved,
-            wouldOrderAgain: true, to: visit, personID: concurrentMichelle.id
+            wouldOrderAgain: true, to: editableVisit, personID: concurrentMichelle.id
         )
         try persistence.save()
 
@@ -885,6 +1011,44 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertTrue(store.settleScorePrompts().isEmpty, "Answering every offered prompt must converge to an empty queue")
     }
 
+    func testSettleScoreSupportsSuccessiveBoundedRounds() {
+        for index in 0..<12 {
+            let location = store.createLocation(name: "Round Place \(index)", category: .fullService)
+            _ = store.logVisit(at: location, reaction: .liked)
+        }
+
+        func answer(_ prompts: [SettleScorePrompt]) {
+            for prompt in prompts {
+                switch prompt {
+                case .comparison(let question):
+                    store.recordComparison(a: question.a, b: question.b, outcome: .a)
+                case .anchor(let location):
+                    store.recordAnchor(for: location, value: 75)
+                }
+            }
+        }
+
+        let firstRound = store.settleScorePrompts(limit: 5)
+        XCTAssertEqual(firstRound.count, 5, "A full round should stop at five prompts")
+        answer(firstRound)
+
+        let secondRound = store.settleScorePrompts(limit: 5)
+        XCTAssertFalse(secondRound.isEmpty, "Answering one round should leave another round available")
+        XCTAssertLessThanOrEqual(secondRound.count, 5)
+        answer(secondRound)
+
+        var additionalRounds = 0
+        while additionalRounds < 20 {
+            let prompts = store.settleScorePrompts(limit: 5)
+            guard !prompts.isEmpty else { break }
+            XCTAssertLessThanOrEqual(prompts.count, 5)
+            answer(prompts)
+            additionalRounds += 1
+        }
+
+        XCTAssertTrue(store.settleScorePrompts().isEmpty, "Successive short rounds must still converge to an empty queue")
+    }
+
     func testSettleScorePromptsReofferTheScoreCheckOnlyAfterItsRankingEvidenceChanges() throws {
         let first = store.createLocation(name: "Living First", category: .fullService)
         let second = store.createLocation(name: "Living Second", category: .fullService)
@@ -944,8 +1108,12 @@ final class RankingEngineTests: XCTestCase {
         let otherMember = try XCTUnwrap(store.circleMembers.first { $0.id != me.id })
         let first = store.createLocation(name: "Scoped First", category: .fullService)
         let second = store.createLocation(name: "Scoped Second", category: .fullService)
-        let firstVisit = store.logVisit(at: first, reaction: .loved, personID: me.id)
-        let secondVisit = store.logVisit(at: second, reaction: .liked, personID: me.id)
+        let firstVisit = store.logVisit(
+            at: first, reaction: .loved, personID: me.id, companionIDs: [otherMember.id]
+        )
+        let secondVisit = store.logVisit(
+            at: second, reaction: .liked, personID: me.id, companionIDs: [otherMember.id]
+        )
         _ = store.addRating(to: firstVisit, personID: otherMember.id, reaction: .liked)
         _ = store.addRating(to: secondVisit, personID: otherMember.id, reaction: .fine)
         store.recordComparison(a: first, b: second, outcome: .a, personID: me.id)
@@ -1667,6 +1835,81 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertTrue(store.visits.contains { $0.id == visit.id })
         XCTAssertTrue(visit.dishEntryArray.contains { $0.id == georgeDish.id })
         XCTAssertTrue(store.deleteDishEntry(michelleDish, personID: michelle.id))
+    }
+
+    func testCircleMemberWhoWasNotPartOfOutingCannotCreateDinerEntryOrChangeOutingDate() throws {
+        let george = try XCTUnwrap(store.currentPerson)
+        let michelle = try XCTUnwrap(store.circleMembers.first { $0.name == "Michelle" })
+        let location = store.createLocation(name: "Private Table")
+        let outingDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let photoDate = outingDate.addingTimeInterval(-86_400)
+        let ratingVisit = store.logVisit(at: location, reaction: .liked, personID: george.id)
+        let memoryVisit = store.logVisit(at: location, reaction: .liked, personID: george.id)
+        let dishVisit = store.logVisit(at: location, reaction: .liked, personID: george.id)
+        let photoVisit = store.logVisit(
+            at: location,
+            reaction: .liked,
+            personID: george.id,
+            date: outingDate
+        )
+        let declinedVisit = store.logVisit(at: location, reaction: .liked, personID: george.id)
+        let notThereVisit = store.logVisit(at: location, reaction: .liked, personID: george.id)
+        let invitedVisit = store.logVisit(
+            at: location,
+            reaction: .liked,
+            personID: george.id,
+            companionIDs: [michelle.id]
+        )
+
+        store.selectCurrentPerson(michelle.id)
+
+        XCTAssertFalse(store.canEditDinerEntry(ratingVisit))
+        XCTAssertTrue(store.canEditDinerEntry(invitedVisit))
+        store.declineRating(for: invitedVisit)
+        XCTAssertTrue(store.canEditDinerEntry(invitedVisit), "A participant who skipped a reaction was still there")
+        store.markNotPresent(for: invitedVisit)
+        XCTAssertFalse(store.canEditDinerEntry(invitedVisit))
+
+        _ = store.addRating(to: ratingVisit, personID: michelle.id, reaction: .loved)
+        store.updateMemory("I was not there.", for: memoryVisit, personID: michelle.id)
+        let dish = store.addDish(
+            name: "Someone else's dinner",
+            role: .entree,
+            reaction: .loved,
+            wouldOrderAgain: true,
+            to: dishVisit,
+            personID: michelle.id
+        )
+        store.addPhoto(
+            fullData: Data([0x01]),
+            thumbnailData: nil,
+            to: photoVisit,
+            personID: michelle.id
+        )
+        store.updateVisitDateFromPhotoMetadata(
+            photoVisit,
+            photos: [BackfillPhoto(
+                id: UUID(),
+                fullData: Data([0x01]),
+                thumbnailData: Data([0x01]),
+                date: photoDate,
+                coordinate: nil,
+                captureDate: photoDate
+            )]
+        )
+        store.declineRating(for: declinedVisit, personID: michelle.id)
+        store.markNotPresent(for: notThereVisit, personID: michelle.id)
+
+        XCTAssertNil(ratingVisit.rating(for: michelle.id))
+        XCTAssertNil(ratingVisit.participant(for: michelle.id))
+        XCTAssertNil(memoryVisit.participant(for: michelle.id))
+        XCTAssertNil(dish)
+        XCTAssertNil(dishVisit.participant(for: michelle.id))
+        XCTAssertTrue(photoVisit.photoArray.isEmpty)
+        XCTAssertNil(photoVisit.participant(for: michelle.id))
+        XCTAssertEqual(photoVisit.date, outingDate)
+        XCTAssertNil(declinedVisit.participant(for: michelle.id))
+        XCTAssertNil(notThereVisit.participant(for: michelle.id))
     }
 
     func testOutingCreatorCannotOverrideAnotherMembersAttendanceResponseOrEntry() throws {

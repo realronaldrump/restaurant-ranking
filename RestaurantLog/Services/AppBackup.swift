@@ -102,7 +102,7 @@ struct AppBackupLimits: Equatable, Sendable {
 struct AppBackupArchive: Codable, Sendable {
     static let signature = "big-beautiful-restaurant-log"
     static let minimumSupportedFormatVersion = 1
-    static let currentFormatVersion = 2
+    static let currentFormatVersion = 3
 
     var signature: String
     var formatVersion: Int
@@ -176,6 +176,7 @@ struct AppBackupArchive: Codable, Sendable {
         var cuisines: [String]
         var tags: [String]
         var createdAt: Date
+        var createdByID: UUID? = nil
         var updatedAt: Date
         var circleID: UUID?
         var brandID: UUID?
@@ -185,6 +186,7 @@ struct AppBackupArchive: Codable, Sendable {
         var id: UUID
         var date: Date
         var dateKnowledge: VisitDateKnowledge? = nil
+        var dateTimeZoneOffsetSeconds: Int? = nil
         var visitType: VisitType?
         var priceBand: Int16
         var occasion: Occasion?
@@ -260,6 +262,7 @@ struct AppBackupArchive: Codable, Sendable {
         var fullData: Data?
         var createdAt: Date
         var captureDate: Date?
+        var captureTimeZoneOffsetSeconds: Int? = nil
         var caption: String? = nil
         var visitID: UUID?
     }
@@ -770,25 +773,26 @@ enum AppBackupService {
                 // remaining resident in the context at once.
                 context.refresh(photo, mergeChanges: false)
             }
+            var recordCounts = [Int]()
+            recordCounts.reserveCapacity(16)
+            recordCounts.append(deviceSelections.count)
+            recordCounts.append(circles.count)
+            recordCounts.append(people.count)
+            recordCounts.append(brands.count)
+            recordCounts.append(locations.count)
+            recordCounts.append(visits.count)
+            recordCounts.append(participants.count)
+            recordCounts.append(ratings.count)
+            recordCounts.append(dinerEntryReactions.count)
+            recordCounts.append(dishes.count)
+            recordCounts.append(dishEntries.count)
+            recordCounts.append(photos.count)
+            recordCounts.append(comparisons.count)
+            recordCounts.append(wantEntries.count)
+            recordCounts.append(externalImportSessions.count)
+            recordCounts.append(externalImportLinks.count)
             try AppBackupCodec.validateResourceUsage(
-                recordCounts: [
-                    deviceSelections.count,
-                    circles.count,
-                    people.count,
-                    brands.count,
-                    locations.count,
-                    visits.count,
-                    participants.count,
-                    ratings.count,
-                    dinerEntryReactions.count,
-                    dishes.count,
-                    dishEntries.count,
-                    photos.count,
-                    comparisons.count,
-                    wantEntries.count,
-                    externalImportSessions.count,
-                    externalImportLinks.count,
-                ],
+                recordCounts: recordCounts,
                 photoPayloadByteCounts: photoPayloadByteCounts,
                 limits: limits
             )
@@ -812,11 +816,12 @@ enum AppBackupService {
                           phone: $0.phone, urlString: $0.urlString, hoursText: $0.hoursText,
                           latitude: $0.latitude, longitude: $0.longitude, hasCoordinates: $0.hasCoordinates,
                           isClosed: $0.isClosed, sourceIdentifier: $0.sourceIdentifier, cuisines: $0.cuisines,
-                          tags: $0.tags, createdAt: $0.createdAt, updatedAt: $0.updatedAt,
+                          tags: $0.tags, createdAt: $0.createdAt, createdByID: $0.createdByID, updatedAt: $0.updatedAt,
                           circleID: $0.circle?.id, brandID: $0.brand?.id)
                 },
                 visits: visits.map {
                     .init(id: $0.id, date: $0.date, dateKnowledge: $0.dateKnowledge,
+                          dateTimeZoneOffsetSeconds: $0.dateTimeZoneOffsetSeconds?.intValue,
                           visitType: $0.visitType, priceBand: $0.priceBand,
                           occasion: $0.occasion, memory: $0.memory, latitude: $0.latitude, longitude: $0.longitude,
                           hasCoordinates: $0.hasCoordinates, createdAt: $0.createdAt, isShared: $0.isShared,
@@ -852,7 +857,9 @@ enum AppBackupService {
                 },
                 photos: photos.map {
                     .init(id: $0.id, personID: $0.personID, thumbnailData: $0.thumbnailData, fullData: $0.fullData,
-                          createdAt: $0.createdAt, captureDate: $0.captureDate, caption: $0.caption,
+                          createdAt: $0.createdAt, captureDate: $0.captureDate,
+                          captureTimeZoneOffsetSeconds: $0.captureTimeZoneOffsetSeconds?.intValue,
+                          caption: $0.caption,
                           visitID: $0.visit?.id)
                 },
                 comparisons: comparisons.map {
@@ -965,7 +972,7 @@ enum AppBackupService {
             }
             object.isClosed = record.isClosed
             object.sourceIdentifier = record.sourceIdentifier; object.cuisines = record.cuisines; object.tags = record.tags
-            object.createdAt = record.createdAt; object.updatedAt = record.updatedAt
+            object.createdAt = record.createdAt; object.createdByID = record.createdByID; object.updatedAt = record.updatedAt
             object.circle = record.circleID.flatMap { circles[$0] }; object.brand = record.brandID.flatMap { brands[$0] }
             locations[record.id] = object
         }
@@ -980,7 +987,10 @@ enum AppBackupService {
         var visits: [UUID: VisitEntity] = [:]
         for record in archive.visits {
             let object = VisitEntity(context: context); context.assign(object, to: destinationStore)
-            object.id = record.id; object.date = record.date; object.visitType = record.visitType
+            object.id = record.id
+            object.date = record.date
+            object.dateTimeZoneOffsetSeconds = record.dateTimeZoneOffsetSeconds.map { NSNumber(value: $0) }
+            object.visitType = record.visitType
             object.dateKnowledge = record.dateKnowledge ?? .known
             object.priceBand = record.priceBand; object.occasion = record.occasion; object.memory = record.memory
             if record.hasCoordinates,
@@ -1025,7 +1035,10 @@ enum AppBackupService {
             let object = PhotoEntity(context: context); context.assign(object, to: destinationStore)
             object.id = record.id; object.personID = record.personID
             object.thumbnailData = record.thumbnailData; object.fullData = record.fullData
-            object.createdAt = record.createdAt; object.captureDate = record.captureDate; object.caption = record.caption
+            object.createdAt = record.createdAt
+            object.captureDate = record.captureDate
+            object.captureTimeZoneOffsetSeconds = record.captureTimeZoneOffsetSeconds.map { NSNumber(value: $0) }
+            object.caption = record.caption
             object.visit = record.visitID.flatMap { visits[$0] }
         }
         for record in archive.comparisons {

@@ -20,10 +20,19 @@ private enum HistoryScope: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+private enum HistorySort: String, CaseIterable, Identifiable {
+    case newest = "Newest first"
+    case city = "City"
+
+    var id: String { rawValue }
+}
+
 private struct HistorySearchRecord: Identifiable {
     let id: UUID
     let visit: VisitEntity
     let year: Int
+    let city: String?
+    let citySortKey: String?
     let searchableText: String
     let isUnrated: Bool
     let isHazy: Bool
@@ -32,15 +41,15 @@ private struct HistorySearchRecord: Identifiable {
     let belongsToCurrentPerson: Bool
 }
 
-private struct HistoryYearSection: Identifiable {
-    let year: Int
+private struct HistorySection: Identifiable {
+    let id: String
+    let title: String
     let visits: [VisitEntity]
-    var id: Int { year }
 }
 
 private struct HistorySnapshot {
     let count: Int
-    let sections: [HistoryYearSection]
+    let sections: [HistorySection]
 }
 
 @MainActor
@@ -51,6 +60,7 @@ struct HistoryView: View {
     @State private var effectiveQuery = ""
     @State private var filter: HistoryFilter = .all
     @State private var scope: HistoryScope = .mine
+    @State private var sort: HistorySort = .newest
     @State private var searchRecords: [HistorySearchRecord] = []
     @State private var isPreparing = true
 
@@ -124,41 +134,73 @@ struct HistoryView: View {
 
     private func historyControls(_ count: Int) -> some View {
         HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(scope == .roster && isShared ? "Everyone’s outings" : "My outings")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text("\(count) \(count == 1 ? "outing" : "outings")")
-                    .font(BBTheme.display(25))
-                    .contentTransition(.numericText())
-            }
+            historyCount(count)
             Spacer(minLength: 8)
-            Menu {
-                ForEach(HistoryFilter.allCases) { value in
-                    Button {
-                        filter = value
-                        Haptics.selection()
-                    } label: {
-                        Label(value.rawValue, systemImage: filter == value ? "checkmark" : value.symbol)
-                    }
-                }
-            } label: {
-                Label(filter.rawValue, systemImage: "line.3.horizontal.decrease.circle")
-                    .font(.callout.weight(.semibold))
-                    .lineLimit(1)
-                    .padding(.horizontal, 12)
-                    .frame(minHeight: 44)
-                    .background(BBTheme.surface, in: Capsule())
-                    .overlay(Capsule().stroke(BBTheme.hairline))
-            }
-            .accessibilityLabel("History filter, \(filter.rawValue)")
+            historyFilterMenu
+            historySortMenu
         }
     }
 
-    private func historySection(_ section: HistoryYearSection) -> some View {
+    private func historyCount(_ count: Int) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(scope == .roster && isShared ? "Everyone’s outings" : "My outings")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text("\(count) \(count == 1 ? "outing" : "outings")")
+                .font(BBTheme.display(25))
+                .contentTransition(.numericText())
+        }
+    }
+
+    private var historyFilterMenu: some View {
+        Menu {
+            ForEach(HistoryFilter.allCases) { value in
+                Button {
+                    filter = value
+                    Haptics.selection()
+                } label: {
+                    Label(value.rawValue, systemImage: filter == value ? "checkmark" : value.symbol)
+                }
+            }
+        } label: {
+            Label(filter.rawValue, systemImage: "line.3.horizontal.decrease.circle")
+                .font(.callout.weight(.semibold))
+                .lineLimit(1)
+                .padding(.horizontal, 12)
+                .frame(minHeight: 44)
+                .background(BBTheme.surface, in: Capsule())
+                .overlay(Capsule().stroke(BBTheme.hairline))
+        }
+        .accessibilityLabel("History filter, \(filter.rawValue)")
+    }
+
+    private var historySortMenu: some View {
+        Menu {
+            ForEach(HistorySort.allCases) { value in
+                Button {
+                    sort = value
+                    Haptics.selection()
+                } label: {
+                    Label(value.rawValue, systemImage: sort == value ? "checkmark" : "arrow.up.arrow.down")
+                }
+            }
+        } label: {
+            Label(sort.rawValue, systemImage: "arrow.up.arrow.down")
+                .font(.callout.weight(.semibold))
+                .lineLimit(1)
+                .padding(.horizontal, 12)
+                .frame(minHeight: 44)
+                .background(BBTheme.surface, in: Capsule())
+                .overlay(Capsule().stroke(BBTheme.hairline))
+        }
+        .accessibilityLabel("History sort, \(sort.rawValue)")
+        .accessibilityIdentifier("history-sort")
+    }
+
+    private func historySection(_ section: HistorySection) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
-                Text(section.year == Int.min ? "Date unknown" : String(section.year))
+                Text(section.title)
                     .font(BBTheme.score(25))
                     .foregroundStyle(BBTheme.oxblood)
                 Spacer()
@@ -207,15 +249,55 @@ struct HistoryView: View {
             guard !effectiveQuery.isEmpty else { return true }
             return record.searchableText.localizedCaseInsensitiveContains(effectiveQuery)
         }
+        let sections: [HistorySection] = switch sort {
+        case .newest: yearSections(for: records)
+        case .city: citySections(for: records)
+        }
+        return .init(count: records.count, sections: sections)
+    }
+
+    private func yearSections(for records: [HistorySearchRecord]) -> [HistorySection] {
         let grouped = Dictionary(grouping: records, by: \.year)
-        let sections = grouped.keys.sorted { lhs, rhs in
+        return grouped.keys.sorted { lhs, rhs in
             if lhs == Int.min { return false }
             if rhs == Int.min { return true }
             return lhs > rhs
         }.map { year in
-            HistoryYearSection(year: year, visits: (grouped[year] ?? []).map(\.visit))
+            HistorySection(
+                id: "year:\(year)",
+                title: year == Int.min ? "Date unknown" : String(year),
+                visits: (grouped[year] ?? []).sorted(by: recordComesBefore).map(\.visit)
+            )
         }
-        return .init(count: records.count, sections: sections)
+    }
+
+    private func citySections(for records: [HistorySearchRecord]) -> [HistorySection] {
+        let grouped = Dictionary(grouping: records) { $0.citySortKey ?? "" }
+        return grouped.keys.sorted(by: cityKeyComesBefore).map { cityKey in
+            let cityRecords = (grouped[cityKey] ?? []).sorted(by: recordComesBefore)
+            return HistorySection(
+                id: "city:\(cityKey)",
+                title: cityRecords.first?.city ?? "City unknown",
+                visits: cityRecords.map(\.visit)
+            )
+        }
+    }
+
+    private func recordComesBefore(_ lhs: HistorySearchRecord, _ rhs: HistorySearchRecord) -> Bool {
+        if lhs.visit.date != rhs.visit.date { return lhs.visit.date > rhs.visit.date }
+        return lhs.id.uuidString < rhs.id.uuidString
+    }
+
+    private func cityKeyComesBefore(_ lhs: String, _ rhs: String) -> Bool {
+        if lhs.isEmpty { return false }
+        if rhs.isEmpty { return true }
+        return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+    }
+
+    private func normalizedCity(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private func rebuildSearchRecords() {
@@ -223,12 +305,13 @@ struct HistoryView: View {
         let peopleByID = Dictionary(uniqueKeysWithValues: store.people.map { ($0.id, $0.name) })
         let currentPersonID = store.currentPerson?.id
         searchRecords = store.visits.map { visit in
+            let city = normalizedCity(visit.location?.city)
             let participantIDs = visit.participantArray
                 .filter { $0.status != .notThere }
                 .map(\.personID)
             let people = Set(participantIDs.isEmpty ? visit.companionIDs + [visit.createdByID] : participantIDs)
                 .compactMap { peopleByID[$0] }
-            let searchable = [visit.location?.name, visit.location?.city, visit.memory]
+            let searchable = [visit.location?.name, city, visit.memory]
                 + visit.dishEntryArray.map { $0.dish?.name }
                 + visit.participantArray.map(\.memory)
                 + people.map(Optional.some)
@@ -240,7 +323,11 @@ struct HistoryView: View {
             return HistorySearchRecord(
                 id: visit.id,
                 visit: visit,
-                year: visit.dateKnowledge == .known ? Calendar.current.component(.year, from: visit.date) : Int.min,
+                year: visit.dateKnowledge == .known
+                    ? DiningDateContext.year(of: visit.date, offsetSeconds: visit.dateTimeZoneOffsetSeconds?.intValue)
+                    : Int.min,
+                city: city,
+                citySortKey: city?.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current),
                 searchableText: searchable.compactMap { $0 }.joined(separator: " "),
                 isUnrated: belongsToCurrentPerson
                     && currentStatus != .declined

@@ -58,7 +58,8 @@ enum SyncSnapshotBuilder {
                 latitude: location.latitude, longitude: location.longitude,
                 hasCoordinates: location.hasCoordinates, isClosed: location.isClosed,
                 sourceIdentifier: location.sourceIdentifier, cuisines: location.cuisines,
-                tags: location.tags, createdAt: location.createdAt, updatedAt: location.updatedAt,
+                tags: location.tags, createdAt: location.createdAt, createdByID: location.createdByID,
+                updatedAt: location.updatedAt,
                 circleID: circleID, brandID: location.brand?.id
             )))
         }
@@ -83,6 +84,7 @@ enum SyncSnapshotBuilder {
         for visit in visits {
             add(try SyncPayloadCodec.record(.visit, visit.id, AppBackupArchive.VisitRecord(
                 id: visit.id, date: visit.date, dateKnowledge: visit.dateKnowledge,
+                dateTimeZoneOffsetSeconds: visit.dateTimeZoneOffsetSeconds?.intValue,
                 visitType: visit.visitType, priceBand: visit.priceBand, occasion: visit.occasion,
                 memory: visit.memory, latitude: visit.latitude, longitude: visit.longitude,
                 hasCoordinates: visit.hasCoordinates, createdAt: visit.createdAt,
@@ -153,6 +155,7 @@ enum SyncSnapshotBuilder {
                 id: photo.id, personID: photo.personID,
                 thumbnailData: nil, fullData: nil,
                 createdAt: photo.createdAt, captureDate: photo.captureDate,
+                captureTimeZoneOffsetSeconds: photo.captureTimeZoneOffsetSeconds?.intValue,
                 caption: photo.caption, visitID: photo.visit?.id
             )))
         }

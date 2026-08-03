@@ -48,9 +48,11 @@ struct VisitDetailView: View {
         }
         .editorialPage().navigationTitle("Outing").navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button(store.canEditOuting(visit) ? "Edit outing" : "Edit") {
-                    if visit.isAlive { editingVisit = visit }
+            if store.canEditDinerEntry(visit) {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(editActionTitle) {
+                        if visit.isAlive { editingVisit = visit }
+                    }
                 }
             }
         }
@@ -71,9 +73,15 @@ struct VisitDetailView: View {
         }
     }
 
+    private var editActionTitle: String {
+        if store.canEditOuting(visit) { return "Edit outing" }
+        if store.needsEntryResponse(for: visit) { return "Add your diner entry" }
+        return "Edit your diner entry"
+    }
+
     private var header: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Eyebrow(visit.dateKnowledge == .known ? visit.date.formatted(date: .complete, time: .shortened) : "Outing date unknown")
+            Eyebrow(visit.dateKnowledge == .known ? visit.formattedDateTime() : "Outing date unknown")
             if let location = visit.location {
                 NavigationLink(value: AppRoute.location(location.id)) {
                     HStack(alignment: .top, spacing: 10) {

@@ -189,6 +189,38 @@ final class AppBackupTests: XCTestCase {
         XCTAssertFalse(destination.settleQuestions().contains { Set([$0.a.id, $0.b.id]) == pairIDs })
     }
 
+    func testBackupRoundTripsOriginalVisitAndPhotoTimezoneOffsets() async throws {
+        let source = makeStore()
+        source.bootstrap(myName: "George", circleName: "Timezone Club")
+        let location = source.createLocation(name: "Timezone Cafe", category: .fullService)
+        let instant = try XCTUnwrap(ISO8601DateFormatter().date(from: "2024-07-17T20:00:00Z"))
+        let offsetSeconds = -6 * 60 * 60
+        let visit = source.logVisit(
+            at: location,
+            reaction: .loved,
+            date: instant,
+            dateTimeZoneOffsetSeconds: offsetSeconds
+        )
+        source.addPhoto(
+            fullData: Data([1, 2, 3]),
+            thumbnailData: Data([4]),
+            to: visit,
+            createdAt: instant,
+            captureDate: instant,
+            captureTimeZoneOffsetSeconds: offsetSeconds
+        )
+
+        let archive = try await AppBackupService.makeArchive(from: source)
+        let destination = makeStore()
+        destination.bootstrap(myName: "Temporary")
+        _ = try await AppBackupService.restore(archive, into: destination)
+
+        let restoredVisit = try XCTUnwrap(destination.visits.first)
+        let restoredPhoto = try XCTUnwrap(restoredVisit.photoArray.first)
+        XCTAssertEqual(restoredVisit.dateTimeZoneOffsetSeconds?.intValue, offsetSeconds)
+        XCTAssertEqual(restoredPhoto.captureTimeZoneOffsetSeconds?.intValue, offsetSeconds)
+    }
+
     func testRestoreCanReconnectToLiveEnrollmentWithoutChangingMemberIdentity() async throws {
         let backupStore = makeStore()
         backupStore.bootstrap(myName: "Backup Davis", circleName: "Old Backup")

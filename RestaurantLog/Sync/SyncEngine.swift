@@ -42,7 +42,7 @@ enum SyncStatus: Equatable {
     }
 }
 
-struct SyncOutcome: Equatable {
+struct SyncOutcome: Equatable, Sendable {
     var pushed = 0
     var applied = 0
     var deletedLocally = 0
@@ -51,6 +51,7 @@ struct SyncOutcome: Equatable {
     var photosUploaded = 0
     var photosDownloaded = 0
     var photosDeleted = 0
+    var notificationsInserted = 0
 
     var madeLocalChanges: Bool { applied > 0 || deletedLocally > 0 || photosDownloaded > 0 }
 }
@@ -173,6 +174,7 @@ actor SyncEngine {
 
         var baseline = SyncBaselineStore.load(circleID: circleID)
         var outcome = SyncOutcome()
+        let activityBootstrap = !baseline.activitySeeded
 
         // 1. Pull everything changed since the watermark, with overlap.
         let since = max(0, baseline.watermark - Self.watermarkOverlapMS)
@@ -196,6 +198,7 @@ actor SyncEngine {
             remote: remote,
             baseline: baseline.keyedFingerprints
         )
+        let activityBaselineFingerprints = baseline.keyedFingerprints
         outcome.conflicts = plan.conflicts.count
         var deferredReferences = false
         if !plan.conflicts.isEmpty {
@@ -204,7 +207,7 @@ actor SyncEngine {
 
         // 4. Apply remote changes locally.
         if !plan.apply.isEmpty || !plan.deleteLocally.isEmpty {
-            let applyResult = try await context.perform {
+            let applyTransaction = try await context.perform {
                 let result = try SyncApplier.apply(
                     records: remote,
                     applying: plan.apply,
@@ -212,12 +215,23 @@ actor SyncEngine {
                     circleID: circleID,
                     in: context
                 )
+                let candidates = activityBootstrap
+                    ? []
+                    : NotificationActivityExtractor.extract(
+                        circleID: circleID,
+                        appliedKeys: result.appliedKeys,
+                        remote: remote,
+                        local: snapshot.records,
+                        baseline: activityBaselineFingerprints
+                    )
+                let notificationsInserted = try InAppNotificationPersistence.insert(candidates, into: context)
                 if context.hasChanges { try context.save() }
-                return result
+                return (result, notificationsInserted)
             }
-            outcome.applied = applyResult.applied
-            outcome.deletedLocally = applyResult.deleted
-            deferredReferences = !applyResult.deferredKeys.isEmpty
+            outcome.applied = applyTransaction.0.applied
+            outcome.deletedLocally = applyTransaction.0.deleted
+            outcome.notificationsInserted = applyTransaction.1
+            deferredReferences = !applyTransaction.0.deferredKeys.isEmpty
         }
 
         // 5. Publish local changes.
@@ -324,6 +338,9 @@ actor SyncEngine {
         // Force the next pass to pull the complete circle rather than accepting
         // a child with a broken relationship or moving beyond it forever.
         baseline.watermark = deferredReferences ? 0 : max(baseline.watermark, highestSeen)
+        if !deferredReferences {
+            baseline.activitySeeded = true
+        }
 
         // 7. Photo bytes, which never travel with the record stream.
         let photoResult = try await synchronizePhotos(

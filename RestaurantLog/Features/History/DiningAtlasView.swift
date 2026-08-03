@@ -10,6 +10,7 @@ private struct DiningAtlasStop: Identifiable {
     let category: DiningCategory
     let coordinate: CLLocationCoordinate2D
     let firstVisitDate: Date
+    let firstVisitTimeZoneOffsetSeconds: Int?
     let visitCount: Int
     let latestReaction: Reaction?
     let isClosed: Bool
@@ -59,6 +60,7 @@ private struct DiningAtlasSnapshot {
                 category: location.category,
                 coordinate: coordinate,
                 firstVisitDate: firstVisit.date,
+                firstVisitTimeZoneOffsetSeconds: firstVisit.dateTimeZoneOffsetSeconds?.intValue,
                 visitCount: locationVisits.count,
                 latestReaction: reaction,
                 isClosed: location.isClosed
@@ -240,7 +242,7 @@ struct DiningAtlasView: View {
             NavigationLink(value: AppRoute.location(stop.locationID)) {
                 HStack(spacing: 14) {
                     VStack(alignment: .leading, spacing: 5) {
-                        Eyebrow("Stop \(stop.order) · \(stop.firstVisitDate.formatted(.dateTime.month(.abbreviated).year()))")
+                        Eyebrow("Stop \(stop.order) · \(DiningDateContext.formatMonthYear(stop.firstVisitDate, offsetSeconds: stop.firstVisitTimeZoneOffsetSeconds))")
                         HStack(spacing: 7) {
                             Text(stop.name)
                                 .font(BBTheme.display(23))

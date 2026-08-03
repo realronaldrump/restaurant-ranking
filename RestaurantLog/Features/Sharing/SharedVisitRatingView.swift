@@ -32,10 +32,13 @@ struct SharedVisitRatingView: View {
 
     var body: some View {
         Group {
-            if visit.isAlive {
+            if visit.isAlive, store.canEditDinerEntry(visit) {
                 visitContent
             } else {
-                ContentUnavailableView("Outing unavailable", systemImage: "fork.knife.circle")
+                ContentUnavailableView(
+                    visit.isAlive ? "Outing is read-only" : "Outing unavailable",
+                    systemImage: "fork.knife.circle"
+                )
                     .task {
                         await Task.yield()
                         dismiss()
@@ -50,7 +53,7 @@ struct SharedVisitRatingView: View {
                 VStack(alignment: .leading, spacing: 22) {
                     CategoryArtwork(category: visit.location?.category ?? .fullService, height: 150)
                     VStack(alignment: .leading, spacing: 6) {
-                        Eyebrow("Shared outing · \(visit.dateKnowledge == .known ? visit.date.formatted(date: .abbreviated, time: .shortened) : "Date unknown")")
+                        Eyebrow("Shared outing · \(visit.dateKnowledge == .known ? visit.formattedDateTime(dateStyle: .short, timeStyle: .short) : "Date unknown")")
                         Text(visit.location?.name ?? "Shared outing").font(BBTheme.display(34))
                         Text("\(authorName) included you in this outing. Your diner entry contains only your own reaction, dishes, and photos.")
                             .foregroundStyle(.secondary)
@@ -285,7 +288,9 @@ struct SharedVisitRatingView: View {
     }
 
     private func save() async {
-        guard visit.isAlive, let personID = store.currentPerson?.id else {
+        guard visit.isAlive,
+              let personID = store.currentPerson?.id,
+              store.canEditDinerEntry(visit, personID: personID) else {
             dismiss()
             return
         }
@@ -306,7 +311,8 @@ struct SharedVisitRatingView: View {
                 to: visit,
                 personID: personID,
                 createdAt: photo.date,
-                captureDate: photo.captureDate
+                captureDate: photo.captureDate,
+                captureTimeZoneOffsetSeconds: photo.captureTimeZoneOffsetSeconds
             )
         }
         Haptics.success(); dismiss()

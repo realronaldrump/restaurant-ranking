@@ -23,6 +23,11 @@ struct HomeView: View {
         .editorialPage()
         .navigationTitle("Log")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                NotificationBellButton(destination: .log)
+            }
+        }
     }
 
     private func masthead(_ visits: [VisitEntity]) -> some View {
@@ -67,8 +72,13 @@ struct HomeView: View {
     }
 
     private func establishedYear(_ visits: [VisitEntity]) -> String {
-        let earliest = visits.min(by: { $0.date < $1.date })?.date ?? .now
-        return String(Calendar.current.component(.year, from: earliest))
+        guard let earliest = visits.min(by: { $0.date < $1.date }) else {
+            return String(DiningDateContext.year(of: .now, offsetSeconds: nil))
+        }
+        return String(DiningDateContext.year(
+            of: earliest.date,
+            offsetSeconds: earliest.dateTimeZoneOffsetSeconds?.intValue
+        ))
     }
 
     private var logButton: some View {
@@ -127,7 +137,7 @@ struct HomeView: View {
                             IconTile(symbol: "person.2.wave.2.fill")
                             VStack(alignment: .leading) {
                                 Text(visit.location?.name ?? "Shared outing").font(.headline)
-                                Text("\(visit.dateKnowledge == .known ? visit.date.formatted(date: .abbreviated, time: .shortened) : "Date unknown") · Add your diner entry")
+                                Text("\(visit.dateKnowledge == .known ? visit.formattedDateTime(dateStyle: .short, timeStyle: .short) : "Date unknown") · Add your diner entry")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -260,7 +270,7 @@ struct VisitRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(visit.location?.name ?? "Unknown restaurant").font(.headline)
                 HStack(spacing: 5) {
-                    Text(visit.dateKnowledge == .known ? visit.date.formatted(date: .abbreviated, time: .shortened) : "Date unknown")
+                    Text(visit.dateKnowledge == .known ? visit.formattedDateTime(dateStyle: .short, timeStyle: .short) : "Date unknown")
                     if let type = visit.visitType { Text("· \(type.rawValue)") }
                     if !photos.isEmpty { Image(systemName: "photo.fill") }
                 }.font(.caption).foregroundStyle(.secondary)

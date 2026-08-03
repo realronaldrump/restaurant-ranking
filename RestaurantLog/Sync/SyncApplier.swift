@@ -13,8 +13,9 @@ enum SyncApplier {
         category: "Sync"
     )
 
-    struct Result {
+    struct Result: Sendable {
         var applied = 0
+        var appliedKeys: [SyncKey] = []
         var deleted = 0
         var unresolvedReferences = 0
         var deferredKeys: [SyncKey] = []
@@ -42,6 +43,7 @@ enum SyncApplier {
             do {
                 try upsert(key: key, payload: payload, circleID: circleID, in: context)
                 result.applied += 1
+                result.appliedKeys.append(key)
             } catch is DeferredReference {
                 result.unresolvedReferences += 1
                 result.deferredKeys.append(key)
@@ -160,6 +162,9 @@ enum SyncApplier {
             object.cuisines = value.cuisines
             object.tags = value.tags
             object.createdAt = value.createdAt
+            if let createdByID = value.createdByID {
+                object.createdByID = createdByID
+            }
             object.updatedAt = value.updatedAt
             object.circle = circle
             object.brand = brand
@@ -183,6 +188,11 @@ enum SyncApplier {
             let location = try requiredLink(RestaurantLocation.self, value.locationID)
             let object: VisitEntity = try upsertObject(VisitEntity.self, id: value.id, in: context)
             object.date = value.date
+            if let offsetSeconds = value.dateTimeZoneOffsetSeconds {
+                object.dateTimeZoneOffsetSeconds = NSNumber(value: offsetSeconds)
+            } else if value.dateKnowledge == .unknown {
+                object.dateTimeZoneOffsetSeconds = nil
+            }
             object.dateKnowledge = value.dateKnowledge ?? .known
             object.visitType = value.visitType
             object.priceBand = value.priceBand
@@ -277,6 +287,11 @@ enum SyncApplier {
             object.caption = value.caption
             object.createdAt = value.createdAt
             object.captureDate = value.captureDate
+            if let offsetSeconds = value.captureTimeZoneOffsetSeconds {
+                object.captureTimeZoneOffsetSeconds = NSNumber(value: offsetSeconds)
+            } else if value.captureDate == nil {
+                object.captureTimeZoneOffsetSeconds = nil
+            }
             object.visit = visit
             // Blob columns are intentionally untouched. Bytes arrive separately
             // through Storage so a metadata sync never rewrites image data.

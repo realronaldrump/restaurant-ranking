@@ -61,6 +61,9 @@ final class RestaurantLocation: NSManagedObject, Identifiable {
     @NSManaged var cuisineBlob: Data?
     @NSManaged var tagBlob: Data?
     @NSManaged var createdAt: Date
+    /// The circle member who first created this canonical restaurant record.
+    /// Older records may not have this metadata.
+    @NSManaged var createdByID: UUID?
     @NSManaged var updatedAt: Date
     @NSManaged var circle: CircleEntity?
     @NSManaged var brand: BrandEntity?
@@ -110,6 +113,7 @@ final class VisitEntity: NSManagedObject, Identifiable {
     @NSManaged var id: UUID
     @NSManaged var date: Date
     @NSManaged var dateKnowledgeRaw: String
+    @NSManaged var dateTimeZoneOffsetSeconds: NSNumber?
     @NSManaged var visitTypeRaw: String?
     @NSManaged var priceBand: Int16
     @NSManaged var occasionRaw: String?
@@ -136,6 +140,20 @@ final class VisitEntity: NSManagedObject, Identifiable {
     var dateKnowledge: VisitDateKnowledge {
         get { VisitDateKnowledge(rawValue: dateKnowledgeRaw) ?? .known }
         set { dateKnowledgeRaw = newValue.rawValue }
+    }
+    var dateTimeZone: TimeZone? {
+        DiningDateContext.timeZone(offsetSeconds: dateTimeZoneOffsetSeconds?.intValue)
+    }
+    func formattedDateTime(
+        dateStyle: DateFormatter.Style = .full,
+        timeStyle: DateFormatter.Style = .short
+    ) -> String {
+        DiningDateContext.format(
+            date,
+            dateStyle: dateStyle,
+            timeStyle: timeStyle,
+            offsetSeconds: dateTimeZoneOffsetSeconds?.intValue
+        )
     }
     var hasKnownDate: Bool { dateKnowledge == .known }
     var occasion: Occasion? {
@@ -273,7 +291,23 @@ final class PhotoEntity: NSManagedObject, Identifiable {
     @NSManaged var fullData: Data?
     @NSManaged var createdAt: Date
     @NSManaged var captureDate: Date?
+    @NSManaged var captureTimeZoneOffsetSeconds: NSNumber?
     @NSManaged var visit: VisitEntity?
+
+    var captureTimeZone: TimeZone? {
+        DiningDateContext.timeZone(offsetSeconds: captureTimeZoneOffsetSeconds?.intValue)
+    }
+    func formattedDateTime(
+        dateStyle: DateFormatter.Style = .short,
+        timeStyle: DateFormatter.Style = .short
+    ) -> String {
+        DiningDateContext.format(
+            captureDate ?? createdAt,
+            dateStyle: dateStyle,
+            timeStyle: timeStyle,
+            offsetSeconds: captureTimeZoneOffsetSeconds?.intValue
+        )
+    }
 }
 
 @objc(ComparisonEntity)
@@ -333,6 +367,36 @@ final class ExternalImportSessionEntity: NSManagedObject, Identifiable {
 
     var linkArray: [ExternalImportLinkEntity] {
         ((links?.allObjects as? [ExternalImportLinkEntity]) ?? []).filter(\.isAlive)
+    }
+}
+
+/// Device-local activity inbox row. These rows deliberately have no Core Data
+/// relationships to the dining graph and are not part of encrypted circle
+/// sync. They carry IDs only; the UI resolves current names from AppStore.
+@objc(InAppNotificationEntity)
+final class InAppNotificationEntity: NSManagedObject, Identifiable {
+    @NSManaged var id: UUID
+    @NSManaged var eventKey: String
+    @NSManaged var circleID: UUID
+    @NSManaged var kindRaw: String
+    @NSManaged var actorPersonID: UUID?
+    @NSManaged var targetPersonID: UUID?
+    @NSManaged var locationID: UUID?
+    @NSManaged var visitID: UUID?
+    @NSManaged var detailRaw: String?
+    @NSManaged var audiencePersonIDsBlob: Data?
+    @NSManaged var occurredAt: Date
+    @NSManaged var receivedAt: Date
+    @NSManaged var readAt: Date?
+
+    var audiencePersonIDs: [UUID] {
+        get {
+            guard let audiencePersonIDsBlob else { return [] }
+            return (try? JSONDecoder().decode([UUID].self, from: audiencePersonIDsBlob)) ?? []
+        }
+        set {
+            audiencePersonIDsBlob = try? JSONEncoder().encode(newValue.uniqued().sorted { $0.uuidString < $1.uuidString })
+        }
     }
 }
 

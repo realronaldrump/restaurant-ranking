@@ -41,6 +41,8 @@ enum AppRoute: Hashable {
     case visit(UUID)
     case atlas
     case stats
+    case statsDetail(StatsDrilldown)
+    case notifications
     case settleScore
     case wantToTry
     case backfill

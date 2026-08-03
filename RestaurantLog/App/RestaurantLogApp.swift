@@ -7,6 +7,7 @@ struct RestaurantLogApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @State private var store: AppStore?
     @State private var sync: SyncCoordinator?
+    @State private var notifications: NotificationInbox?
     @State private var router = AppRouter()
     @State private var locationService = LocationService()
     @State private var launchMessage = "Opening your restaurant log…"
@@ -35,8 +36,8 @@ struct RestaurantLogApp: App {
     var body: some Scene {
         WindowGroup {
             Group {
-                if let store, let sync {
-                    loadedContent(store, sync)
+                if let store, let sync, let notifications {
+                    loadedContent(store, sync, notifications)
                 } else {
                     AppLaunchView(message: launchMessage)
                         .task { await prepareApp() }
@@ -62,7 +63,7 @@ struct RestaurantLogApp: App {
     }
 
     @ViewBuilder
-    private func loadedContent(_ store: AppStore, _ sync: SyncCoordinator) -> some View {
+    private func loadedContent(_ store: AppStore, _ sync: SyncCoordinator, _ notifications: NotificationInbox) -> some View {
         @Bindable var router = router
         Group {
             if didCompleteGrandOpening, store.activeCircle != nil, !isOnboardingSessionActive {
@@ -80,6 +81,7 @@ struct RestaurantLogApp: App {
         }
         .environment(store)
         .environment(sync)
+        .environment(notifications)
         .environment(router)
         .environment(locationService)
         // An invitation gets its own presenter, bound directly to the pending
@@ -150,6 +152,7 @@ struct RestaurantLogApp: App {
         let persistence = PersistenceController.shared
         await persistence.prepare()
         let preparedStore = AppStore(persistence: persistence)
+        let preparedNotifications = NotificationInbox(persistence: persistence)
         // One device, one dining log. Older builds could leave a second circle
         // behind after an invitation, which stranded records where nobody else
         // could see them.
@@ -193,6 +196,7 @@ struct RestaurantLogApp: App {
         }
         store = preparedStore
         sync = coordinator
+        notifications = preparedNotifications
         router.restorePendingInvitation()
         await connectCircle(preparedStore, coordinator)
     }

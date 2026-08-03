@@ -5,6 +5,7 @@ struct MoreView: View {
     @Environment(AppStore.self) private var store
     @Environment(AppRouter.self) private var router
     @Environment(SyncCoordinator.self) private var sync
+    @Environment(NotificationInbox.self) private var inbox
 
     var body: some View {
         ScrollView {
@@ -13,6 +14,7 @@ struct MoreView: View {
                 toolSection(
                     title: "Your log",
                     tools: [
+                        ("Activity", activityToolDetail, "bell.fill", .notifications),
                         ("Want to Try", "A shortlist for next time", "bookmark.fill", .wantToTry),
                         ("Statistics", "Totals across your outings", "chart.bar.xaxis", .stats),
                         ("Find outings in photos", "Add past outings from your photos", "photo.stack", .backfill)
@@ -142,6 +144,11 @@ struct MoreView: View {
 
     private var circleStatusTaskID: String {
         "\(store.activeCircleID?.uuidString ?? "none")-\(sync.isSignedIn)"
+    }
+
+    private var activityToolDetail: String {
+        let count = inbox.unreadCount(circleID: store.activeCircleID, viewerID: store.currentPerson?.id)
+        return count == 0 ? "Nothing new from your circle" : "\(count) unread \(count == 1 ? "update" : "updates")"
     }
 
     private typealias Tool = (title: String, detail: String, symbol: String, route: AppRoute)

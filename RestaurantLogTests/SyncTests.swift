@@ -675,11 +675,25 @@ final class SyncSnapshotTests: XCTestCase {
     private func seedLog() throws -> UUID {
         let circleID = try XCTUnwrap(store.activeCircleID)
         let location = store.createLocation(name: "Cafe Cappuccino", category: .fullService)
-        let visit = store.logVisit(at: location, reaction: .loved)
+        let instant = Date(timeIntervalSince1970: 1_721_000_000)
+        let visit = store.logVisit(
+            at: location,
+            reaction: .loved,
+            date: instant,
+            dateTimeZoneOffsetSeconds: -6 * 60 * 60,
+            companionIDs: [try XCTUnwrap(store.otherCircleMembers.first).id]
+        )
         let michelle = try XCTUnwrap(store.otherCircleMembers.first)
         _ = store.addRating(to: visit, personID: michelle.id, reaction: .liked)
         XCTAssertTrue(store.setCoonReaction(.unexpectedlyWonderful, to: michelle.id, in: visit))
-        store.addPhoto(fullData: Data([0x01, 0x02]), thumbnailData: Data([0x03]), to: visit)
+        store.addPhoto(
+            fullData: Data([0x01, 0x02]),
+            thumbnailData: Data([0x03]),
+            to: visit,
+            createdAt: instant,
+            captureDate: instant,
+            captureTimeZoneOffsetSeconds: -6 * 60 * 60
+        )
         store.toggleWant(store.createLocation(name: "Someday Diner", category: .fullService))
         store.recordAnchor(for: location, value: 88)
         return circleID
@@ -704,6 +718,12 @@ final class SyncSnapshotTests: XCTestCase {
         let decoded = try SyncPayloadCodec.decode(AppBackupArchive.PhotoRecord.self, from: payload)
         XCTAssertNil(decoded.fullData)
         XCTAssertNil(decoded.thumbnailData)
+        XCTAssertEqual(decoded.captureTimeZoneOffsetSeconds, -6 * 60 * 60)
+
+        let visitKey = try XCTUnwrap(snapshot.records.keys.first { $0.kind == .visit })
+        let visitPayload = try XCTUnwrap(snapshot.records[visitKey]).payload
+        let decodedVisit = try SyncPayloadCodec.decode(AppBackupArchive.VisitRecord.self, from: visitPayload)
+        XCTAssertEqual(decodedVisit.dateTimeZoneOffsetSeconds, -6 * 60 * 60)
     }
 
     func testAMissingCircleYieldsAnEmptySnapshotRatherThanAnError() throws {
@@ -758,6 +778,57 @@ final class SyncSnapshotTests: XCTestCase {
             baseline: rebuilt.records.mapValues(\.fingerprint)
         )
         XCTAssertTrue(settled.isEmpty)
+    }
+
+    func testLegacyPayloadsPreserveNewerCreatorAndTimezoneFields() throws {
+        let circleID = try seedLog()
+        let snapshot = try SyncSnapshotBuilder.build(circleID: circleID, in: store.context)
+        let location = try XCTUnwrap(store.locations.first { $0.name == "Cafe Cappuccino" })
+        let visit = try XCTUnwrap(location.visitArray.first)
+        let photo = try XCTUnwrap(visit.photoArray.first)
+        let creatorID = try XCTUnwrap(location.createdByID)
+        let visitOffset = try XCTUnwrap(visit.dateTimeZoneOffsetSeconds?.intValue)
+        let photoOffset = try XCTUnwrap(photo.captureTimeZoneOffsetSeconds?.intValue)
+
+        func payloadRemoving(_ field: String, from payload: Data) throws -> Data {
+            var object = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: payload) as? [String: Any]
+            )
+            object.removeValue(forKey: field)
+            return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        }
+
+        let fieldsByKind: [SyncKind: String] = [
+            .location: "createdByID",
+            .visit: "dateTimeZoneOffsetSeconds",
+            .photo: "captureTimeZoneOffsetSeconds"
+        ]
+        var remote: [SyncKey: DecodedSyncRecord] = [:]
+        for (kind, field) in fieldsByKind {
+            let key = try XCTUnwrap(snapshot.records.keys.first { $0.kind == kind })
+            let current = try XCTUnwrap(snapshot.records[key])
+            let payload = try payloadRemoving(field, from: current.payload)
+            remote[key] = DecodedSyncRecord(
+                key: key,
+                payload: payload,
+                fingerprint: SyncPayloadCodec.fingerprint(payload),
+                deleted: false,
+                updatedMS: 2,
+                deviceID: nil
+            )
+        }
+
+        _ = try SyncApplier.apply(
+            records: remote,
+            applying: Array(remote.keys),
+            deleting: [],
+            circleID: circleID,
+            in: store.context
+        )
+
+        XCTAssertEqual(location.createdByID, creatorID)
+        XCTAssertEqual(visit.dateTimeZoneOffsetSeconds?.intValue, visitOffset)
+        XCTAssertEqual(photo.captureTimeZoneOffsetSeconds?.intValue, photoOffset)
     }
 
     func testAppliedTombstonesRemoveTheRecordLocally() throws {

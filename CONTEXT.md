@@ -40,6 +40,13 @@ _Avoid_: Dish reaction without an owner
 - A **Diner Entry** can contain many **Dish Entries**
 - A **Dish Entry** belongs to exactly one participant and one canonical **Dish**
 
+## Ownership and access
+
+- Circle membership makes an **Outing** visible; it does not make every circle member a **Participant**
+- Only the person who logged an **Outing** can edit or delete its shared restaurant, date, details, and participant list
+- A recorded **Participant** can add or edit only their own **Diner Entry**
+- Someone who is not a participant, including a person marked **not there**, has read-only access to the outing
+
 ## Example dialogue
 
 > **Dev:** “George and Michelle independently logged the same dinner. Should those be two outings?”

@@ -68,7 +68,7 @@ struct BackfillView: View {
         VStack(alignment: .leading, spacing: 18) {
             confirmationProgress
             photoStrip(cluster.photos)
-            Text("\(cluster.photos.count) \(cluster.photos.count == 1 ? "photo" : "photos") from \(cluster.date.formatted(date: .long, time: .shortened))").font(BBTheme.display(24))
+            Text("\(cluster.photos.count) \(cluster.photos.count == 1 ? "photo" : "photos") from \(cluster.formattedDateTime)").font(BBTheme.display(24))
             if cluster.coordinate == nil { Text("These photos have no location. Search for the restaurant below.").font(.callout).foregroundStyle(.secondary) }
             searchField
             candidateList(for: cluster)
@@ -234,6 +234,7 @@ struct BackfillView: View {
                 reaction: nil,
                 personID: personID,
                 date: cluster.date,
+                dateTimeZoneOffsetSeconds: cluster.timeZoneOffsetSeconds,
                 coordinate: visitCoordinate
             )
             for photo in cluster.photos {
@@ -242,7 +243,8 @@ struct BackfillView: View {
                     thumbnailData: photo.thumbnailData,
                     to: visit,
                     createdAt: photo.date,
-                    captureDate: photo.captureDate
+                    captureDate: photo.captureDate,
+                    captureTimeZoneOffsetSeconds: photo.captureTimeZoneOffsetSeconds
                 )
             }
             return visit
@@ -304,7 +306,7 @@ private struct BackfillRatingView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     Eyebrow("Past outing")
                     Text(visit.location?.name ?? "Outing").font(BBTheme.display(35))
-                    Text(visit.dateKnowledge == .known ? visit.date.formatted(date: .complete, time: .shortened) : "Date unknown").foregroundStyle(.secondary)
+                    Text(visit.dateKnowledge == .known ? visit.formattedDateTime() : "Date unknown").foregroundStyle(.secondary)
                     Text("How clearly do you remember it?").font(BBTheme.display(24))
                     ReactionPicker(selected: reaction) { reaction = $0 }
                     Toggle("Hazy memory · count it less", isOn: $hazy)

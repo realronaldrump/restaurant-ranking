@@ -4,6 +4,8 @@ import SwiftUI
 struct PhotoViewerSnapshot: Identifiable {
     let id: UUID
     let createdAt: Date
+    let captureDate: Date?
+    let captureTimeZoneOffsetSeconds: Int?
     let caption: String?
     let imageData: Data?
 
@@ -11,19 +13,39 @@ struct PhotoViewerSnapshot: Identifiable {
         guard photo.isAlive else { return nil }
         id = photo.id
         createdAt = photo.createdAt
+        captureDate = photo.captureDate
+        captureTimeZoneOffsetSeconds = photo.captureTimeZoneOffsetSeconds?.intValue
         caption = photo.caption
         imageData = photo.fullData ?? photo.thumbnailData
     }
 
     fileprivate static var unavailable: Self {
-        .init(id: UUID(), createdAt: .now, caption: nil, imageData: nil)
+        .init(id: UUID(), createdAt: .now, captureDate: nil, captureTimeZoneOffsetSeconds: nil, caption: nil, imageData: nil)
     }
 
-    private init(id: UUID, createdAt: Date, caption: String?, imageData: Data?) {
+    private init(
+        id: UUID,
+        createdAt: Date,
+        captureDate: Date?,
+        captureTimeZoneOffsetSeconds: Int?,
+        caption: String?,
+        imageData: Data?
+    ) {
         self.id = id
         self.createdAt = createdAt
+        self.captureDate = captureDate
+        self.captureTimeZoneOffsetSeconds = captureTimeZoneOffsetSeconds
         self.caption = caption
         self.imageData = imageData
+    }
+
+    var formattedDateTime: String {
+        DiningDateContext.format(
+            captureDate ?? createdAt,
+            dateStyle: .short,
+            timeStyle: .short,
+            offsetSeconds: captureDate == nil ? nil : captureTimeZoneOffsetSeconds
+        )
     }
 }
 
@@ -57,7 +79,7 @@ struct PhotoViewer: View {
                     .gesture(magnify)
                     .simultaneousGesture(panOrDismiss)
                     .onTapGesture(count: 2) { toggleZoom() }
-                    .accessibilityLabel("Outing photo from \(photo.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                    .accessibilityLabel("Outing photo from \(photo.formattedDateTime)")
             } else if loadFailed {
                 ContentUnavailableView("Photo unavailable", systemImage: "photo.badge.exclamationmark").foregroundStyle(.white)
             } else {

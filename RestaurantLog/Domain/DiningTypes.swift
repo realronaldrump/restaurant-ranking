@@ -1,5 +1,99 @@
 import Foundation
 
+enum DiningTimeZoneOffset {
+    static func seconds(from value: String) -> Int? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if trimmed == "Z" { return 0 }
+
+        let characters = Array(trimmed)
+        guard characters.count == 6 || characters.count == 5,
+              characters[0] == "+" || characters[0] == "-" else { return nil }
+        let separatorIndex = characters.count == 6 ? 3 : 0
+        if characters.count == 6 && characters[separatorIndex] != ":" { return nil }
+
+        let hourStart = 1
+        let minuteStart = characters.count == 6 ? 4 : 3
+        guard let hours = Int(String(characters[hourStart..<(hourStart + 2)])),
+              let minutes = Int(String(characters[minuteStart..<(minuteStart + 2)])),
+              hours <= 23, minutes <= 59 else { return nil }
+        let total = hours * 60 * 60 + minutes * 60
+        return characters[0] == "-" ? -total : total
+    }
+}
+
+enum DiningDateContext {
+    static func timeZone(offsetSeconds: Int?) -> TimeZone? {
+        guard let offsetSeconds, abs(offsetSeconds) <= 24 * 60 * 60 else { return nil }
+        return TimeZone(secondsFromGMT: offsetSeconds)
+    }
+
+    static func currentOffset(for date: Date) -> Int {
+        TimeZone.autoupdatingCurrent.secondsFromGMT(for: date)
+    }
+
+    static func calendar(offsetSeconds: Int?) -> Calendar {
+        var calendar = Calendar.autoupdatingCurrent
+        if let timeZone = timeZone(offsetSeconds: offsetSeconds) {
+            calendar.timeZone = timeZone
+        }
+        return calendar
+    }
+
+    static func format(
+        _ date: Date,
+        dateStyle: DateFormatter.Style,
+        timeStyle: DateFormatter.Style,
+        offsetSeconds: Int? = nil
+    ) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = .autoupdatingCurrent
+        formatter.calendar = calendar(offsetSeconds: offsetSeconds)
+        formatter.dateStyle = dateStyle
+        formatter.timeStyle = timeStyle
+        if let timeZone = timeZone(offsetSeconds: offsetSeconds) {
+            formatter.timeZone = timeZone
+        }
+        return formatter.string(from: date)
+    }
+
+    static func year(of date: Date, offsetSeconds: Int?) -> Int {
+        calendar(offsetSeconds: offsetSeconds).component(.year, from: date)
+    }
+
+    static func stableDayKey(for date: Date, offsetSeconds: Int?) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone(offsetSeconds: offsetSeconds) ?? .autoupdatingCurrent
+        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(
+            format: "%04d-%02d-%02d",
+            components.year ?? 0,
+            components.month ?? 0,
+            components.day ?? 0
+        )
+    }
+
+    static func isSameCalendarDay(
+        _ lhs: Date,
+        lhsOffsetSeconds: Int?,
+        _ rhs: Date,
+        rhsOffsetSeconds: Int?
+    ) -> Bool {
+        stableDayKey(for: lhs, offsetSeconds: lhsOffsetSeconds)
+            == stableDayKey(for: rhs, offsetSeconds: rhsOffsetSeconds)
+    }
+
+    static func formatMonthYear(_ date: Date, offsetSeconds: Int?) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = .autoupdatingCurrent
+        formatter.calendar = calendar(offsetSeconds: offsetSeconds)
+        formatter.setLocalizedDateFormatFromTemplate("MMMyyyy")
+        if let timeZone = timeZone(offsetSeconds: offsetSeconds) {
+            formatter.timeZone = timeZone
+        }
+        return formatter.string(from: date)
+    }
+}
+
 enum DiningCategory: String, CaseIterable, Codable, Identifiable, Sendable {
     case fullService = "Full-Service Restaurants"
     case counterService = "Counter Service and Fast Food"

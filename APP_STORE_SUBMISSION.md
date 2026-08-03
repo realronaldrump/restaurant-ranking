@@ -5,18 +5,18 @@
 - Product: Big Beautiful Restaurant Log
 - Bundle identifier: `com.davis.bigbeautifulranking`
 - Sync service: Supabase project (host and anon key supplied through `Config/Supabase.local.xcconfig`)
-- Version: 3.2 (build 21)
-- Release date: August 1, 2026
+- Version: 3.2.3 (build 23)
+- Release date: August 3, 2026
 - Devices: iPhone only
 - Minimum OS: iOS 17.0
 
 ## App Privacy answers
 
-> **Completed for 3.0.2 on July 29, 2026 and unchanged for 3.2.** Earlier
+> **Completed for 3.0.2 on July 29, 2026 and unchanged for 3.2.3.** Earlier
 > releases answered **Data Not Collected** because sharing ran entirely through
 > the user's own iCloud account. App Store Connect publishes the seven data types
 > below as linked to the user, used for App Functionality, and not used for
-> tracking. 3.2 collects nothing new: it fixes sync and sharing lifecycle defects;
+> tracking. 3.2.3 collects nothing new: it fixes sync and sharing lifecycle defects;
 > it changes no data categories and does not change what leaves the device.
 
 The developer cannot read dining records: every payload and photo is encrypted on
@@ -86,22 +86,26 @@ reading user-selected imports and backups.
 
 ## Final release gates
 
-- App Store build: version 3.2, build 21. It supersedes version 3.1.3, build 19,
+- App Store build: version 3.2.3, build 23. It supersedes version 3.2.2, build 22,
+  and version 3.1.3, build 19,
   whose circle reset/leave recovery could retain stale memberships, whose member
   identity could be reassigned after a leave, and whose repeated photo cleanup
   surfaced a misleading Storage 400 on the Sharing screen. It also supersedes
   submitted build 3.1.2 (build 16), whose mixed live-record/tombstone sync batches
   could be rejected by the production payload-presence constraint.
-- **Apply `supabase/migrations/0010_join_codes.sql` before this build reaches
-  anybody.** Join codes cannot be created or redeemed without it. The migration
-  is additive and leaves the 3.0.2 functions in place, so build 13 keeps working
-  until it is replaced. Applied to the production project on July 30, 2026;
-  verified by the six-row check in `supabase/README.md`.
+- **Production sync schema:** the linked Supabase project is active and healthy.
+  A read-only verification on August 3, 2026 confirmed the `records`,
+  `circle_members`, and `circle_invites` tables plus the
+  `create_join_code`, `redeem_join_code`, and `set_circle_member_person`
+  functions. The migration ledger uses historical names for the earlier
+  repository migrations, so do not run `supabase db push` against production
+  until that ledger drift is reconciled; the current schema is already in
+  place.
 - Confirm `supabase/migrations/20260801161054_lock_circle_member_identity.sql`
   remains applied. It prevents any client, including an older build, from
-  reassigning an enrolled account to another person's profile. Applied to the
-  production project on August 1, 2026.
-- TestFlight: assign build 21 to the external **Big Beautiful Testers** group,
+  reassigning an enrolled account to another person's profile. It is present in
+  the production migration ledger as of August 3, 2026.
+- TestFlight: assign build 23 to the external **Big Beautiful Testers** group,
   complete the two-device soak below, and only then submit the App Store draft.
 - EU Digital Services Act: completed by the Account Holder and shown as
   **Active** for all 27 applicable countries or regions on July 29, 2026.
@@ -115,7 +119,7 @@ Two iPhones on different Apple Accounts. Steps 3 to 6 cover the 3.1.1
 invitation/merge fixes and the 3.1.3 mixed-record sync fix, so do not sign off
 without them.
 
-1. Install version 3.2, build 21 on both phones.
+1. Install version 3.2.3, build 23 on both phones.
 2. On the upgrading phone, confirm the existing restaurants, visits, rankings,
    relationships, and photos survive, and that a log left behind in a second
    circle by an older build has been folded into the one log.
@@ -150,7 +154,20 @@ without them.
     is intact, and that it resumes syncing privately under a new circle.
 14. Sign out and back in on both phones and confirm each log is still complete.
 
-## What’s New in Version 3.2
+## What’s New in Version 3.2.3
+
+- Added an in-app Activity inbox for circle additions, outings, diner entries,
+  and reactions without requesting push-notification permission.
+- Made Statistics interactive, with drill-downs for metrics, reactions, cities,
+  categories, disagreements, repeat outings, and memories.
+- Bounded Settle into short rounds with explicit **Keep settling** and **Done
+  for now** choices.
+- Preserved the source date and time-zone context through photo and Beli
+  imports, sync, history, and backups.
+- Added city sorting in History and continued hardening shared-outing
+  permissions, import idempotency, photo cleanup, and ranking eligibility.
+
+## Previous 3.2 sharing and sync improvements
 
 - Rebuilt sharing around a join code you can read out, text, or tap. Invitation
   links that opened the app and did nothing are fixed, including from a cold
@@ -193,8 +210,9 @@ without them.
    ID. This native-only flow does not require a Services ID, OAuth secret, Key
    ID, or `.p8` key.
 5. Confirm the Xcode project's Development Team is `CZ3N26YJ75`.
-6. Apply every file in `supabase/migrations/` in numerical order, following
-   `supabase/README.md`.
+6. Treat `supabase/migrations/` as the repository schema inventory. Do not run
+   `supabase db push` against the linked production project until its existing
+   historical migration ledger is reconciled with the repository filenames.
 7. Verify `https://realronaldrump.github.io/.well-known/apple-app-site-association`
    serves JSON without a redirect and contains the production Team ID and bundle ID.
    The `bigbeautifullog://` URL scheme registered in `project.yml` is the fallback
@@ -209,7 +227,7 @@ migration accompanies it.
 
 ## Permission behavior
 
-- Location: When In Use only. There is no Always authorization or background visit detection in 3.2.
+- Location: When In Use only. There is no Always authorization or background visit detection in 3.2.3.
 - Photos: the primary Backfill path uses PhotosPicker without library permission. The optional date-range scan requests read access.
 - Notifications: no user-visible notifications are requested.
 

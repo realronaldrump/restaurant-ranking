@@ -137,6 +137,10 @@ struct BackfillPhoto: Identifiable, Sendable {
     /// The timestamp read from the image itself. `date` may instead contain a
     /// caller-provided fallback used for storing an otherwise valid image.
     let captureDate: Date?
+    /// The local timezone offset represented by the capture timestamp. This is
+    /// kept separately from `Date` so a photo taken at 2 PM MDT still displays
+    /// as 2 PM after the device moves to CDT.
+    let captureTimeZoneOffsetSeconds: Int?
 
     init(
         id: UUID,
@@ -144,7 +148,8 @@ struct BackfillPhoto: Identifiable, Sendable {
         thumbnailData: Data?,
         date: Date,
         coordinate: CLLocationCoordinate2D?,
-        captureDate: Date? = nil
+        captureDate: Date? = nil,
+        captureTimeZoneOffsetSeconds: Int? = nil
     ) {
         self.id = id
         self.fullData = fullData
@@ -152,6 +157,7 @@ struct BackfillPhoto: Identifiable, Sendable {
         self.date = date
         self.coordinate = coordinate
         self.captureDate = captureDate
+        self.captureTimeZoneOffsetSeconds = captureTimeZoneOffsetSeconds
     }
 }
 
@@ -159,6 +165,20 @@ struct BackfillCluster: Identifiable {
     let id: UUID
     var photos: [BackfillPhoto]
     var date: Date { photos.map(\.date).min() ?? .now }
+    var timeZoneOffsetSeconds: Int? {
+        photos
+            .filter { $0.captureDate != nil }
+            .min { $0.date < $1.date }?
+            .captureTimeZoneOffsetSeconds
+    }
+    var formattedDateTime: String {
+        DiningDateContext.format(
+            date,
+            dateStyle: .long,
+            timeStyle: .short,
+            offsetSeconds: timeZoneOffsetSeconds
+        )
+    }
     var coordinate: CLLocationCoordinate2D? {
         let values = photos.compactMap(\.coordinate)
         guard !values.isEmpty else { return nil }
@@ -242,8 +262,8 @@ enum ImageSanitizer {
         guard PhotoMemoryPolicy.acceptsSourceFile(byteCount: Int64(data.count)) else { return nil }
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         let metadata = (CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]) ?? [:]
-        let captureDate = captureDate(metadata)
-        guard let date = captureDate ?? fallbackDate else { return nil }
+        let timestamp = captureTimestamp(metadata)
+        guard let date = timestamp?.date ?? fallbackDate else { return nil }
         let coordinate = gpsCoordinate(metadata)
         // ImageIO downsamples while decoding, so a 48 MP original never becomes a
         // full-resolution UIKit bitmap. Re-encoding without source properties
@@ -263,7 +283,10 @@ enum ImageSanitizer {
         ) else { return nil }
         return BackfillPhoto(
             id: UUID(), fullData: full, thumbnailData: thumbnail,
-            date: date, coordinate: coordinate, captureDate: captureDate
+            date: date,
+            coordinate: coordinate,
+            captureDate: timestamp?.date,
+            captureTimeZoneOffsetSeconds: timestamp?.offsetSeconds
         )
     }
 
@@ -325,17 +348,22 @@ enum ImageSanitizer {
         return output as Data
     }
 
-    private static func captureDate(_ metadata: [CFString: Any]) -> Date? {
+    private static func captureTimestamp(_ metadata: [CFString: Any]) -> (date: Date, offsetSeconds: Int?)? {
         let exif = metadata[kCGImagePropertyExifDictionary] as? [CFString: Any]
         guard let string = exif?[kCGImagePropertyExifDateTimeOriginal] as? String else { return nil }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         if let offset = exif?[kCGImagePropertyExifOffsetTimeOriginal] as? String {
             formatter.dateFormat = "yyyy:MM:dd HH:mm:ssXXXXX"
-            if let date = formatter.date(from: string + offset) { return date }
+            if let date = formatter.date(from: string + offset),
+               let offsetSeconds = DiningTimeZoneOffset.seconds(from: offset) {
+                return (date, offsetSeconds)
+            }
         }
+        formatter.timeZone = .autoupdatingCurrent
         formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
-        return formatter.date(from: string)
+        guard let date = formatter.date(from: string) else { return nil }
+        return (date, formatter.timeZone.secondsFromGMT(for: date))
     }
 
     private static func gpsCoordinate(_ metadata: [CFString: Any]) -> CLLocationCoordinate2D? {
@@ -388,18 +416,46 @@ enum PhotoLibraryScanner {
                   let fileURL = await imageFile(for: asset) else { continue }
             defer { try? FileManager.default.removeItem(at: fileURL) }
             if let photo = await ImageSanitizer.processOffMain(fileURL: fileURL, date: asset.creationDate ?? .now) {
-                let assetCoordinate = asset.location?.coordinate
-                let corrected = BackfillPhoto(
-                    id: photo.id, fullData: photo.fullData, thumbnailData: photo.thumbnailData,
-                    date: asset.creationDate ?? photo.date,
-                    coordinate: assetCoordinate.flatMap { CLLocationCoordinate2DIsValid($0) ? $0 : nil }
-                        ?? photo.coordinate,
-                    captureDate: asset.creationDate ?? photo.captureDate
-                )
-                output.append(corrected)
+                output.append(photoByApplyingLibraryMetadata(
+                    photo,
+                    assetCreationDate: asset.creationDate,
+                    assetCoordinate: asset.location?.coordinate
+                ))
             }
         }
         return output
+    }
+
+    /// Prefer the timestamp and offset decoded from the image as a pair. Only
+    /// fall back to PhotoKit's creation date when the image has no EXIF time.
+    static func photoByApplyingLibraryMetadata(
+        _ photo: BackfillPhoto,
+        assetCreationDate: Date?,
+        assetCoordinate: CLLocationCoordinate2D?
+    ) -> BackfillPhoto {
+        let captureDate: Date?
+        let offsetSeconds: Int?
+        if let embeddedCaptureDate = photo.captureDate {
+            captureDate = embeddedCaptureDate
+            offsetSeconds = photo.captureTimeZoneOffsetSeconds
+        } else if let assetCreationDate {
+            captureDate = assetCreationDate
+            offsetSeconds = DiningDateContext.currentOffset(for: assetCreationDate)
+        } else {
+            captureDate = nil
+            offsetSeconds = nil
+        }
+        return BackfillPhoto(
+            id: photo.id,
+            fullData: photo.fullData,
+            thumbnailData: photo.thumbnailData,
+            date: captureDate ?? photo.date,
+            coordinate: assetCoordinate.flatMap {
+                CLLocationCoordinate2DIsValid($0) ? $0 : nil
+            } ?? photo.coordinate,
+            captureDate: captureDate,
+            captureTimeZoneOffsetSeconds: offsetSeconds
+        )
     }
 
     private static func imageFile(for asset: PHAsset) async -> URL? {

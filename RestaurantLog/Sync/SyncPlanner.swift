@@ -150,6 +150,9 @@ struct SyncBaseline: Codable, Equatable {
     /// remain in the pull overlap window, so this prevents every later pass
     /// from issuing the same object deletion again.
     var cleanedPhotoIDs: Set<UUID>
+    /// Activity is quiet during the first successful hydration of an existing
+    /// circle, rather than presenting the whole history as new.
+    var activitySeeded: Bool
 
     init(
         circleID: UUID,
@@ -157,7 +160,8 @@ struct SyncBaseline: Codable, Equatable {
         fingerprints: [String: String] = [:],
         uploadedPhotoIDs: Set<UUID> = [],
         downloadedPhotoIDs: Set<UUID> = [],
-        cleanedPhotoIDs: Set<UUID> = []
+        cleanedPhotoIDs: Set<UUID> = [],
+        activitySeeded: Bool = false
     ) {
         self.circleID = circleID
         self.watermark = watermark
@@ -165,10 +169,11 @@ struct SyncBaseline: Codable, Equatable {
         self.uploadedPhotoIDs = uploadedPhotoIDs
         self.downloadedPhotoIDs = downloadedPhotoIDs
         self.cleanedPhotoIDs = cleanedPhotoIDs
+        self.activitySeeded = activitySeeded
     }
 
     private enum CodingKeys: String, CodingKey {
-        case circleID, watermark, fingerprints, uploadedPhotoIDs, downloadedPhotoIDs, cleanedPhotoIDs
+        case circleID, watermark, fingerprints, uploadedPhotoIDs, downloadedPhotoIDs, cleanedPhotoIDs, activitySeeded
     }
 
     init(from decoder: Decoder) throws {
@@ -181,6 +186,7 @@ struct SyncBaseline: Codable, Equatable {
         // Baselines from released builds predate this field. Treating them as
         // having no completed cleanup makes the upgrade safe and retryable.
         cleanedPhotoIDs = try values.decodeIfPresent(Set<UUID>.self, forKey: .cleanedPhotoIDs) ?? []
+        activitySeeded = try values.decodeIfPresent(Bool.self, forKey: .activitySeeded) ?? false
     }
 
     static func encodeKey(_ key: SyncKey) -> String {

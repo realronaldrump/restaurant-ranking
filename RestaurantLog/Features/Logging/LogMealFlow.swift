@@ -252,6 +252,10 @@ struct LogMealFlow: View {
                         selection: $visitDate,
                         displayedComponents: [.date, .hourAndMinute]
                     )
+                    .environment(
+                        \.calendar,
+                        DiningDateContext.calendar(offsetSeconds: mealPhoto.captureTimeZoneOffsetSeconds)
+                    )
                     .labelsHidden()
                     .frame(minHeight: 44, alignment: .leading)
                     .accessibilityIdentifier("photo-meal-date")
@@ -471,7 +475,12 @@ struct LogMealFlow: View {
                                 .foregroundStyle(.secondary)
                                 .lineLimit(2)
                             Label(
-                                visitDate.formatted(date: .abbreviated, time: .shortened),
+                                DiningDateContext.format(
+                                    visitDate,
+                                    dateStyle: .short,
+                                    timeStyle: .short,
+                                    offsetSeconds: mealPhoto?.captureTimeZoneOffsetSeconds
+                                ),
                                 systemImage: "calendar"
                             )
                             .font(.caption.weight(.semibold))
@@ -515,6 +524,10 @@ struct LogMealFlow: View {
                                 ))
                                 if visitDateKnowledge == .known {
                                     DatePicker("Outing date and time", selection: $visitDate, displayedComponents: [.date, .hourAndMinute])
+                                        .environment(
+                                            \.calendar,
+                                            DiningDateContext.calendar(offsetSeconds: mealPhoto?.captureTimeZoneOffsetSeconds)
+                                        )
                                 }
                             }
                         }
@@ -575,7 +588,13 @@ struct LogMealFlow: View {
                             .foregroundStyle(BBTheme.oxblood)
                         Eyebrow("Outing saved")
                         Text(location.name).font(BBTheme.display(35)).multilineTextAlignment(.center)
-                        ScoreMark(score: score.score, caption: "return score", size: 74, provisional: score.isProvisional)
+                        ScoreMark(
+                            score: score.score,
+                            caption: "return score",
+                            size: 74,
+                            provisional: score.isProvisional,
+                            alignment: .center
+                        )
                     }
                     .padding(.bottom, 4)
                     .scaleEffect(payoffAppeared ? 1 : 0.85)
@@ -907,6 +926,7 @@ struct LogMealFlow: View {
                 personID: personID,
                 date: visitDate,
                 dateKnowledge: visitDateKnowledge,
+                dateTimeZoneOffsetSeconds: mealPhoto?.captureTimeZoneOffsetSeconds,
                 companionIDs: store.circleMembers.filter { taggedMemberIDs.contains($0.id) }.map(\.id),
                 coordinate: visitCoordinate
             )
@@ -916,7 +936,8 @@ struct LogMealFlow: View {
                     thumbnailData: mealPhoto.thumbnailData,
                     to: visit,
                     createdAt: mealPhoto.date,
-                    captureDate: mealPhoto.captureDate
+                    captureDate: mealPhoto.captureDate,
+                    captureTimeZoneOffsetSeconds: mealPhoto.captureTimeZoneOffsetSeconds
                 )
             }
             return (location, visit)
@@ -942,7 +963,8 @@ struct LogMealFlow: View {
                     to: outing,
                     personID: personID,
                     createdAt: mealPhoto.date,
-                    captureDate: mealPhoto.captureDate
+                    captureDate: mealPhoto.captureDate,
+                    captureTimeZoneOffsetSeconds: mealPhoto.captureTimeZoneOffsetSeconds
                 )
             }
         }
@@ -1341,10 +1363,13 @@ struct AddMoreVisitView: View {
 
     var body: some View {
         Group {
-            if visit.isAlive {
+            if visit.isAlive, canEditDinerEntry {
                 editorContent
             } else {
-                ContentUnavailableView("Outing unavailable", systemImage: "fork.knife.circle")
+                ContentUnavailableView(
+                    visit.isAlive ? "Outing is read-only" : "Outing unavailable",
+                    systemImage: "fork.knife.circle"
+                )
                     .task {
                         await Task.yield()
                         dismiss()
@@ -1409,6 +1434,10 @@ struct AddMoreVisitView: View {
             ))
             if visitDateKnowledge == .known {
                 DatePicker("Outing date and time", selection: $visitDate, displayedComponents: [.date, .hourAndMinute])
+                    .environment(
+                        \.calendar,
+                        DiningDateContext.calendar(offsetSeconds: visit.dateTimeZoneOffsetSeconds?.intValue)
+                    )
             }
             detailPicker("Outing type", selection: $visitType, values: VisitType.allCases)
             pricePicker
@@ -1450,6 +1479,10 @@ struct AddMoreVisitView: View {
 
     private var canEditOuting: Bool {
         visit.isAlive && store.canEditOuting(visit, personID: personID)
+    }
+
+    private var canEditDinerEntry: Bool {
+        visit.isAlive && store.canEditDinerEntry(visit, personID: personID)
     }
 
     private var hasUnsavedChanges: Bool {
@@ -1712,7 +1745,7 @@ struct AddMoreVisitView: View {
     }
 
     private func save() async {
-        guard visit.isAlive else {
+        guard visit.isAlive, canEditDinerEntry else {
             dismiss()
             return
         }
@@ -1747,6 +1780,7 @@ struct AddMoreVisitView: View {
                 store.updateVisitDate(
                     visit,
                     date: visitDateKnowledge == .known ? visitDate : nil,
+                    dateTimeZoneOffsetSeconds: visit.dateTimeZoneOffsetSeconds?.intValue,
                     editorID: personID
                 )
                 store.updateVisit(
@@ -1758,14 +1792,23 @@ struct AddMoreVisitView: View {
             }
             if let personID {
                 if let reaction {
-                    let rating = store.addRating(to: visit, personID: personID, reaction: reaction, hazy: hazy)
-                    store.updateRating(rating, service: service, atmosphere: atmosphere, value: value, wouldOrderAgain: wouldOrderAgain, hazy: hazy)
+                    if let rating = store.addRating(to: visit, personID: personID, reaction: reaction, hazy: hazy) {
+                        store.updateRating(
+                            rating,
+                            service: service,
+                            atmosphere: atmosphere,
+                            value: value,
+                            wouldOrderAgain: wouldOrderAgain,
+                            hazy: hazy,
+                            personID: personID
+                        )
+                    }
                 }
                 for dish in dishes {
                     _ = store.addDish(name: dish.name, role: dish.role, reaction: dish.reaction, wouldOrderAgain: dish.wouldOrderAgain, to: visit, personID: personID)
                 }
             }
-            store.updateVisitDateFromPhotoMetadata(visit, photos: sanitizedPhotos)
+            store.updateVisitDateFromPhotoMetadata(visit, photos: sanitizedPhotos, editorID: personID)
             for photo in sanitizedPhotos {
                 store.addPhoto(
                     fullData: photo.fullData,
@@ -1773,7 +1816,8 @@ struct AddMoreVisitView: View {
                     to: visit,
                     personID: personID,
                     createdAt: photo.date,
-                    captureDate: photo.captureDate
+                    captureDate: photo.captureDate,
+                    captureTimeZoneOffsetSeconds: photo.captureTimeZoneOffsetSeconds
                 )
             }
         }

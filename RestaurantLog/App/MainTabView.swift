@@ -73,6 +73,8 @@ private struct DestinationView: View {
             else { ContentUnavailableView("Outing not found", systemImage: "calendar.badge.exclamationmark") }
         case .atlas: DiningAtlasView()
         case .stats: StatsView()
+        case .statsDetail(let drilldown): StatsDetailView(drilldown: drilldown)
+        case .notifications: NotificationsView()
         case .settleScore: SettleScoreView()
         case .wantToTry: WantToTryView()
         case .backfill: BackfillView()

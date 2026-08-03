@@ -887,7 +887,8 @@ final class AppStore {
         location.category = category ?? DiningCategory.suggested(for: normalizedName, cuisine: cuisines.first)
         location.address = address; location.city = city; location.phone = phone; location.urlString = url?.absoluteString
         location.sourceIdentifier = sourceIdentifier; location.cuisines = cuisines; location.tags = tags
-        location.createdAt = .now; location.updatedAt = .now; location.circle = activeCircle
+        location.createdAt = .now; location.createdByID = currentPerson?.id
+        location.updatedAt = .now; location.circle = activeCircle
         if let coordinate,
            StoredCoordinatePolicy.isValid(latitude: coordinate.0, longitude: coordinate.1) {
             location.latitude = coordinate.0; location.longitude = coordinate.1; location.hasCoordinates = true
@@ -927,6 +928,7 @@ final class AppStore {
         personID: UUID? = nil,
         date: Date = .now,
         dateKnowledge: VisitDateKnowledge = .known,
+        dateTimeZoneOffsetSeconds: Int? = nil,
         hazy: Bool = false,
         companionIDs: [UUID] = [],
         coordinate: (Double, Double)? = nil
@@ -938,6 +940,9 @@ final class AppStore {
             let visit = VisitEntity(context: context)
             assign(visit, alongside: location)
             visit.id = UUID(); visit.date = date; visit.dateKnowledge = dateKnowledge
+            visit.dateTimeZoneOffsetSeconds = dateKnowledge == .known
+                ? NSNumber(value: dateTimeZoneOffsetSeconds ?? DiningDateContext.currentOffset(for: date))
+                : nil
             visit.createdAt = .now; visit.createdByID = authorID
             let resolvedCompanionIDs = canonicalCompanionIDs(companionIDs, excluding: authorID)
             visit.location = location; visit.circle = activeCircle
@@ -983,7 +988,8 @@ final class AppStore {
     }
 
     @discardableResult
-    func addRating(to visit: VisitEntity, personID: UUID, reaction: Reaction, hazy: Bool = false) -> RatingEntity {
+    func addRating(to visit: VisitEntity, personID: UUID, reaction: Reaction, hazy: Bool = false) -> RatingEntity? {
+        guard canEditDinerEntry(visit, personID: personID) else { return nil }
         let rating: RatingEntity
         if let existing = visit.rating(for: personID) {
             rating = existing
@@ -1002,6 +1008,7 @@ final class AppStore {
 
     func declineRating(for visit: VisitEntity, personID: UUID? = nil) {
         guard let personID = personID ?? currentPerson?.id else { return }
+        guard canEditDinerEntry(visit, personID: personID) else { return }
         let participant = upsertParticipant(for: visit, personID: personID, status: .declined)
         participant.updatedAt = .now
         synchronizeLegacyCompanionIDs(for: visit)
@@ -1010,6 +1017,7 @@ final class AppStore {
 
     func markNotPresent(for visit: VisitEntity, personID: UUID? = nil) {
         guard let personID = personID ?? currentPerson?.id, personID != visit.createdByID else { return }
+        guard canEditDinerEntry(visit, personID: personID) else { return }
         let participant = upsertParticipant(for: visit, personID: personID, status: .notThere)
         participant.updatedAt = .now
         synchronizeLegacyCompanionIDs(for: visit)
@@ -1024,6 +1032,7 @@ final class AppStore {
 
     func updateMemory(_ memory: String?, for visit: VisitEntity, personID: UUID? = nil) {
         guard let personID = personID ?? currentPerson?.id else { return }
+        guard canEditDinerEntry(visit, personID: personID) else { return }
         let clean = memory?.trimmingCharacters(in: .whitespacesAndNewlines)
         let stored = clean?.isEmpty == true ? nil : clean
         let status: VisitParticipationStatus = stored == nil
@@ -1038,6 +1047,7 @@ final class AppStore {
         commit()
     }
 
+    @discardableResult
     func updateRating(
         _ rating: RatingEntity,
         reaction: Reaction? = nil,
@@ -1045,19 +1055,44 @@ final class AppStore {
         atmosphere: Reaction? = nil,
         value: Reaction? = nil,
         wouldOrderAgain: Bool? = nil,
-        hazy: Bool? = nil
-    ) {
+        hazy: Bool? = nil,
+        personID: UUID? = nil
+    ) -> Bool {
+        guard let visit = rating.visit,
+              let personID = personID ?? currentPerson?.id,
+              rating.personID == personID,
+              canEditDinerEntry(visit, personID: personID) else { return false }
         if let reaction { rating.reaction = reaction }
         rating.service = service; rating.atmosphere = atmosphere; rating.value = value
         if let wouldOrderAgain { rating.hasWouldOrderAgain = true; rating.wouldOrderAgain = wouldOrderAgain }
         else { rating.hasWouldOrderAgain = false; rating.wouldOrderAgain = false }
         if let hazy { rating.hazyMemory = hazy }
         commit()
+        return true
     }
 
     func canEditOuting(_ visit: VisitEntity, personID: UUID? = nil) -> Bool {
         guard let personID = personID ?? currentPerson?.id else { return false }
         return visit.createdByID == personID
+    }
+
+    /// An outing is visible to its whole circle, but a diner entry belongs only
+    /// to someone recorded as part of that outing. Pending participants may add
+    /// their entry, and diners who declined a reaction may change their mind.
+    func canEditDinerEntry(_ visit: VisitEntity, personID: UUID? = nil) -> Bool {
+        guard let personID = personID ?? currentPerson?.id else { return false }
+        if visit.createdByID == personID { return true }
+        guard let participant = visit.participant(for: personID) else {
+            // Preserve editability for legacy outings until participant
+            // reconciliation has materialized their companion records.
+            return visit.companionIDs.contains(personID)
+        }
+        switch participant.status {
+        case .pending, .attended, .declined:
+            return true
+        case .notThere:
+            return false
+        }
     }
 
     @discardableResult
@@ -1088,21 +1123,47 @@ final class AppStore {
     /// Uses the earliest actual capture time when a set of meal photos was
     /// taken over several minutes. Fallback storage dates are intentionally
     /// ignored so screenshots and metadata-free images do not rewrite a visit.
-    func updateVisitDateFromPhotoMetadata(_ visit: VisitEntity, photos: [BackfillPhoto]) {
-        guard let captureDate = photos.compactMap(\.captureDate).min(),
-              visit.dateKnowledge == .unknown || captureDate < visit.date else { return }
-        visit.date = captureDate
+    func updateVisitDateFromPhotoMetadata(
+        _ visit: VisitEntity,
+        photos: [BackfillPhoto],
+        editorID: UUID? = nil
+    ) {
+        guard canEditOuting(visit, personID: editorID) else { return }
+        guard let earliest = photos
+            .compactMap({ photo -> (date: Date, offsetSeconds: Int?)? in
+                guard let captureDate = photo.captureDate else { return nil }
+                return (captureDate, photo.captureTimeZoneOffsetSeconds)
+            })
+            .min(by: { $0.date < $1.date }) else { return }
+        guard visit.dateKnowledge == .unknown || earliest.date <= visit.date else { return }
+        let offsetSeconds = earliest.offsetSeconds ?? DiningDateContext.currentOffset(for: earliest.date)
+        guard visit.dateKnowledge == .unknown ||
+              visit.date != earliest.date ||
+              visit.dateTimeZoneOffsetSeconds?.intValue != offsetSeconds else { return }
+        visit.date = earliest.date
+        visit.dateTimeZoneOffsetSeconds = NSNumber(value: offsetSeconds)
         visit.dateKnowledge = .known
         pendingSorts.insert(.visits)
         commit()
     }
 
-    func updateVisitDate(_ visit: VisitEntity, date: Date?, editorID: UUID? = nil) {
+    func updateVisitDate(
+        _ visit: VisitEntity,
+        date: Date?,
+        dateTimeZoneOffsetSeconds: Int? = nil,
+        editorID: UUID? = nil
+    ) {
         guard canEditOuting(visit, personID: editorID) else { return }
         if let date {
             visit.date = date
+            visit.dateTimeZoneOffsetSeconds = NSNumber(
+                value: dateTimeZoneOffsetSeconds
+                    ?? visit.dateTimeZoneOffsetSeconds?.intValue
+                    ?? DiningDateContext.currentOffset(for: date)
+            )
             visit.dateKnowledge = .known
         } else {
+            visit.dateTimeZoneOffsetSeconds = nil
             visit.dateKnowledge = .unknown
         }
         pendingSorts.insert(.visits)
@@ -1116,9 +1177,10 @@ final class AppStore {
         let candidates = photoDateSyncCandidates
         guard !candidates.isEmpty else { return 0 }
         performBatch {
-            for (visit, photoDate) in candidates {
-                visit.date = photoDate
-                visit.dateKnowledge = .known
+            for candidate in candidates {
+                candidate.visit.date = candidate.photoDate
+                candidate.visit.dateTimeZoneOffsetSeconds = NSNumber(value: candidate.offsetSeconds)
+                candidate.visit.dateKnowledge = .known
             }
             pendingSorts.insert(.visits)
         }
@@ -1185,6 +1247,7 @@ final class AppStore {
 
     @discardableResult
     func addDish(name: String, role: DishRole, reaction: Reaction, wouldOrderAgain: Bool, to visit: VisitEntity, personID: UUID) -> DishEntryEntity? {
+        guard canEditDinerEntry(visit, personID: personID) else { return nil }
         guard let location = visit.location else { return nil }
         let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanName.isEmpty else { return nil }
@@ -1215,6 +1278,7 @@ final class AppStore {
         return entry
     }
 
+    @discardableResult
     func addPhoto(
         fullData: Data,
         thumbnailData: Data?,
@@ -1222,20 +1286,27 @@ final class AppStore {
         personID: UUID? = nil,
         createdAt: Date = .now,
         captureDate: Date? = nil,
+        captureTimeZoneOffsetSeconds: Int? = nil,
         caption: String? = nil
-    ) {
-        let contributorID = personID ?? currentPerson?.id ?? visit.createdByID
+    ) -> Bool {
+        guard let contributorID = personID ?? currentPerson?.id,
+              canEditDinerEntry(visit, personID: contributorID) else { return false }
         let photo = PhotoEntity(context: context)
         assign(photo, alongside: visit)
         photo.id = UUID(); photo.personID = contributorID
         photo.fullData = fullData; photo.thumbnailData = thumbnailData
-        photo.createdAt = createdAt; photo.captureDate = captureDate
+        photo.createdAt = createdAt
+        photo.captureDate = captureDate
+        photo.captureTimeZoneOffsetSeconds = captureDate.map {
+            NSNumber(value: captureTimeZoneOffsetSeconds ?? DiningDateContext.currentOffset(for: $0))
+        }
         photo.caption = caption?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
         photo.visit = visit
         let participant = upsertParticipant(for: visit, personID: contributorID, status: .attended)
         participant.updatedAt = .now
         synchronizeLegacyCompanionIDs(for: visit)
         commit()
+        return true
     }
 
     func importBeli(_ request: BeliImportRequest) -> BeliImportSummary {
@@ -1277,6 +1348,15 @@ final class AppStore {
                 value.createdAt = .now; value.updatedAt = .now; value.circle = circle
                 value.session = session
                 links.append(value); linksByKey[key] = value
+            }
+
+            @MainActor
+            func existingLink(recordType: String, externalKey: String, legacyExternalKey: String? = nil) -> ExternalImportLinkEntity? {
+                if let existing = linksByKey[importLinkKey(recordType, externalKey)] {
+                    return existing
+                }
+                guard let legacyExternalKey else { return nil }
+                return linksByKey[importLinkKey(recordType, legacyExternalKey)]
             }
 
             for row in orderedRankings {
@@ -1327,14 +1407,36 @@ final class AppStore {
                 )
 
                 var rowVisits: [VisitEntity] = []
-                let visitInputs: [(key: String, date: Date, knowledge: VisitDateKnowledge)] = row.visitDates.isEmpty
-                    ? [("\(row.id):unknown", row.createdAt, .unknown)]
-                    : row.visitDates.enumerated().map { ("\(row.id):visit:\($0.offset):\(Int($0.element.timeIntervalSince1970))", $0.element, .known) }
+                let visitInputs: [(key: String, legacyKey: String?, date: Date, knowledge: VisitDateKnowledge, offsetSeconds: Int?)] = row.visitDates.isEmpty
+                    ? [("\(row.id):unknown", nil, row.createdAt, .unknown, nil)]
+                    : row.visitDates.enumerated().map { item in
+                        let stableKey = row.visitDateKeys.indices.contains(item.offset)
+                            ? row.visitDateKeys[item.offset]
+                            : DiningDateContext.stableDayKey(for: item.element, offsetSeconds: nil)
+                        let offsetSeconds = row.visitDateTimeZoneOffsetSeconds.indices.contains(item.offset)
+                            ? row.visitDateTimeZoneOffsetSeconds[item.offset]
+                            : nil
+                        return (
+                            "\(row.id):visit:\(item.offset):\(stableKey)",
+                            "\(row.id):visit:\(item.offset):\(Int(item.element.timeIntervalSince1970))",
+                            item.element,
+                            .known,
+                            offsetSeconds
+                        )
+                    }
                 for input in visitInputs {
-                    let existingLink = linksByKey[importLinkKey("outing", input.key)]
-                    var visit = existingLink.flatMap { source in visits.first { $0.id == source.targetID } }
+                    let outingLink = existingLink(recordType: "outing", externalKey: input.key, legacyExternalKey: input.legacyKey)
+                    var visit = outingLink.flatMap { source in visits.first { $0.id == source.targetID } }
                     if visit == nil, input.knowledge == .known {
-                        let sameDay = location.visitArray.filter { $0.dateKnowledge == .known && Calendar.current.isDate($0.date, inSameDayAs: input.date) }
+                        let sameDay = location.visitArray.filter {
+                            $0.dateKnowledge == .known &&
+                            DiningDateContext.isSameCalendarDay(
+                                $0.date,
+                                lhsOffsetSeconds: $0.dateTimeZoneOffsetSeconds?.intValue,
+                                input.date,
+                                rhsOffsetSeconds: input.offsetSeconds
+                            )
+                        }
                         if sameDay.count == 1 { visit = sameDay[0] }
                     }
                     if let visit {
@@ -1344,7 +1446,8 @@ final class AppStore {
                     } else {
                         let created = logVisit(
                             at: location, reaction: nil, personID: personID, date: input.date,
-                            dateKnowledge: input.knowledge
+                            dateKnowledge: input.knowledge,
+                            dateTimeZoneOffsetSeconds: input.offsetSeconds
                         )
                         created.createdAt = row.createdAt
                         rowVisits.append(created)
@@ -1388,10 +1491,18 @@ final class AppStore {
                 let key = "\(BeliImporter.normalize(name))|\(BeliImporter.normalize(city))"
                 return rankingByIdentity[key]?.first(where: { locationsByRankingID[$0.id] != nil })?.id
             }
-            func targetVisit(rankingID: String, near date: Date) -> VisitEntity? {
+            func targetVisit(rankingID: String, near date: Date, dateTimeZoneOffsetSeconds: Int? = nil) -> VisitEntity? {
                 let values = visitsByRankingID[rankingID] ?? []
                 if values.count == 1 { return values[0] }
-                let sameDay = values.filter { $0.dateKnowledge == .known && Calendar.current.isDate($0.date, inSameDayAs: date) }
+                let sameDay = values.filter {
+                    $0.dateKnowledge == .known &&
+                    DiningDateContext.isSameCalendarDay(
+                        $0.date,
+                        lhsOffsetSeconds: $0.dateTimeZoneOffsetSeconds?.intValue,
+                        date,
+                        rhsOffsetSeconds: dateTimeZoneOffsetSeconds
+                    )
+                }
                 if sameDay.count == 1 { return sameDay[0] }
                 return values.min { abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date)) }
             }
@@ -1402,8 +1513,12 @@ final class AppStore {
                       let rankingID = assignedRankingID(
                         for: row.restaurantName, city: row.city,
                         explicit: request.photoRankingAssignments[row.id]
-                      ), let visit = targetVisit(rankingID: rankingID, near: row.uploadDate) else { continue }
-                let rowLink = linksByKey[importLinkKey("photo", row.id)]
+                      ), let visit = targetVisit(
+                        rankingID: rankingID,
+                        near: row.uploadDate,
+                        dateTimeZoneOffsetSeconds: row.uploadTimeZoneOffsetSeconds
+                      ) else { continue }
+                let rowLink = existingLink(recordType: "photo", externalKey: row.id)
                 if let rowLink, livePhotoIDs.contains(rowLink.targetID) { continue }
                 if let duplicate = links.first(where: {
                     $0.recordType == "photo" &&
@@ -1419,7 +1534,9 @@ final class AppStore {
                 addPhoto(
                     fullData: downloaded.photo.fullData, thumbnailData: downloaded.photo.thumbnailData,
                     to: visit, personID: personID, createdAt: row.uploadDate,
-                    captureDate: downloaded.photo.captureDate, caption: row.caption
+                    captureDate: downloaded.photo.captureDate,
+                    captureTimeZoneOffsetSeconds: downloaded.photo.captureTimeZoneOffsetSeconds,
+                    caption: row.caption
                 )
                 guard let photo = visit.photoArray.last else { continue }
                 livePhotoIDs.insert(photo.id)
@@ -1444,7 +1561,11 @@ final class AppStore {
                 guard let rankingID = assignedRankingID(
                     for: row.restaurantName, city: row.city,
                     explicit: request.dishRankingAssignments[row.id]
-                ), let visit = targetVisit(rankingID: rankingID, near: row.createdAt),
+                ), let visit = targetVisit(
+                    rankingID: rankingID,
+                    near: row.createdAt,
+                    dateTimeZoneOffsetSeconds: row.createdAtTimeZoneOffsetSeconds
+                ),
                       let entry = addDish(name: row.name, role: .entree, reaction: .loved, wouldOrderAgain: true, to: visit, personID: personID) else { continue }
                 link(recordType: "dish", externalKey: row.id, targetID: entry.id, createdByImport: true)
                 summary.dishesAdded += 1
@@ -1918,6 +2039,7 @@ final class AppStore {
             allComparisons = try fetch(ComparisonEntity.self, sort: [NSSortDescriptor(key: "date", ascending: false)])
             allWantEntries = try fetch(WantEntryEntity.self, sort: [NSSortDescriptor(key: "addedAt", ascending: false)])
             allImportSessions = try fetch(ExternalImportSessionEntity.self, sort: [NSSortDescriptor(key: "importedAt", ascending: false)])
+            let backfilledDateContexts = backfillMissingDateContexts()
             let reconciledPeople = reconcileDuplicatePeople()
             let reconciledLocations = reconcileDuplicateLocations()
             rebuildLocationIndexes()
@@ -1925,7 +2047,7 @@ final class AppStore {
             let reconciledParticipants = reconcileParticipants()
             let reconciledOutings = reconcileDuplicateOutings()
             let backfilledComparisons = backfillComparisonEvidenceFingerprints()
-            if reconciledPeople || reconciledLocations || reconciledDishes || reconciledParticipants || reconciledOutings || backfilledComparisons {
+            if backfilledDateContexts || reconciledPeople || reconciledLocations || reconciledDishes || reconciledParticipants || reconciledOutings || backfilledComparisons {
                 do { try persistence.save() }
                 catch { reportError("Older circle data could not be upgraded yet. \(error.localizedDescription)") }
             }
@@ -1951,6 +2073,33 @@ final class AppStore {
             persistDeviceSelection()
             revision += 1
         } catch { reportError("Big Beautiful Restaurant Log could not reload your saved data. \(error.localizedDescription)") }
+    }
+
+    /// Legacy records stored the instant but not the wall-clock context. Keep
+    /// their current display stable after this upgrade; new imports always
+    /// write the offset at the point the source timestamp is read.
+    private func backfillMissingDateContexts() -> Bool {
+        var changed = false
+        let photos = allVisits.flatMap(\.photoArray)
+        for photo in photos where photo.captureDate != nil && photo.captureTimeZoneOffsetSeconds == nil {
+            photo.captureTimeZoneOffsetSeconds = NSNumber(value: DiningDateContext.currentOffset(for: photo.captureDate ?? photo.createdAt))
+            changed = true
+        }
+        for visit in allVisits where visit.dateKnowledge == .known && visit.dateTimeZoneOffsetSeconds == nil {
+            let photoOffset = visit.photoArray
+                .compactMap { photo -> (date: Date, offsetSeconds: Int)? in
+                    guard let captureDate = photo.captureDate,
+                          let offsetSeconds = photo.captureTimeZoneOffsetSeconds?.intValue else { return nil }
+                    return (captureDate, offsetSeconds)
+                }
+                .min(by: { $0.date < $1.date })?
+                .offsetSeconds
+            visit.dateTimeZoneOffsetSeconds = NSNumber(
+                value: photoOffset ?? DiningDateContext.currentOffset(for: visit.date)
+            )
+            changed = true
+        }
+        return changed
     }
 
     private func commit() {
@@ -2280,6 +2429,7 @@ final class AppStore {
         }
         keeper.cuisines = (keeper.cuisines + duplicate.cuisines).uniqued()
         keeper.tags = (keeper.tags + duplicate.tags).uniqued()
+        if keeper.createdByID == nil { keeper.createdByID = duplicate.createdByID }
         keeper.updatedAt = max(keeper.updatedAt, duplicate.updatedAt)
         allLocations.removeAll { $0.id == duplicate.id }
         context.delete(duplicate)
@@ -2828,11 +2978,20 @@ final class AppStore {
         }
     }
 
-    private var photoDateSyncCandidates: [(visit: VisitEntity, photoDate: Date)] {
+    private var photoDateSyncCandidates: [(visit: VisitEntity, photoDate: Date, offsetSeconds: Int)] {
         allVisits.compactMap { visit in
-            guard let photoDate = visit.photoArray.compactMap(\.captureDate).min(),
-                  visit.dateKnowledge == .unknown || photoDate < visit.date else { return nil }
-            return (visit, photoDate)
+            guard let earliest = visit.photoArray
+                .compactMap({ photo -> (date: Date, offsetSeconds: Int?)? in
+                    guard let captureDate = photo.captureDate else { return nil }
+                    return (captureDate, photo.captureTimeZoneOffsetSeconds?.intValue)
+                })
+                .min(by: { $0.date < $1.date }),
+                  visit.dateKnowledge == .unknown || earliest.date <= visit.date else { return nil }
+            let offsetSeconds = earliest.offsetSeconds ?? DiningDateContext.currentOffset(for: earliest.date)
+            guard visit.dateKnowledge == .unknown ||
+                  visit.date != earliest.date ||
+                  visit.dateTimeZoneOffsetSeconds?.intValue != offsetSeconds else { return nil }
+            return (visit, earliest.date, offsetSeconds)
         }
     }
 

@@ -36,11 +36,13 @@ enum ManagedObjectModel {
             attribute("longitude", .doubleAttributeType, defaultValue: 0), attribute("hasCoordinates", .booleanAttributeType, defaultValue: false),
             attribute("isClosed", .booleanAttributeType, defaultValue: false), attribute("sourceIdentifier", .stringAttributeType, optional: true),
             attribute("cuisineBlob", .binaryDataAttributeType, optional: true), attribute("tagBlob", .binaryDataAttributeType, optional: true),
-            attribute("createdAt", .dateAttributeType), attribute("updatedAt", .dateAttributeType)
+            attribute("createdAt", .dateAttributeType), attribute("createdByID", .UUIDAttributeType, optional: true),
+            attribute("updatedAt", .dateAttributeType)
         ])
         let visit = entity("VisitEntity", VisitEntity.self, [
             attribute("id", .UUIDAttributeType), attribute("date", .dateAttributeType),
             attribute("dateKnowledgeRaw", .stringAttributeType, defaultValue: VisitDateKnowledge.known.rawValue),
+            attribute("dateTimeZoneOffsetSeconds", .integer32AttributeType, optional: true),
             attribute("visitTypeRaw", .stringAttributeType, optional: true), attribute("priceBand", .integer16AttributeType, defaultValue: 0),
             attribute("occasionRaw", .stringAttributeType, optional: true), attribute("memory", .stringAttributeType, optional: true),
             attribute("latitude", .doubleAttributeType, defaultValue: 0), attribute("longitude", .doubleAttributeType, defaultValue: 0),
@@ -79,7 +81,8 @@ enum ManagedObjectModel {
             attribute("caption", .stringAttributeType, optional: true),
             binaryAttribute("thumbnailData", optional: true, external: true),
             binaryAttribute("fullData", optional: true, external: true), attribute("createdAt", .dateAttributeType),
-            attribute("captureDate", .dateAttributeType, optional: true)
+            attribute("captureDate", .dateAttributeType, optional: true),
+            attribute("captureTimeZoneOffsetSeconds", .integer32AttributeType, optional: true)
         ])
         let comparison = entity("ComparisonEntity", ComparisonEntity.self, [
             attribute("id", .UUIDAttributeType), attribute("personID", .UUIDAttributeType), attribute("locationAID", .UUIDAttributeType),
@@ -108,6 +111,19 @@ enum ManagedObjectModel {
             attribute("dishesAdded", .integer32AttributeType, defaultValue: 0),
             attribute("rankingsSeeded", .integer32AttributeType, defaultValue: 0)
         ])
+        let notification = entity("InAppNotificationEntity", InAppNotificationEntity.self, [
+            attribute("id", .UUIDAttributeType), attribute("eventKey", .stringAttributeType),
+            attribute("circleID", .UUIDAttributeType), attribute("kindRaw", .stringAttributeType),
+            attribute("actorPersonID", .UUIDAttributeType, optional: true),
+            attribute("targetPersonID", .UUIDAttributeType, optional: true),
+            attribute("locationID", .UUIDAttributeType, optional: true),
+            attribute("visitID", .UUIDAttributeType, optional: true),
+            attribute("detailRaw", .stringAttributeType, optional: true),
+            attribute("audiencePersonIDsBlob", .binaryDataAttributeType, optional: true),
+            attribute("occurredAt", .dateAttributeType), attribute("receivedAt", .dateAttributeType),
+            attribute("readAt", .dateAttributeType, optional: true)
+        ])
+        notification.uniquenessConstraints = [["eventKey"]]
 
         pair(circle, "people", person, "circle", toManyA: true, deleteA: .cascadeDeleteRule)
         pair(circle, "locations", location, "circle", toManyA: true, deleteA: .cascadeDeleteRule)
@@ -128,7 +144,7 @@ enum ManagedObjectModel {
         pair(visit, "participants", participant, "visit", toManyA: true, deleteA: .cascadeDeleteRule)
         pair(dish, "entries", dishEntry, "dish", toManyA: true, deleteA: .cascadeDeleteRule)
 
-        model.entities = [circle, person, brand, location, visit, participant, rating, dinerEntryReaction, dish, dishEntry, photo, comparison, want, importLink, importSession]
+        model.entities = [circle, person, brand, location, visit, participant, rating, dinerEntryReaction, dish, dishEntry, photo, comparison, want, importLink, importSession, notification]
         return model
     }
 

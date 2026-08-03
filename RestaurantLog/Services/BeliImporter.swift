@@ -8,7 +8,36 @@ struct BeliRankingRow: Identifiable, Hashable, Sendable {
     let restaurantName: String
     let city: String
     let createdAt: Date
+    let createdAtTimeZoneOffsetSeconds: Int?
     let visitDates: [Date]
+    let visitDateKeys: [String]
+    let visitDateTimeZoneOffsetSeconds: [Int?]
+
+    init(
+        id: String,
+        rank: Int,
+        restaurantName: String,
+        city: String,
+        createdAt: Date,
+        createdAtTimeZoneOffsetSeconds: Int? = nil,
+        visitDates: [Date],
+        visitDateKeys: [String] = [],
+        visitDateTimeZoneOffsetSeconds: [Int?] = []
+    ) {
+        self.id = id
+        self.rank = rank
+        self.restaurantName = restaurantName
+        self.city = city
+        self.createdAt = createdAt
+        self.createdAtTimeZoneOffsetSeconds = createdAtTimeZoneOffsetSeconds
+        self.visitDates = visitDates
+        self.visitDateKeys = visitDateKeys.count == visitDates.count
+            ? visitDateKeys
+            : visitDates.map { DiningDateContext.stableDayKey(for: $0, offsetSeconds: nil) }
+        self.visitDateTimeZoneOffsetSeconds = visitDateTimeZoneOffsetSeconds.count == visitDates.count
+            ? visitDateTimeZoneOffsetSeconds
+            : Array(repeating: nil, count: visitDates.count)
+    }
 }
 
 struct BeliPhotoRow: Identifiable, Hashable, Sendable {
@@ -18,7 +47,28 @@ struct BeliPhotoRow: Identifiable, Hashable, Sendable {
     let caption: String?
     let isFavoriteDish: Bool
     let uploadDate: Date
+    let uploadTimeZoneOffsetSeconds: Int?
     let imageURL: URL
+
+    init(
+        id: String,
+        restaurantName: String,
+        city: String,
+        caption: String?,
+        isFavoriteDish: Bool,
+        uploadDate: Date,
+        uploadTimeZoneOffsetSeconds: Int? = nil,
+        imageURL: URL
+    ) {
+        self.id = id
+        self.restaurantName = restaurantName
+        self.city = city
+        self.caption = caption
+        self.isFavoriteDish = isFavoriteDish
+        self.uploadDate = uploadDate
+        self.uploadTimeZoneOffsetSeconds = uploadTimeZoneOffsetSeconds
+        self.imageURL = imageURL
+    }
 }
 
 struct BeliDishNoteRow: Identifiable, Hashable, Sendable {
@@ -27,6 +77,23 @@ struct BeliDishNoteRow: Identifiable, Hashable, Sendable {
     let city: String
     let name: String
     let createdAt: Date
+    let createdAtTimeZoneOffsetSeconds: Int?
+
+    init(
+        id: String,
+        restaurantName: String,
+        city: String,
+        name: String,
+        createdAt: Date,
+        createdAtTimeZoneOffsetSeconds: Int? = nil
+    ) {
+        self.id = id
+        self.restaurantName = restaurantName
+        self.city = city
+        self.name = name
+        self.createdAt = createdAt
+        self.createdAtTimeZoneOffsetSeconds = createdAtTimeZoneOffsetSeconds
+    }
 }
 
 struct BeliParsedArchive: Sendable {
@@ -357,7 +424,7 @@ enum BeliImporter {
                 throw ImportError.invalidRow(file: "rankings.csv", row: line, detail: "Created Date is not recognized.")
             }
             let visitText = csv.value(row, aliases: ["Visit Dates"]) ?? ""
-            let visits: [Date]
+            let visits: [BeliDateParser.ParsedVisitDate]
             switch BeliDateParser.parseVisitDates(visitText, maximumCount: maximumVisitDatesPerRanking) {
             case .dates(let values):
                 visits = values
@@ -374,7 +441,11 @@ enum BeliImporter {
             let key = digest([namespace, normalize(name), normalize(city), BeliDateParser.key(createdAt)].joined(separator: "|"))
             rankings.append(.init(
                 id: key, rank: rank, restaurantName: name, city: city,
-                createdAt: createdAt, visitDates: visits
+                createdAt: createdAt,
+                createdAtTimeZoneOffsetSeconds: BeliDateParser.timeZoneOffsetSeconds(from: createdText),
+                visitDates: visits.map(\.date),
+                visitDateKeys: visits.map(\.key),
+                visitDateTimeZoneOffsetSeconds: visits.map(\.offsetSeconds)
             ))
         }
         return rankings.sorted { $0.rank < $1.rank }
@@ -401,6 +472,7 @@ enum BeliImporter {
                 caption: csv.value(row, aliases: ["Description"]),
                 isFavoriteDish: (csv.value(row, aliases: ["Is Favorite Dish"]) ?? "").lowercased() == "true",
                 uploadDate: uploadDate,
+                uploadTimeZoneOffsetSeconds: BeliDateParser.timeZoneOffsetSeconds(from: uploadText),
                 imageURL: url
             )
         }
@@ -410,7 +482,7 @@ enum BeliImporter {
         let csv = try table(data: data, filename: "notes_dishes.csv")
         try csv.require(["Field Type", "Business Name", "City", "Note Text", "Created Date"], filename: "notes_dishes.csv")
         guard csv.rows.count <= maximumRowsPerFile else { throw ImportError.oversizedEntry("notes_dishes.csv") }
-        return try csv.rows.enumerated().compactMap { offset, row in
+        return try csv.rows.enumerated().compactMap { (offset, row) -> BeliDishNoteRow? in
             guard (csv.value(row, aliases: ["Field Type"]) ?? "").localizedCaseInsensitiveContains("favorite") else { return nil }
             let line = offset + 2
             guard let restaurant = csv.value(row, aliases: ["Business Name"]),
@@ -421,7 +493,14 @@ enum BeliImporter {
             }
             let city = csv.value(row, aliases: ["City"]) ?? ""
             let key = digest([namespace, normalize(restaurant), normalize(city), normalize(dish), BeliDateParser.key(createdAt)].joined(separator: "|"))
-            return .init(id: key, restaurantName: restaurant, city: city, name: dish, createdAt: createdAt)
+            return .init(
+                id: key,
+                restaurantName: restaurant,
+                city: city,
+                name: dish,
+                createdAt: createdAt,
+                createdAtTimeZoneOffsetSeconds: BeliDateParser.timeZoneOffsetSeconds(from: createdText)
+            )
         }
     }
 
@@ -488,8 +567,14 @@ private struct CSVTable {
 }
 
 private enum BeliDateParser {
+    struct ParsedVisitDate {
+        let date: Date
+        let key: String
+        let offsetSeconds: Int?
+    }
+
     enum VisitDatesResult {
-        case dates([Date])
+        case dates([ParsedVisitDate])
         case invalid
         case tooMany
     }
@@ -505,7 +590,23 @@ private enum BeliDateParser {
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSSSSSXXXXX"
         if let result = formatter.date(from: value) { return result }
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ssXXXXX"
+        if let result = formatter.date(from: value) { return result }
+        formatter.timeZone = .autoupdatingCurrent
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSSSSS"
+        if let result = formatter.date(from: value) { return result }
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         return formatter.date(from: value)
+    }
+
+    static func timeZoneOffsetSeconds(from value: String) -> Int? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.uppercased().hasSuffix("Z") { return 0 }
+        for length in [6, 5] where trimmed.count >= length {
+            if let offset = DiningTimeZoneOffset.seconds(from: String(trimmed.suffix(length))) {
+                return offset
+            }
+        }
+        return nil
     }
 
     static func parseVisitDates(_ value: String, maximumCount: Int) -> VisitDatesResult {
@@ -514,7 +615,7 @@ private enum BeliDateParser {
         let pattern = #"datetime\.date\((\d{4}),\s*(\d{1,2}),\s*(\d{1,2})\)"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return .invalid }
         let range = NSRange(value.startIndex..., in: value)
-        var dates: [Date] = []
+        var dates: [ParsedVisitDate] = []
         dates.reserveCapacity(min(maximumCount, 32))
         var invalid = false
         var tooMany = false
@@ -543,7 +644,12 @@ private enum BeliDateParser {
                 stop.pointee = true
                 return
             }
-            dates.append(date)
+            let key = String(format: "%04d-%02d-%02d", year, month, day)
+            dates.append(.init(
+                date: date,
+                key: key,
+                offsetSeconds: calendar.timeZone.secondsFromGMT(for: date)
+            ))
         }
         if tooMany { return .tooMany }
         if invalid || dates.isEmpty { return .invalid }

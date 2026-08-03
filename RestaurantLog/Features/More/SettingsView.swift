@@ -445,7 +445,7 @@ struct SettingsView: View {
         .listRowBackground(BBTheme.surface)
     }
 
-    private static let releaseDateText = "August 1, 2026"
+    private static let releaseDateText = "August 3, 2026"
 
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"

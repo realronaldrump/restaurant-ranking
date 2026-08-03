@@ -9,7 +9,7 @@ struct VisitDetailView: View {
     @State private var confirmDelete = false
     @State private var selectedPhoto: PhotoViewerSnapshot?
     @State private var pendingDeletionID: UUID?
-    @State private var coonReactionTarget: CoonReactionTarget?
+    @State private var stickerReactionTarget: StickerReactionTarget?
 
     var body: some View {
         Group {
@@ -57,8 +57,8 @@ struct VisitDetailView: View {
             }
         }
         .sheet(item: $editingVisit) { AddMoreVisitView(visit: $0, personID: store.currentPerson?.id) }
-        .sheet(item: $coonReactionTarget) { target in
-            CoonReactionPickerSheet(visit: visit, target: target)
+        .sheet(item: $stickerReactionTarget) { target in
+            StickerReactionPickerSheet(visit: visit, target: target)
         }
         .fullScreenCover(item: $selectedPhoto) { PhotoViewer(photo: $0) }
         .editorialPrompt(isPresented: $confirmDelete) {
@@ -142,7 +142,7 @@ struct VisitDetailView: View {
         let memory = store.memory(for: visit, personID: person.id)
         let status = visit.participant(for: person.id)?.status
         let isCurrentPerson = person.id == store.currentPerson?.id
-        let socialReactions = store.coonReactions(to: person.id, in: visit)
+        let socialReactions = store.stickerReactions(to: person.id, in: visit)
 
         return VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -203,9 +203,9 @@ struct VisitDetailView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
-            if !socialReactions.isEmpty || store.canReactWithCoon(to: person.id, in: visit) {
+            if !socialReactions.isEmpty || store.canReactWithSticker(to: person.id, in: visit) {
                 Divider()
-                coonReactionSection(for: person, reactions: socialReactions)
+                stickerReactionSection(for: person, reactions: socialReactions)
             }
             if isCurrentPerson && store.needsEntryResponse(for: visit, personID: person.id) {
                 Button { editingVisit = visit } label: {
@@ -217,7 +217,7 @@ struct VisitDetailView: View {
         .editorialCard(padding: 14)
     }
 
-    private func coonReactionSection(
+    private func stickerReactionSection(
         for person: PersonEntity,
         reactions: [DinerEntryReactionEntity]
     ) -> some View {
@@ -225,10 +225,10 @@ struct VisitDetailView: View {
             HStack(spacing: 10) {
                 Eyebrow("Sticker reactions")
                 Spacer()
-                if store.canReactWithCoon(to: person.id, in: visit) {
-                    let hasMine = store.myCoonReaction(to: person.id, in: visit) != nil
+                if store.canReactWithSticker(to: person.id, in: visit) {
+                    let hasMine = store.myStickerReaction(to: person.id, in: visit) != nil
                     Button {
-                        coonReactionTarget = .init(personID: person.id, personName: person.name)
+                        stickerReactionTarget = .init(personID: person.id, personName: person.name)
                     } label: {
                         Label(hasMine ? "Change sticker" : "Add sticker", systemImage: "pawprint.fill")
                             .font(.caption.weight(.semibold))
@@ -243,11 +243,34 @@ struct VisitDetailView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
+                ForEach(StickerMascot.allCases) { mascot in
+                    stickerFamilyRow(mascot, reactions: reactions)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func stickerFamilyRow(
+        _ mascot: StickerMascot,
+        reactions: [DinerEntryReactionEntity]
+    ) -> some View {
+        let familyReactions = reactions.filter { $0.mascot == mascot }
+        if !familyReactions.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: mascot == .coon ? "pawprint.fill" : "sparkles")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(mascot == .coon ? BBTheme.oxblood : BBTheme.sage)
+                    Text(mascot.title)
+                        .font(.caption.weight(.semibold))
+                    Spacer()
+                }
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(alignment: .top, spacing: 12) {
-                        ForEach(reactions) { reaction in
+                        ForEach(familyReactions) { reaction in
                             VStack(spacing: 3) {
-                                CoonReactionArtwork(reaction: reaction.kind, size: 68)
+                                StickerReactionArtwork(reaction: reaction.kind, mascot: mascot, size: 68)
                                 Text(reaction.kind.title)
                                     .font(.caption2.weight(.semibold))
                                     .multilineTextAlignment(.center)
@@ -374,18 +397,18 @@ struct VisitDetailView: View {
     }
 }
 
-private struct CoonReactionTarget: Identifiable {
+private struct StickerReactionTarget: Identifiable {
     let personID: UUID
     let personName: String
     var id: UUID { personID }
 }
 
 @MainActor
-private struct CoonReactionPickerSheet: View {
+private struct StickerReactionPickerSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppStore.self) private var store
     let visit: VisitEntity
-    let target: CoonReactionTarget
+    let target: StickerReactionTarget
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 3)
 
@@ -417,36 +440,14 @@ private struct CoonReactionPickerSheet: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    LazyVGrid(columns: columns, spacing: 12) {
-                        ForEach(CoonReaction.allCases) { reaction in
-                            Button { choose(reaction) } label: {
-                                VStack(spacing: 6) {
-                                    CoonReactionArtwork(reaction: reaction, size: 88)
-                                    Text(reaction.title)
-                                        .font(.caption.weight(.semibold))
-                                        .multilineTextAlignment(.center)
-                                        .lineLimit(2)
-                                        .minimumScaleFactor(0.8)
-                                }
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 9)
-                                .frame(maxWidth: .infinity, minHeight: 130, alignment: .top)
-                                .background(
-                                    selected == reaction ? BBTheme.oxblood.opacity(0.1) : BBTheme.surface,
-                                    in: RoundedRectangle(cornerRadius: BBTheme.Radius.control, style: .continuous)
-                                )
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: BBTheme.Radius.control, style: .continuous)
-                                        .stroke(selected == reaction ? BBTheme.oxblood : BBTheme.hairline, lineWidth: selected == reaction ? 2 : 1)
-                                }
-                            }
-                            .buttonStyle(.pressable)
-                            .accessibilityIdentifier("coon-reaction-\(reaction.rawValue)")
-                            .accessibilityValue(selected == reaction ? "Selected" : "Not selected")
+                    ForEach(StickerMascot.allCases) { mascot in
+                        mascotSection(mascot)
+                        if mascot != .mrBubbles {
+                            Divider().padding(.vertical, 2)
                         }
                     }
 
-                    if selected != nil {
+                    if selectedReaction != nil {
                         Button("Remove my sticker", role: .destructive) { remove() }
                             .frame(maxWidth: .infinity, minHeight: 44)
                     }
@@ -463,21 +464,81 @@ private struct CoonReactionPickerSheet: View {
         }
     }
 
-    private var selected: CoonReaction? {
-        guard visit.isAlive else { return nil }
-        return store.myCoonReaction(to: target.personID, in: visit)?.kind
+    private func mascotSection(_ mascot: StickerMascot) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: mascot == .coon ? "pawprint.fill" : "sparkles")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(mascot == .coon ? BBTheme.oxblood : BBTheme.sage)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(mascot.title)
+                        .font(.headline)
+                    Text(mascot == .coon ? "The original Coon stickers" : "Mr. Bubbles stickers")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+
+            LazyVGrid(columns: columns, spacing: 12) {
+                ForEach(CoonReaction.allCases) { reaction in
+                    let selectedHere = isSelected(reaction, mascot: mascot)
+                    Button { choose(reaction, mascot: mascot) } label: {
+                        VStack(spacing: 6) {
+                            StickerReactionArtwork(reaction: reaction, mascot: mascot, size: 88)
+                            Text(reaction.title)
+                                .font(.caption.weight(.semibold))
+                                .multilineTextAlignment(.center)
+                                .lineLimit(2)
+                                .minimumScaleFactor(0.8)
+                        }
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 9)
+                        .frame(maxWidth: .infinity, minHeight: 130, alignment: .top)
+                        .background(
+                            selectedHere ? BBTheme.oxblood.opacity(0.1) : BBTheme.surface,
+                            in: RoundedRectangle(cornerRadius: BBTheme.Radius.control, style: .continuous)
+                        )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: BBTheme.Radius.control, style: .continuous)
+                                .stroke(selectedHere ? BBTheme.oxblood : BBTheme.hairline, lineWidth: selectedHere ? 2 : 1)
+                        }
+                    }
+                    .buttonStyle(.pressable)
+                    .accessibilityIdentifier(accessibilityIdentifier(for: reaction, mascot: mascot))
+                    .accessibilityLabel("\(mascot.title): \(reaction.title)")
+                    .accessibilityValue(selectedHere ? "Selected" : "Not selected")
+                }
+            }
+        }
     }
 
-    private func choose(_ reaction: CoonReaction) {
+    private var selectedReaction: DinerEntryReactionEntity? {
+        guard visit.isAlive else { return nil }
+        return store.myStickerReaction(to: target.personID, in: visit)
+    }
+
+    private func isSelected(_ reaction: CoonReaction, mascot: StickerMascot) -> Bool {
+        selectedReaction?.kind == reaction && selectedReaction?.mascot == mascot
+    }
+
+    private func accessibilityIdentifier(for reaction: CoonReaction, mascot: StickerMascot) -> String {
+        switch mascot {
+        case .coon: "coon-reaction-\(reaction.rawValue)"
+        case .mrBubbles: "mr-bubbles-reaction-\(reaction.rawValue)"
+        }
+    }
+
+    private func choose(_ reaction: CoonReaction, mascot: StickerMascot) {
         guard visit.isAlive else { dismiss(); return }
-        guard store.setCoonReaction(reaction, to: target.personID, in: visit) else { return }
+        guard store.setStickerReaction(reaction, mascot: mascot, to: target.personID, in: visit) else { return }
         Haptics.selection()
         dismiss()
     }
 
     private func remove() {
         guard visit.isAlive else { dismiss(); return }
-        guard store.setCoonReaction(nil, to: target.personID, in: visit) else { return }
+        guard store.setStickerReaction(nil, mascot: selectedReaction?.mascot ?? .coon, to: target.personID, in: visit) else { return }
         Haptics.selection()
         dismiss()
     }

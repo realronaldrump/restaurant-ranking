@@ -261,6 +261,7 @@ enum SyncApplier {
             object.authorPersonID = value.authorPersonID
             object.targetPersonID = value.targetPersonID
             object.kind = value.kind
+            object.mascot = value.mascot ?? .coon
             object.createdAt = value.createdAt
             object.updatedAt = value.updatedAt
             object.visit = visit

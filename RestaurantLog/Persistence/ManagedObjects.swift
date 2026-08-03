@@ -206,6 +206,7 @@ final class DinerEntryReactionEntity: NSManagedObject, Identifiable {
     @NSManaged var authorPersonID: UUID
     @NSManaged var targetPersonID: UUID
     @NSManaged var kindRaw: String
+    @NSManaged var mascotRaw: String?
     @NSManaged var createdAt: Date
     @NSManaged var updatedAt: Date
     @NSManaged var visit: VisitEntity?
@@ -213,6 +214,11 @@ final class DinerEntryReactionEntity: NSManagedObject, Identifiable {
     var kind: CoonReaction {
         get { CoonReaction(rawValue: kindRaw) ?? .merelyFine }
         set { kindRaw = newValue.rawValue }
+    }
+
+    var mascot: StickerMascot {
+        get { mascotRaw.flatMap(StickerMascot.init(rawValue:)) ?? .coon }
+        set { mascotRaw = newValue.rawValue }
     }
 }
 

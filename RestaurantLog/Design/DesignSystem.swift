@@ -864,17 +864,27 @@ struct ReactionPicker: View {
     }
 }
 
-struct CoonReactionArtwork: View {
+struct StickerReactionArtwork: View {
     let reaction: CoonReaction
+    let mascot: StickerMascot
     var size: CGFloat = 72
 
     var body: some View {
-        Image(reaction.assetName)
+        Image(reaction.assetName(for: mascot))
             .resizable()
             .interpolation(.high)
             .scaledToFit()
             .frame(width: size, height: size)
             .accessibilityLabel(reaction.title)
+    }
+}
+
+struct CoonReactionArtwork: View {
+    let reaction: CoonReaction
+    var size: CGFloat = 72
+
+    var body: some View {
+        StickerReactionArtwork(reaction: reaction, mascot: .coon, size: size)
     }
 }
 

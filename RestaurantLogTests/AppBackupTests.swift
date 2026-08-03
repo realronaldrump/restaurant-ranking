@@ -45,7 +45,7 @@ final class AppBackupTests: XCTestCase {
             value: .notForMe, wouldOrderAgain: false, hazy: true
         )
         _ = source.addRating(to: visit, personID: michelle.id, reaction: .liked)
-        XCTAssertTrue(source.setCoonReaction(.runItBack, to: michelle.id, in: visit))
+        XCTAssertTrue(source.setStickerReaction(.runItBack, mascot: .mrBubbles, to: michelle.id, in: visit))
         source.updateMemory("Michelle's own memory", for: visit, personID: michelle.id)
         _ = source.addDish(
             name: "Cardamom Bun", role: .dessert, reaction: .loved,
@@ -82,6 +82,7 @@ final class AppBackupTests: XCTestCase {
         let original = try await AppBackupService.makeArchive(from: source)
         XCTAssertEqual(try XCTUnwrap(original.participants).count, 3)
         XCTAssertEqual(try XCTUnwrap(original.dinerEntryReactions).map(\.kind), [.runItBack])
+        XCTAssertEqual(try XCTUnwrap(original.dinerEntryReactions).first?.mascot, .mrBubbles)
         let originalComparison = try XCTUnwrap(original.comparisons.first { !$0.isAnchor })
         XCTAssertFalse(try XCTUnwrap(originalComparison.locationAEvidenceFingerprint).isEmpty)
         XCTAssertFalse(try XCTUnwrap(originalComparison.locationBEvidenceFingerprint).isEmpty)
@@ -128,10 +129,11 @@ final class AppBackupTests: XCTestCase {
         XCTAssertEqual(restoredRating.value, .notForMe)
         XCTAssertTrue(restoredRating.hasWouldOrderAgain)
         XCTAssertFalse(restoredRating.wouldOrderAgain)
-        let restoredCoonReaction = try XCTUnwrap(restoredVisit.dinerEntryReactionArray.first)
-        XCTAssertEqual(restoredCoonReaction.kind, .runItBack)
-        XCTAssertEqual(restoredCoonReaction.authorPersonID, me.id)
-        XCTAssertEqual(restoredCoonReaction.targetPersonID, michelle.id)
+        let restoredStickerReaction = try XCTUnwrap(restoredVisit.dinerEntryReactionArray.first)
+        XCTAssertEqual(restoredStickerReaction.kind, .runItBack)
+        XCTAssertEqual(restoredStickerReaction.mascot, .mrBubbles)
+        XCTAssertEqual(restoredStickerReaction.authorPersonID, me.id)
+        XCTAssertEqual(restoredStickerReaction.targetPersonID, michelle.id)
         XCTAssertEqual(restoredVisit.dishEntryArray.first?.dish?.name, "Cardamom Bun")
         XCTAssertEqual(restoredVisit.photoArray.first?.fullData, Data([1, 2, 3, 4]))
         XCTAssertEqual(restoredVisit.photoArray.first?.thumbnailData, Data([5, 6]))

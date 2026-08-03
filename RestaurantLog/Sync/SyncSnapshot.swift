@@ -130,6 +130,7 @@ enum SyncSnapshotBuilder {
                     authorPersonID: reaction.authorPersonID,
                     targetPersonID: reaction.targetPersonID,
                     kind: reaction.kind,
+                    mascot: reaction.mascot,
                     createdAt: reaction.createdAt,
                     updatedAt: reaction.updatedAt,
                     visitID: reaction.visit?.id

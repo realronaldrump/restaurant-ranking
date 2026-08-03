@@ -726,6 +726,24 @@ final class SyncSnapshotTests: XCTestCase {
         XCTAssertEqual(decodedVisit.dateTimeZoneOffsetSeconds, -6 * 60 * 60)
     }
 
+    func testSnapshotPreservesMrBubblesStickerFamily() throws {
+        let circleID = try XCTUnwrap(store.activeCircleID)
+        let michelle = try XCTUnwrap(store.otherCircleMembers.first)
+        let location = store.createLocation(name: "Bubbles Sync Cafe", category: .fullService)
+        let visit = store.logVisit(at: location, reaction: .loved, companionIDs: [michelle.id])
+        _ = store.addRating(to: visit, personID: michelle.id, reaction: .liked)
+        XCTAssertTrue(store.setStickerReaction(.runItBack, mascot: .mrBubbles, to: michelle.id, in: visit))
+
+        let snapshot = try SyncSnapshotBuilder.build(circleID: circleID, in: store.context)
+        let reactionKey = try XCTUnwrap(snapshot.records.keys.first { $0.kind == .dinerEntryReaction })
+        let payload = try XCTUnwrap(snapshot.records[reactionKey]).payload
+        let decoded = try SyncPayloadCodec.decode(
+            AppBackupArchive.DinerEntryReactionRecord.self,
+            from: payload
+        )
+        XCTAssertEqual(decoded.mascot, .mrBubbles)
+    }
+
     func testAMissingCircleYieldsAnEmptySnapshotRatherThanAnError() throws {
         let snapshot = try SyncSnapshotBuilder.build(circleID: UUID(), in: store.context)
 

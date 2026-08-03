@@ -186,6 +186,32 @@ enum Reaction: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
+/// The mascot family that owns a social sticker.
+///
+/// The raw values are persisted with sticker records. Keep `coon` as the
+/// default so records written before Mr. Bubbles was introduced continue to
+/// render exactly as they did before.
+enum StickerMascot: String, CaseIterable, Codable, Identifiable, Sendable {
+    case coon
+    case mrBubbles
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .coon: "Coon"
+        case .mrBubbles: "Mr. Bubbles"
+        }
+    }
+
+    var assetPrefix: String {
+        switch self {
+        case .coon: "Coon"
+        case .mrBubbles: "MrBubbles"
+        }
+    }
+}
+
 /// A playful, social response to somebody else's diner entry.
 ///
 /// These are intentionally separate from `Reaction`: a diner's own reaction is
@@ -218,18 +244,25 @@ enum CoonReaction: String, CaseIterable, Codable, Identifiable, Sendable {
         }
     }
 
-    var assetName: String {
+    private var assetStem: String {
         switch self {
-        case .runItBack: "CoonRunItBack"
-        case .unexpectedlyWonderful: "CoonUnexpectedlyWonderful"
-        case .merelyFine: "CoonMerelyFine"
-        case .absolutelyNot: "CoonAbsolutelyNot"
-        case .topTableMaterial: "CoonTopTableMaterial"
-        case .orderItAgain: "CoonOrderItAgain"
-        case .needsARematch: "CoonNeedsARematch"
-        case .culinaryBetrayal: "CoonCulinaryBetrayal"
-        case .noNotes: "CoonNoNotes"
+        case .runItBack: "RunItBack"
+        case .unexpectedlyWonderful: "UnexpectedlyWonderful"
+        case .merelyFine: "MerelyFine"
+        case .absolutelyNot: "AbsolutelyNot"
+        case .topTableMaterial: "TopTableMaterial"
+        case .orderItAgain: "OrderItAgain"
+        case .needsARematch: "NeedsARematch"
+        case .culinaryBetrayal: "CulinaryBetrayal"
+        case .noNotes: "NoNotes"
         }
+    }
+
+    /// Legacy Coon asset lookup retained for callers that only know a reaction.
+    var assetName: String { assetName(for: .coon) }
+
+    func assetName(for mascot: StickerMascot) -> String {
+        "\(mascot.assetPrefix)\(assetStem)"
     }
 }
 

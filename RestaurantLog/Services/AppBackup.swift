@@ -231,6 +231,9 @@ struct AppBackupArchive: Codable, Sendable {
         var authorPersonID: UUID
         var targetPersonID: UUID
         var kind: CoonReaction
+        /// Optional keeps backups written before mascot families were added
+        /// readable; missing values are the original Coon sticker family.
+        var mascot: StickerMascot? = nil
         var createdAt: Date
         var updatedAt: Date
         var visitID: UUID?
@@ -842,6 +845,7 @@ enum AppBackupService {
                     .init(
                         id: $0.id, authorPersonID: $0.authorPersonID,
                         targetPersonID: $0.targetPersonID, kind: $0.kind,
+                        mascot: $0.mascot,
                         createdAt: $0.createdAt, updatedAt: $0.updatedAt,
                         visitID: $0.visit?.id
                     )
@@ -1022,6 +1026,7 @@ enum AppBackupService {
             let object = DinerEntryReactionEntity(context: context); context.assign(object, to: destinationStore)
             object.id = record.id; object.authorPersonID = record.authorPersonID
             object.targetPersonID = record.targetPersonID; object.kind = record.kind
+            object.mascot = record.mascot ?? .coon
             object.createdAt = record.createdAt; object.updatedAt = record.updatedAt
             object.visit = record.visitID.flatMap { visits[$0] }
         }

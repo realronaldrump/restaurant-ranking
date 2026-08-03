@@ -778,19 +778,36 @@ final class AppStore {
 
     /// All social stickers attached to one diner's entry, oldest first.
     /// These never participate in ranking calculations.
-    func coonReactions(to targetPersonID: UUID, in visit: VisitEntity) -> [DinerEntryReactionEntity] {
+    func stickerReactions(
+        to targetPersonID: UUID,
+        in visit: VisitEntity,
+        mascot: StickerMascot? = nil
+    ) -> [DinerEntryReactionEntity] {
         _ = revision
-        return visit.dinerEntryReactionArray.filter { $0.targetPersonID == targetPersonID }
+        return visit.dinerEntryReactionArray.filter {
+            $0.targetPersonID == targetPersonID && (mascot == nil || $0.mascot == mascot)
+        }
     }
 
-    func myCoonReaction(to targetPersonID: UUID, in visit: VisitEntity) -> DinerEntryReactionEntity? {
+    /// Compatibility lookup for the original Coon-only callers.
+    func coonReactions(to targetPersonID: UUID, in visit: VisitEntity) -> [DinerEntryReactionEntity] {
+        stickerReactions(to: targetPersonID, in: visit, mascot: .coon)
+    }
+
+    func myStickerReaction(to targetPersonID: UUID, in visit: VisitEntity) -> DinerEntryReactionEntity? {
         guard let authorPersonID = currentPerson?.id else { return nil }
-        return coonReactions(to: targetPersonID, in: visit).first {
+        return stickerReactions(to: targetPersonID, in: visit).first {
             $0.authorPersonID == authorPersonID
         }
     }
 
-    func canReactWithCoon(to targetPersonID: UUID, in visit: VisitEntity) -> Bool {
+    /// Compatibility lookup for the original Coon-only callers.
+    func myCoonReaction(to targetPersonID: UUID, in visit: VisitEntity) -> DinerEntryReactionEntity? {
+        guard let reaction = myStickerReaction(to: targetPersonID, in: visit) else { return nil }
+        return reaction.mascot == .coon ? reaction : nil
+    }
+
+    func canReactWithSticker(to targetPersonID: UUID, in visit: VisitEntity) -> Bool {
         guard let authorPersonID = currentPerson?.id,
               authorPersonID != targetPersonID,
               visit.circle?.id == activeCircle?.id,
@@ -799,12 +816,18 @@ final class AppStore {
         return target.isCircleMember && !target.isArchived
     }
 
+    /// Compatibility name for the original Coon-only callers.
+    func canReactWithCoon(to targetPersonID: UUID, in visit: VisitEntity) -> Bool {
+        canReactWithSticker(to: targetPersonID, in: visit)
+    }
+
     /// Creates, changes, or removes this member's single sticker on another
     /// diner's entry. A deterministic identifier makes the same author/target
     /// pair converge to one encrypted sync row even across multiple devices.
     @discardableResult
-    func setCoonReaction(
+    func setStickerReaction(
         _ kind: CoonReaction?,
+        mascot: StickerMascot = .coon,
         to targetPersonID: UUID,
         in visit: VisitEntity
     ) -> Bool {
@@ -821,7 +844,7 @@ final class AppStore {
             commit()
             return true
         }
-        guard canReactWithCoon(to: targetPersonID, in: visit) else { return false }
+        guard canReactWithSticker(to: targetPersonID, in: visit) else { return false }
 
         let value: DinerEntryReactionEntity
         if let existing {
@@ -840,9 +863,20 @@ final class AppStore {
             value.visit = visit
         }
         value.kind = kind
+        value.mascot = mascot
         value.updatedAt = .now
         commit()
         return true
+    }
+
+    /// Compatibility write path for the original Coon-only callers.
+    @discardableResult
+    func setCoonReaction(
+        _ kind: CoonReaction?,
+        to targetPersonID: UUID,
+        in visit: VisitEntity
+    ) -> Bool {
+        setStickerReaction(kind, mascot: .coon, to: targetPersonID, in: visit)
     }
 
     func isSharedVisit(_ visit: VisitEntity) -> Bool {
@@ -2616,7 +2650,7 @@ final class AppStore {
         }
         for photo in duplicate.photoArray { photo.visit = keeper }
         for reaction in duplicate.dinerEntryReactionArray { reaction.visit = keeper }
-        reconcileCoonReactions(in: keeper)
+        reconcileStickerReactions(in: keeper)
 
         keeper.date = min(keeper.date, duplicate.date)
         keeper.createdAt = min(keeper.createdAt, duplicate.createdAt)
@@ -2903,7 +2937,7 @@ final class AppStore {
                 if let personID = photo.personID { photo.personID = canonicalID(personID) }
             }
 
-            reconcileCoonReactions(in: visit, canonicalPersonID: canonicalID)
+            reconcileStickerReactions(in: visit, canonicalPersonID: canonicalID)
 
             synchronizeLegacyCompanionIDs(for: visit)
         }
@@ -2949,7 +2983,7 @@ final class AppStore {
         return UUID(uuidString: value) ?? UUID()
     }
 
-    private func reconcileCoonReactions(
+    private func reconcileStickerReactions(
         in visit: VisitEntity,
         canonicalPersonID: (UUID) -> UUID = { $0 }
     ) {

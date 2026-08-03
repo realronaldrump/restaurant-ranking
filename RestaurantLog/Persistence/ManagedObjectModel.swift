@@ -66,6 +66,7 @@ enum ManagedObjectModel {
         let dinerEntryReaction = entity("DinerEntryReactionEntity", DinerEntryReactionEntity.self, [
             attribute("id", .UUIDAttributeType), attribute("authorPersonID", .UUIDAttributeType),
             attribute("targetPersonID", .UUIDAttributeType), attribute("kindRaw", .stringAttributeType),
+            attribute("mascotRaw", .stringAttributeType, optional: true),
             attribute("createdAt", .dateAttributeType), attribute("updatedAt", .dateAttributeType)
         ])
         let dish = entity("DishEntity", DishEntity.self, [

@@ -204,6 +204,33 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertTrue(store.setCoonReaction(.noNotes, to: michelle.id, in: visit))
     }
 
+    func testMrBubblesStickerSharesTheSocialRecordAndNeverChangesTheRanking() throws {
+        let me = try XCTUnwrap(store.currentPerson)
+        let michelle = try XCTUnwrap(store.otherCircleMembers.first)
+        let place = store.createLocation(name: "Bubbles Supper", category: .fullService)
+        let visit = store.logVisit(
+            at: place,
+            reaction: .loved,
+            personID: me.id,
+            companionIDs: [michelle.id]
+        )
+        _ = store.addRating(to: visit, personID: michelle.id, reaction: .liked)
+        let scoreBefore = try XCTUnwrap(store.score(for: place)?.score)
+
+        XCTAssertTrue(store.setStickerReaction(.runItBack, mascot: .mrBubbles, to: michelle.id, in: visit))
+        let first = try XCTUnwrap(store.myStickerReaction(to: michelle.id, in: visit))
+        XCTAssertEqual(first.mascot, .mrBubbles)
+        XCTAssertEqual(first.mascotRaw, StickerMascot.mrBubbles.rawValue)
+        XCTAssertEqual(store.stickerReactions(to: michelle.id, in: visit).count, 1)
+
+        XCTAssertTrue(store.setStickerReaction(.noNotes, mascot: .coon, to: michelle.id, in: visit))
+        let changed = try XCTUnwrap(store.myStickerReaction(to: michelle.id, in: visit))
+        XCTAssertEqual(changed.id, first.id)
+        XCTAssertEqual(changed.mascot, .coon)
+        XCTAssertEqual(changed.kind, .noNotes)
+        XCTAssertEqual(try XCTUnwrap(store.score(for: place)?.score), scoreBefore, accuracy: 0.0001)
+    }
+
     func testThreeYearOldVisitCarriesAboutHalfWeight() {
         let recent = Date.now.addingTimeInterval(-30 * 86_400)
         let old = Date.now.addingTimeInterval(-3 * 365 * 86_400)

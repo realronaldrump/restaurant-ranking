@@ -393,6 +393,120 @@ final class BeliImporterTests: XCTestCase {
         XCTAssertEqual(archive.photos.count, 24)
         XCTAssertEqual(archive.dishNotes.count, 1)
     }
+
+    func testDiningAreaResolverMergesBareCityWithItsOnlyQualifiedVariant() throws {
+        let bare = areaEvidence(city: "Waco", restaurant: "Cafe Homestead", outings: 35)
+        let qualified = areaEvidence(city: "Waco, TX", restaurant: "Harvest on 25th", outings: 11)
+
+        let resolved = DiningAreaResolver.resolve([bare, qualified])
+
+        XCTAssertEqual(try XCTUnwrap(resolved[bare.id]), resolved[qualified.id])
+        XCTAssertEqual(resolved[bare.id]?.name, "Waco, TX")
+    }
+
+    func testDiningAreaResolverMergesAdministrativeLongForm() throws {
+        let short = areaEvidence(city: "Redstone", restaurant: "Propaganda Pie", outings: 1)
+        let long = areaEvidence(
+            city: "Redstone Historic District, CO",
+            restaurant: "Propaganda Pie",
+            sourceIdentifier: "maps:propaganda-pie",
+            outings: 1
+        )
+
+        let resolved = DiningAreaResolver.resolve([short, long])
+
+        XCTAssertEqual(try XCTUnwrap(resolved[short.id]), resolved[long.id])
+        XCTAssertEqual(resolved[short.id]?.name, "Redstone Historic District, CO")
+    }
+
+    func testDiningAreaResolverCanonicalizesPunctuatedRegionAbbreviations() throws {
+        let dotted = areaEvidence(city: "Washington, D.C.", restaurant: "Capitol Table")
+        let compact = areaEvidence(city: "Washington, DC", restaurant: "Monument Cafe")
+        let unseparated = areaEvidence(city: "Washington D.C.", restaurant: "Federal Grill")
+        let named = areaEvidence(city: "Washington, District of Columbia", restaurant: "Mall Bistro")
+
+        let resolved = DiningAreaResolver.resolve([dotted, compact, unseparated, named])
+
+        XCTAssertEqual(try XCTUnwrap(resolved[dotted.id]), resolved[compact.id])
+        XCTAssertEqual(resolved[dotted.id], resolved[unseparated.id])
+        XCTAssertEqual(resolved[dotted.id], resolved[named.id])
+        XCTAssertEqual(resolved[dotted.id]?.id, "area:washington|dc")
+    }
+
+    func testDiningAreaResolverKeepsAmbiguousRegionsSeparate() throws {
+        let bare = areaEvidence(city: "Springfield", restaurant: "Corner Cafe")
+        let illinois = areaEvidence(city: "Springfield, IL", restaurant: "Prairie Table")
+        let missouri = areaEvidence(city: "Springfield, MO", restaurant: "Ozark Table")
+
+        let resolved = DiningAreaResolver.resolve([bare, illinois, missouri])
+
+        XCTAssertNotEqual(try XCTUnwrap(resolved[bare.id]), resolved[illinois.id])
+        XCTAssertNotEqual(resolved[bare.id], resolved[missouri.id])
+        XCTAssertNotEqual(resolved[illinois.id], resolved[missouri.id])
+    }
+
+    func testDiningAreaResolverUsesPlaceEvidenceForMinorCityTypo() throws {
+        let correct = areaEvidence(
+            city: "Albuquerque, NM", restaurant: "Mesa Provisions",
+            latitude: 35.0844, longitude: -106.6504
+        )
+        let typo = areaEvidence(
+            city: "Albuqurque", restaurant: "Mesa Provisions",
+            latitude: 35.0845, longitude: -106.6505
+        )
+
+        let resolved = DiningAreaResolver.resolve([correct, typo])
+
+        XCTAssertEqual(try XCTUnwrap(resolved[correct.id]), resolved[typo.id])
+        XCTAssertEqual(resolved[typo.id]?.name, "Albuquerque, NM")
+    }
+
+    func testDiningAreaResolverDoesNotFuzzyMergeWithoutPlaceEvidence() throws {
+        let correct = areaEvidence(city: "Albuquerque, NM", restaurant: "Mesa Provisions")
+        let typo = areaEvidence(city: "Albuqurque", restaurant: "Different Restaurant")
+        let chainInAnotherCity = areaEvidence(city: "Santa Fe, NM", restaurant: "Mesa Provisions")
+
+        let resolved = DiningAreaResolver.resolve([correct, typo, chainInAnotherCity])
+
+        XCTAssertNotEqual(try XCTUnwrap(resolved[correct.id]), resolved[typo.id])
+        XCTAssertNotEqual(resolved[correct.id], resolved[chainInAnotherCity.id])
+    }
+
+    func testDiningAreaResolverDoesNotMergeNearbyBranchesOfTheSameChain() throws {
+        let first = areaEvidence(
+            city: "Greenville, TX", restaurant: "Corner Coffee",
+            latitude: 33.1385, longitude: -96.1108
+        )
+        let second = areaEvidence(
+            city: "Greenvile", restaurant: "Corner Coffee",
+            latitude: 33.1430, longitude: -96.1108
+        )
+
+        let resolved = DiningAreaResolver.resolve([first, second])
+
+        XCTAssertNotEqual(try XCTUnwrap(resolved[first.id]), resolved[second.id])
+    }
+
+    private func areaEvidence(
+        city: String,
+        restaurant: String,
+        address: String? = nil,
+        latitude: Double? = nil,
+        longitude: Double? = nil,
+        sourceIdentifier: String? = nil,
+        outings: Int = 1
+    ) -> DiningAreaEvidence {
+        DiningAreaEvidence(
+            id: UUID(),
+            city: city,
+            restaurantName: restaurant,
+            address: address,
+            latitude: latitude,
+            longitude: longitude,
+            sourceIdentifier: sourceIdentifier,
+            outingCount: outings
+        )
+    }
 }
 
 private actor DownloadConcurrencyTracker {

@@ -173,6 +173,32 @@ struct RestaurantLogApp: App {
                 reaction: .liked
             )
         }
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-seedSettleRoundData"),
+           let personID = preparedStore.currentPerson?.id {
+            for index in 0..<8 {
+                let location = preparedStore.createLocation(
+                    name: "Settle Regression \(index + 1)",
+                    category: .fullService
+                )
+                _ = preparedStore.logVisit(at: location, reaction: .liked, personID: personID)
+            }
+        }
+        if ProcessInfo.processInfo.arguments.contains("-seedRankingCityNormalizationData"),
+           let personID = preparedStore.currentPerson?.id {
+            for (name, city) in [
+                ("Waco Bare Restaurant", "Waco"),
+                ("Waco Qualified Restaurant", "Waco, TX")
+            ] {
+                let location = preparedStore.createLocation(
+                    name: name,
+                    category: .fullService,
+                    city: city
+                )
+                _ = preparedStore.logVisit(at: location, reaction: .loved, personID: personID)
+            }
+        }
+#endif
         let coordinator = SyncCoordinator(container: persistence.container)
         await coordinator.restoreSession()
 

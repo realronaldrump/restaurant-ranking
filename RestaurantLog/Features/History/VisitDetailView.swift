@@ -4,11 +4,12 @@ import SwiftUI
 struct VisitDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppStore.self) private var store
+    @Environment(AppRouter.self) private var router
     let visit: VisitEntity
     @State private var editingVisit: VisitEntity?
     @State private var confirmDelete = false
     @State private var selectedPhoto: PhotoViewerSnapshot?
-    @State private var pendingDeletionID: UUID?
+    @State private var pendingDeletion: PendingVisitDeletion?
     @State private var stickerReactionTarget: StickerReactionTarget?
 
     var body: some View {
@@ -62,15 +63,35 @@ struct VisitDetailView: View {
         }
         .fullScreenCover(item: $selectedPhoto) { PhotoViewer(photo: $0) }
         .editorialPrompt(isPresented: $confirmDelete) {
-            EditorialPrompt.destructive(
+            deletePrompt
+        }
+    }
+
+    private var deletePrompt: EditorialPrompt {
+        guard let restaurant = visit.location, restaurant.visitArray.count == 1 else {
+            return EditorialPrompt.destructive(
                 "Delete this entire outing?",
                 message: "Every diner entry, dish, and photo saved for this outing will be removed. The restaurant stays in your log.",
                 actionTitle: "Delete outing",
                 cancelTitle: "Cancel"
             ) {
-                deleteVisit()
+                deleteVisit(removingRestaurantIfEmpty: false)
             }
         }
+        return EditorialPrompt(
+            "Delete the last outing?",
+            message: "Every diner entry, dish, and photo saved for this outing will be removed. You can keep \(restaurant.name) in your log, or remove it too. Removing the restaurant also deletes its Want to Try entry and every comparison involving it for everyone in your circle.",
+            tone: .destructive,
+            actions: [
+                .destructive("Delete outing only", symbol: "calendar.badge.minus") {
+                    deleteVisit(removingRestaurantIfEmpty: false)
+                },
+                .destructive("Delete outing and restaurant", symbol: "trash") {
+                    deleteVisit(removingRestaurantIfEmpty: true)
+                },
+                .cancel("Cancel")
+            ]
+        )
     }
 
     private var editActionTitle: String {
@@ -374,12 +395,16 @@ struct VisitDetailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func deleteVisit() {
+    private func deleteVisit(removingRestaurantIfEmpty: Bool) {
         guard visit.isAlive else {
             dismiss()
             return
         }
-        pendingDeletionID = visit.id
+        pendingDeletion = PendingVisitDeletion(
+            visitID: visit.id,
+            restaurantID: visit.location?.id,
+            removesRestaurant: removingRestaurantIfEmpty
+        )
         confirmDelete = false
         Task { @MainActor in
             await Task.yield()
@@ -388,13 +413,25 @@ struct VisitDetailView: View {
     }
 
     private func finishPendingDeletion() {
-        guard let visitID = pendingDeletionID else { return }
-        pendingDeletionID = nil
+        guard let deletion = pendingDeletion else { return }
+        pendingDeletion = nil
         Task { @MainActor in
             await Task.yield()
-            store.deleteVisit(id: visitID)
+            guard store.deleteVisit(
+                id: deletion.visitID,
+                removingRestaurantIfEmpty: deletion.removesRestaurant
+            ) else { return }
+            if deletion.removesRestaurant, let restaurantID = deletion.restaurantID {
+                router.removeRoutes(toDeletedRestaurant: restaurantID)
+            }
         }
     }
+}
+
+private struct PendingVisitDeletion {
+    let visitID: UUID
+    let restaurantID: UUID?
+    let removesRestaurant: Bool
 }
 
 private struct StickerReactionTarget: Identifiable {

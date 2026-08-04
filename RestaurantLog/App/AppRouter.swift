@@ -150,4 +150,22 @@ final class AppRouter {
         case .more: morePath.removeAll()
         }
     }
+
+    /// Removes a deleted restaurant and anything presented from its detail
+    /// screen from every tab's retained navigation stack.
+    func removeRoutes(toDeletedRestaurant restaurantID: UUID) {
+        logPath = trimmingDeletedRestaurant(restaurantID, from: logPath)
+        rankingPath = trimmingDeletedRestaurant(restaurantID, from: rankingPath)
+        historyPath = trimmingDeletedRestaurant(restaurantID, from: historyPath)
+        settlePath = trimmingDeletedRestaurant(restaurantID, from: settlePath)
+        morePath = trimmingDeletedRestaurant(restaurantID, from: morePath)
+    }
+
+    private func trimmingDeletedRestaurant(_ restaurantID: UUID, from path: [AppRoute]) -> [AppRoute] {
+        guard let index = path.firstIndex(where: { route in
+            if case .location(let routeID, _) = route { return routeID == restaurantID }
+            return false
+        }) else { return path }
+        return Array(path[..<index])
+    }
 }

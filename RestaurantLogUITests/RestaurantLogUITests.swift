@@ -69,6 +69,79 @@ final class RestaurantLogUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Salt Lake City"].waitForExistence(timeout: 3))
     }
 
+    func testRankingsCanBeViewedByCity() {
+        app.tabBars.buttons["Rankings"].tap()
+        XCTAssertTrue(app.navigationBars["Rankings"].waitForExistence(timeout: 5))
+
+        let viewButton = app.buttons["ranking-view"]
+        XCTAssertTrue(viewButton.waitForExistence(timeout: 3))
+        XCTAssertTrue(viewButton.label.contains("Ranking"))
+        viewButton.tap()
+
+        let cityOption = app.buttons["City"]
+        XCTAssertTrue(cityOption.waitForExistence(timeout: 3))
+        cityOption.tap()
+
+        XCTAssertTrue(viewButton.waitForExistence(timeout: 3))
+        XCTAssertTrue(viewButton.label.contains("City"))
+        XCTAssertTrue(app.staticTexts["Salt Lake City"].waitForExistence(timeout: 3))
+        XCTAssertTrue(
+            app.buttons.matching(
+                NSPredicate(format: "label CONTAINS[c] %@", "Rank 1 in Salt Lake City")
+            ).firstMatch.exists
+        )
+    }
+
+    func testRankingsMergeEquivalentCityLabelsIntoOneSection() {
+        app.terminate()
+        app.launchArguments = [
+            "-resetForUITests",
+            "-seedSampleData",
+            "-seedRankingCityNormalizationData"
+        ]
+        app.launch()
+        XCTAssertTrue(app.buttons["log-meal-button"].waitForExistence(timeout: 12))
+
+        app.tabBars.buttons["Rankings"].tap()
+        XCTAssertTrue(app.navigationBars["Rankings"].waitForExistence(timeout: 5))
+        app.buttons["ranking-view"].tap()
+        XCTAssertTrue(app.buttons["City"].waitForExistence(timeout: 3))
+        app.buttons["City"].tap()
+
+        let wacoHeading = app.staticTexts["Waco, TX"]
+        for _ in 0..<8 where !wacoHeading.isHittable { app.swipeUp() }
+        XCTAssertTrue(wacoHeading.waitForExistence(timeout: 3))
+
+        let wacoRows = app.buttons.matching(
+            NSPredicate(format: "label CONTAINS[c] %@", "in Waco, TX")
+        )
+        XCTAssertGreaterThanOrEqual(wacoRows.count, 2)
+    }
+
+    func testSettleRoundReachesCompletionAfterFifthPrompt() {
+        app.terminate()
+        app.launchArguments = [
+            "-resetForUITests",
+            "-seedSampleData",
+            "-seedSettleRoundData"
+        ]
+        app.launch()
+        XCTAssertTrue(app.buttons["log-meal-button"].waitForExistence(timeout: 12))
+
+        app.tabBars.buttons["Settle"].tap()
+        XCTAssertTrue(app.navigationBars["Settle the Score"].waitForExistence(timeout: 5))
+
+        for question in 1...5 {
+            XCTAssertTrue(app.staticTexts["QUESTION \(question) OF 5"].waitForExistence(timeout: 3))
+            app.buttons["Skip"].tap()
+        }
+
+        XCTAssertTrue(
+            app.buttons["settle-continue-button"].waitForExistence(timeout: 3),
+            "Completing question five must show the round checkpoint without terminating the app."
+        )
+    }
+
     func testLongRestaurantNameDoesNotCollapseRankingScoreColumn() {
         app.terminate()
         app.launchArguments = [
@@ -277,6 +350,49 @@ final class RestaurantLogUITests: XCTestCase {
 
         XCTAssertEqual(app.state, .runningForeground)
         XCTAssertTrue(app.navigationBars["History"].waitForExistence(timeout: 5))
+    }
+
+    func testLastOutingDeletionCanKeepThenRemoveComparedRestaurant() {
+        app.tabBars.buttons["History"].tap()
+        let outing = app.staticTexts["Normal Ice Cream"].firstMatch
+        XCTAssertTrue(outing.waitForExistence(timeout: 5))
+        outing.tap()
+
+        let deleteButton = app.buttons["Delete entire outing"]
+        for _ in 0..<8 where !deleteButton.isHittable { app.swipeUp() }
+        XCTAssertTrue(deleteButton.isHittable)
+        deleteButton.tap()
+
+        XCTAssertTrue(app.staticTexts["Delete the last outing?"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Delete outing and restaurant"].exists)
+        let deleteOutingOnly = app.buttons["Delete outing only"]
+        XCTAssertTrue(deleteOutingOnly.exists)
+        deleteOutingOnly.tap()
+        XCTAssertTrue(app.navigationBars["History"].waitForExistence(timeout: 5))
+
+        app.tabBars.buttons["More"].tap()
+        app.staticTexts["Statistics"].tap()
+        XCTAssertTrue(app.navigationBars["Statistics"].waitForExistence(timeout: 5))
+        let restaurantsMetric = app.buttons["9 restaurants"]
+        XCTAssertTrue(restaurantsMetric.waitForExistence(timeout: 3))
+        restaurantsMetric.tap()
+
+        let emptyRestaurant = app.staticTexts["Normal Ice Cream"].firstMatch
+        for _ in 0..<8 where !emptyRestaurant.isHittable { app.swipeUp() }
+        XCTAssertTrue(emptyRestaurant.isHittable)
+        emptyRestaurant.tap()
+        XCTAssertTrue(app.navigationBars["Normal Ice Cream"].waitForExistence(timeout: 5))
+
+        app.buttons["Restaurant actions"].tap()
+        let removeEmptyRestaurant = app.buttons["remove-empty-restaurant"]
+        XCTAssertTrue(removeEmptyRestaurant.waitForExistence(timeout: 3))
+        removeEmptyRestaurant.tap()
+        XCTAssertTrue(app.staticTexts["Remove Normal Ice Cream from the log?"].waitForExistence(timeout: 3))
+        app.buttons["Remove restaurant"].tap()
+
+        XCTAssertTrue(app.navigationBars["Restaurants"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Normal Ice Cream"].exists)
+        XCTAssertEqual(app.state, .runningForeground)
     }
 
     func testRemovingWantedRestaurantDoesNotCrash() {

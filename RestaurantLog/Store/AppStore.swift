@@ -1917,10 +1917,59 @@ final class AppStore {
         commit()
     }
 
+    func canDeleteRestaurant(_ restaurant: RestaurantLocation) -> Bool {
+        restaurant.isAlive &&
+            restaurant.circle?.id == activeCircle?.id &&
+            restaurant.visitArray.isEmpty
+    }
+
+    /// Removes a restaurant that has no outing history.
+    ///
+    /// Comparisons store restaurant identifiers rather than managed-object
+    /// relationships, so they are explicitly dependent on the restaurant's
+    /// lifetime even though Core Data cannot cascade them automatically.
     @discardableResult
-    func deleteVisit(_ visit: VisitEntity, personID: UUID? = nil) -> Bool {
+    func deleteRestaurant(_ restaurant: RestaurantLocation) -> Bool {
+        guard deleteRestaurantRecord(restaurant) else { return false }
+        commit()
+        return true
+    }
+
+    @discardableResult
+    func deleteRestaurant(id: UUID) -> Bool {
+        guard let restaurant = allLocations.first(where: { $0.id == id }) else { return false }
+        return deleteRestaurant(restaurant)
+    }
+
+    private func deleteRestaurantRecord(_ restaurant: RestaurantLocation) -> Bool {
+        guard canDeleteRestaurant(restaurant) else { return false }
+        let restaurantID = restaurant.id
+        let comparisonIDs = Set(allComparisons.compactMap { comparison in
+            comparison.locationAID == restaurantID || comparison.locationBID == restaurantID
+                ? comparison.id
+                : nil
+        })
+        for comparison in allComparisons where comparisonIDs.contains(comparison.id) {
+            context.delete(comparison)
+        }
+        allComparisons.removeAll { comparisonIDs.contains($0.id) }
+        allWantEntries.removeAll { $0.location?.id == restaurantID }
+        allLocations.removeAll { $0.id == restaurantID }
+        context.delete(restaurant)
+        context.processPendingChanges()
+        rebuildLocationIndexes()
+        return true
+    }
+
+    @discardableResult
+    func deleteVisit(
+        _ visit: VisitEntity,
+        personID: UUID? = nil,
+        removingRestaurantIfEmpty: Bool = false
+    ) -> Bool {
         guard canEditOuting(visit, personID: personID) else { return false }
         let visitID = visit.id
+        let restaurant = visit.location
         let possibleOrphanedDishes = Set(visit.dishEntryArray.compactMap(\.dish))
         allVisits.removeAll { $0.id == visitID }
         context.delete(visit)
@@ -1928,14 +1977,25 @@ final class AppStore {
         for dish in possibleOrphanedDishes where dish.entryArray.isEmpty {
             context.delete(dish)
         }
+        if removingRestaurantIfEmpty, let restaurant {
+            _ = deleteRestaurantRecord(restaurant)
+        }
         commit()
         return true
     }
 
     @discardableResult
-    func deleteVisit(id: UUID, personID: UUID? = nil) -> Bool {
+    func deleteVisit(
+        id: UUID,
+        personID: UUID? = nil,
+        removingRestaurantIfEmpty: Bool = false
+    ) -> Bool {
         guard let visit = allVisits.first(where: { $0.id == id }) else { return false }
-        return deleteVisit(visit, personID: personID)
+        return deleteVisit(
+            visit,
+            personID: personID,
+            removingRestaurantIfEmpty: removingRestaurantIfEmpty
+        )
     }
 
     func canEditPhoto(_ photo: PhotoEntity, personID: UUID? = nil) -> Bool {

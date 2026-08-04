@@ -304,14 +304,17 @@ struct HistoryView: View {
         isPreparing = true
         let peopleByID = Dictionary(uniqueKeysWithValues: store.people.map { ($0.id, $0.name) })
         let currentPersonID = store.currentPerson?.id
+        let resolvedAreas = DiningAreaResolver.resolve(locations: store.locations)
         searchRecords = store.visits.map { visit in
-            let city = normalizedCity(visit.location?.city)
+            let savedCity = normalizedCity(visit.location?.city)
+            let resolvedArea = visit.location.flatMap { resolvedAreas[$0.id] }
+            let city = resolvedArea?.name ?? savedCity
             let participantIDs = visit.participantArray
                 .filter { $0.status != .notThere }
                 .map(\.personID)
             let people = Set(participantIDs.isEmpty ? visit.companionIDs + [visit.createdByID] : participantIDs)
                 .compactMap { peopleByID[$0] }
-            let searchable = [visit.location?.name, city, visit.memory]
+            let searchable = [visit.location?.name, savedCity, city, visit.memory]
                 + visit.dishEntryArray.map { $0.dish?.name }
                 + visit.participantArray.map(\.memory)
                 + people.map(Optional.some)
@@ -327,7 +330,8 @@ struct HistoryView: View {
                     ? DiningDateContext.year(of: visit.date, offsetSeconds: visit.dateTimeZoneOffsetSeconds?.intValue)
                     : Int.min,
                 city: city,
-                citySortKey: city?.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current),
+                citySortKey: resolvedArea?.id
+                    ?? city?.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current),
                 searchableText: searchable.compactMap { $0 }.joined(separator: " "),
                 isUnrated: belongsToCurrentPerson
                     && currentStatus != .declined

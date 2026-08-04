@@ -9,6 +9,7 @@ private struct EstablishmentMemberScore: Identifiable {
 
 @MainActor
 struct EstablishmentDetailView: View {
+    @Environment(\.dismiss) private var dismiss
     @Environment(AppStore.self) private var store
     @Environment(AppRouter.self) private var router
     let location: RestaurantLocation
@@ -16,13 +17,18 @@ struct EstablishmentDetailView: View {
     @State private var editingLocation: RestaurantLocation?
     @State private var selectedPhoto: PhotoEntity?
     @State private var showsSplitDecisionExplanation = false
+    @State private var confirmsRestaurantRemoval = false
+    @State private var pendingRestaurantDeletionID: UUID?
 
     @ViewBuilder var body: some View {
-        if location.managedObjectContext == nil || location.isDeleted {
-            EmptyView()
-        } else {
-            establishmentContent
+        Group {
+            if location.managedObjectContext == nil || location.isDeleted {
+                EmptyView()
+            } else {
+                establishmentContent
+            }
         }
+        .onDisappear { finishPendingRestaurantDeletion() }
     }
 
     private var establishmentContent: some View {
@@ -60,11 +66,30 @@ struct EstablishmentDetailView: View {
                     Button(location.isClosed ? "Mark open" : "Mark closed", systemImage: "door.left.hand.closed") {
                         store.updateLocation(location, name: location.name, category: location.category, cuisines: location.cuisines, tags: location.tags, isClosed: !location.isClosed)
                     }
+                    if store.canDeleteRestaurant(location) {
+                        Divider()
+                        Button("Remove restaurant", systemImage: "trash", role: .destructive) {
+                            confirmsRestaurantRemoval = true
+                        }
+                        .accessibilityIdentifier("remove-empty-restaurant")
+                    }
                 } label: { Image(systemName: "ellipsis.circle") }
+                    .accessibilityLabel("Restaurant actions")
             }
         }
         .sheet(item: $editingLocation) { EditLocationView(location: $0) }
         .fullScreenCover(item: $selectedPhoto) { PhotoViewer(photo: $0) }
+        .editorialPrompt(isPresented: $confirmsRestaurantRemoval) {
+            EditorialPrompt.destructive(
+                "Remove \(location.name) from the log?",
+                message: "This restaurant has no outings. Removing it also deletes any Want to Try entry and every comparison involving it for everyone in your circle.",
+                actionTitle: "Remove restaurant",
+                actionSymbol: "trash",
+                cancelTitle: "Cancel"
+            ) {
+                removeRestaurant()
+            }
+        }
         .editorialPrompt(isPresented: $showsSplitDecisionExplanation) {
             EditorialPrompt(
                 "Opinions vary",
@@ -72,6 +97,29 @@ struct EstablishmentDetailView: View {
                 tone: .information,
                 actions: [.cancel("Got It")]
             )
+        }
+    }
+
+    private func removeRestaurant() {
+        guard store.canDeleteRestaurant(location) else {
+            confirmsRestaurantRemoval = false
+            return
+        }
+        pendingRestaurantDeletionID = location.id
+        confirmsRestaurantRemoval = false
+        Task { @MainActor in
+            await Task.yield()
+            dismiss()
+        }
+    }
+
+    private func finishPendingRestaurantDeletion() {
+        guard let restaurantID = pendingRestaurantDeletionID else { return }
+        pendingRestaurantDeletionID = nil
+        Task { @MainActor in
+            await Task.yield()
+            guard store.deleteRestaurant(id: restaurantID) else { return }
+            router.removeRoutes(toDeletedRestaurant: restaurantID)
         }
     }
 

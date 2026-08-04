@@ -456,7 +456,9 @@ struct StatsDetailView: View {
     }
 
     @ViewBuilder private func cityDetail(_ name: String) -> some View {
-        let city = statsCitySummaries(store.locations).first { $0.id == cityKey(name) }
+        let city = statsCitySummaries(store.locations).first {
+            DiningAreaResolver.lookupKey($0.name) == DiningAreaResolver.lookupKey(name)
+        }
         if let city {
             detailHero(city.locations.count, noun: city.locations.count == 1 ? "restaurant" : "restaurants", symbol: "mappin.and.ellipse", description: "\(countLabel(city.visitCount, singular: "outing")) and \(countLabel(city.dishCount, singular: "dish")) logged in \(city.name).")
             VStack(alignment: .leading, spacing: 12) {
@@ -746,23 +748,16 @@ private func normalizedCity(_ value: String?) -> String? {
     return trimmed.isEmpty ? nil : trimmed
 }
 
-private func cityKey(_ city: String) -> String {
-    city.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-}
-
+@MainActor
 private func statsCitySummaries(_ locations: [RestaurantLocation]) -> [StatsCitySummary] {
+    let resolvedAreas = DiningAreaResolver.resolve(locations: locations)
     let knownLocations = locations.compactMap { location -> (String, String, RestaurantLocation)? in
-        guard let city = normalizedCity(location.city) else { return nil }
-        return (cityKey(city), city, location)
+        guard let area = resolvedAreas[location.id] else { return nil }
+        return (area.id, area.name, location)
     }
     let grouped = Dictionary(grouping: knownLocations, by: \.0)
     return grouped.map { key, values in
-        let names = Dictionary(grouping: values.map(\.1), by: { $0 }).map { name, occurrences in (name, occurrences.count) }
-        let displayName = names.sorted {
-            if $0.1 != $1.1 { return $0.1 > $1.1 }
-            return $0.0.localizedCaseInsensitiveCompare($1.0) == .orderedAscending
-        }.first?.0 ?? values[0].1
-        return StatsCitySummary(id: key, name: displayName, locations: values.map(\.2))
+        StatsCitySummary(id: key, name: values[0].1, locations: values.map(\.2))
     }.sorted {
         if $0.locations.count != $1.locations.count { return $0.locations.count > $1.locations.count }
         return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending

@@ -1364,6 +1364,7 @@ final class RankingEngineTests: XCTestCase {
         store.deleteVisit(id: visitID)
 
         XCTAssertFalse(store.visits.contains { $0.id == visitID })
+        XCTAssertTrue(store.locations.contains { $0.id == locationID })
         XCTAssertTrue(location.visitArray.isEmpty)
         XCTAssertTrue(location.dishArray.isEmpty)
         XCTAssertFalse(store.ranked().contains { $0.id == locationID })
@@ -1371,6 +1372,77 @@ final class RankingEngineTests: XCTestCase {
             let request = NSFetchRequest<NSManagedObject>(entityName: entityName)
             XCTAssertEqual(try store.context.count(for: request), 0, "Expected \(entityName) to be removed with the visit")
         }
+    }
+
+    func testDeletingEmptyRestaurantRemovesRestaurantAndAllDependentEvidence() throws {
+        let me = try XCTUnwrap(store.currentPerson)
+        let michelle = try XCTUnwrap(store.circleMembers.first { $0.id != me.id })
+        let restaurant = store.createLocation(name: "Empty Restaurant", category: .fullService)
+        let restaurantID = restaurant.id
+        let other = store.createLocation(name: "Still Here", category: .fullService)
+        _ = store.logVisit(at: other, reaction: .liked, personID: me.id)
+        store.recordComparison(a: restaurant, b: other, outcome: .a, personID: me.id)
+        store.recordComparison(a: other, b: restaurant, outcome: .b, personID: michelle.id)
+        store.recordAnchor(for: restaurant, value: 90, personID: me.id)
+        store.toggleWant(restaurant, by: me.id)
+        XCTAssertTrue(store.ranked(for: me.id).contains { $0.id == restaurantID })
+
+        XCTAssertTrue(store.deleteRestaurant(id: restaurantID))
+
+        XCTAssertFalse(store.locations.contains { $0.id == restaurantID })
+        XCTAssertFalse(store.comparisons.contains {
+            $0.locationAID == restaurantID || $0.locationBID == restaurantID
+        })
+        XCTAssertFalse(store.wantEntries.contains { $0.location?.id == restaurantID })
+        XCTAssertFalse(store.ranked(for: me.id).contains { $0.id == restaurantID })
+        XCTAssertTrue(store.locations.contains { $0.id == other.id })
+        XCTAssertNil(restaurant.managedObjectContext)
+    }
+
+    func testRestaurantWithAnOutingCannotBeDeleted() {
+        let restaurant = store.createLocation(name: "Has History", category: .fullService)
+        let visit = store.logVisit(at: restaurant, reaction: .liked)
+
+        XCTAssertFalse(store.deleteRestaurant(id: restaurant.id))
+
+        XCTAssertTrue(store.locations.contains { $0.id == restaurant.id })
+        XCTAssertTrue(store.visits.contains { $0.id == visit.id })
+    }
+
+    func testDeletingFinalOutingCanAlsoRemoveRestaurantAndDependentComparisons() throws {
+        let me = try XCTUnwrap(store.currentPerson)
+        let restaurant = store.createLocation(name: "Last Outing", category: .fullService)
+        let restaurantID = restaurant.id
+        let visit = store.logVisit(at: restaurant, reaction: .loved, personID: me.id)
+        let visitID = visit.id
+        let other = store.createLocation(name: "Comparison Survivor", category: .fullService)
+        _ = store.logVisit(at: other, reaction: .liked, personID: me.id)
+        store.recordComparison(a: restaurant, b: other, outcome: .a, personID: me.id)
+
+        XCTAssertTrue(store.deleteVisit(id: visitID, removingRestaurantIfEmpty: true))
+
+        XCTAssertFalse(store.visits.contains { $0.id == visitID })
+        XCTAssertFalse(store.locations.contains { $0.id == restaurantID })
+        XCTAssertFalse(store.comparisons.contains {
+            $0.locationAID == restaurantID || $0.locationBID == restaurantID
+        })
+        XCTAssertTrue(store.locations.contains { $0.id == other.id })
+        XCTAssertNil(restaurant.managedObjectContext)
+    }
+
+    func testDeletingOneOfMultipleOutingsCannotRemoveRestaurant() {
+        let restaurant = store.createLocation(name: "Two Outings", category: .fullService)
+        let firstVisit = store.logVisit(at: restaurant, reaction: .liked)
+        let secondVisit = store.logVisit(at: restaurant, reaction: .loved)
+        let firstVisitID = firstVisit.id
+        let secondVisitID = secondVisit.id
+
+        XCTAssertTrue(store.deleteVisit(id: firstVisitID, removingRestaurantIfEmpty: true))
+
+        XCTAssertTrue(store.locations.contains { $0.id == restaurant.id })
+        XCTAssertFalse(store.visits.contains { $0.id == firstVisitID })
+        XCTAssertTrue(store.visits.contains { $0.id == secondVisitID })
+        XCTAssertEqual(restaurant.visitArray.map(\.id), [secondVisitID])
     }
 
     func testDeviceIdentityCanSelectAnotherCircleMember() {

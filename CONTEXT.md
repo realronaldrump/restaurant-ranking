@@ -9,7 +9,7 @@ A private shared dining log containing members, restaurants, outings, and rankin
 _Avoid_: Group, account
 
 **Restaurant**:
-A canonical place in a circle where one or more outings occur.
+A canonical place in a circle that can hold outing history, Want to Try state, and ranking evidence. A restaurant may exist without an outing when someone saves or ranks a familiar place first.
 _Avoid_: Venue, establishment record
 
 **Outing**:
@@ -31,14 +31,26 @@ A canonical menu item at a restaurant.
 One participant’s reaction to a dish they personally tried during an outing.
 _Avoid_: Dish reaction without an owner
 
+**Ranking Answer**:
+One participant’s comparison between restaurants or score anchor for a familiar restaurant. It is evidence about a restaurant, not outing history.
+
 ## Relationships
 
 - A **Circle** contains many **Restaurants** and **Outings**
+- A **Restaurant** contains zero or more **Outings**
 - An **Outing** belongs to exactly one **Restaurant**
 - An **Outing** contains one or more **Participants**
 - A **Participant** contributes at most one **Diner Entry** to an **Outing**
 - A **Diner Entry** can contain many **Dish Entries**
 - A **Dish Entry** belongs to exactly one participant and one canonical **Dish**
+- A **Ranking Answer** references one or two existing **Restaurants**
+
+## Deletion lifecycle
+
+- Deleting an **Outing** removes that event and its diner entries, dish entries, and photos; it does not implicitly delete its **Restaurant**
+- When the final **Outing** is deleted, removing the now-empty **Restaurant** is a separate explicit choice
+- A **Restaurant** can be removed only when it has no outings, including when its outings were deleted in an older app version
+- Removing a **Restaurant** also removes its Want to Try state and every **Ranking Answer** that references it, because that evidence has no meaning without the restaurant
 
 ## Ownership and access
 

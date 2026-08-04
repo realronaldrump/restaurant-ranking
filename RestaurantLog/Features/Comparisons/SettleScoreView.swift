@@ -30,7 +30,8 @@ struct SettleScoreView: View {
             if !isReady { ProgressView().tint(BBTheme.oxblood) }
             else if isShowingCompletion { complete }
             else if prompts.isEmpty { empty }
-            else { promptView(prompts[index]) }
+            else if let currentPrompt { promptView(currentPrompt) }
+            else { complete }
         }
         .navigationTitle("Settle the Score").navigationBarTitleDisplayMode(.inline)
         .onAppear { refreshIfIdle() }
@@ -231,16 +232,23 @@ struct SettleScoreView: View {
     private func advance(recording recordedID: UUID? = nil) {
         recordedAnswers.append(recordedID)
         let nextIndex = index + 1
-        if reduceMotion { index = nextIndex }
-        else { withAnimation(.snappy) { index = nextIndex } }
-
         // Keep the current round stable. Only check for another batch after
         // the last prompt has been completed, so a ranking reorder cannot make
         // the question sequence jump underneath somebody.
         if nextIndex >= prompts.count {
             hasMorePrompts = !store.settleScorePrompts(limit: 1).isEmpty
-            isShowingCompletion = true
+            if reduceMotion { isShowingCompletion = true }
+            else { withAnimation(.snappy) { isShowingCompletion = true } }
+            return
         }
+
+        if reduceMotion { index = nextIndex }
+        else { withAnimation(.snappy) { index = nextIndex } }
+    }
+
+    private var currentPrompt: SettleScorePrompt? {
+        guard prompts.indices.contains(index) else { return nil }
+        return prompts[index]
     }
 
     private var canGoBack: Bool { index > 0 && !recordedAnswers.isEmpty }

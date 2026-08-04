@@ -3,6 +3,7 @@ import SwiftUI
 private struct RankingRowModel: Identifiable {
     let id: UUID
     let location: RestaurantLocation
+    let diningArea: ResolvedDiningArea?
     let score: Double
     let provisional: Bool
     let overallRank: Int
@@ -27,6 +28,25 @@ private struct RankingSnapshotKey: Hashable {
     let scope: RankingScope
 }
 
+private enum RankingViewMode: String, CaseIterable, Identifiable {
+    case ranking = "Ranking"
+    case city = "City"
+
+    var id: String { rawValue }
+}
+
+private struct CityRankingPlacement {
+    let rank: Int
+    let isTied: Bool
+    let city: String
+}
+
+private struct CityRankingSection: Identifiable {
+    let id: String
+    let title: String
+    let rows: [RankingRowModel]
+}
+
 @MainActor
 struct RankingsView: View {
     @Environment(AppStore.self) private var store
@@ -41,6 +61,7 @@ struct RankingsView: View {
     @State private var tag: String?
     @State private var priceBand = 0
     @State private var includesClosed = false
+    @State private var viewMode: RankingViewMode = .ranking
     @State private var baseRows: [RankingRowModel] = []
     @State private var allCuisines: [String] = []
     @State private var allTags: [String] = []
@@ -64,7 +85,7 @@ struct RankingsView: View {
         .editorialPage()
         .navigationTitle("Rankings")
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $query, prompt: "Restaurant, cuisine, or tag")
+        .searchable(text: $query, prompt: "Restaurant, city, cuisine, or tag")
         .task(id: query) {
             do { try await Task.sleep(nanoseconds: 150_000_000) }
             catch { return }
@@ -203,12 +224,46 @@ struct RankingsView: View {
                 }
             }
         } else {
-            if let first = rows.first { leaderCard(first) }
-            if rows.count > 1 {
+            switch viewMode {
+            case .ranking:
+                scoreRankingContent(rows)
+            case .city:
+                cityRankingContent(rows)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func scoreRankingContent(_ rows: [RankingRowModel]) -> some View {
+        if let first = rows.first { leaderCard(first) }
+        if rows.count > 1 {
+            VStack(spacing: 0) {
+                ForEach(Array(rows.dropFirst().enumerated()), id: \.element.id) { index, row in
+                    rankingRow(row)
+                    if index < rows.count - 2 { Divider() }
+                }
+            }
+            .editorialCard(padding: 14)
+        }
+    }
+
+    private func cityRankingContent(_ rows: [RankingRowModel]) -> some View {
+        let placements = cityRankingPlacements
+        return ForEach(citySections(for: rows)) { section in
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(section.title)
+                        .font(BBTheme.score(25))
+                        .foregroundStyle(BBTheme.oxblood)
+                    Spacer()
+                    Text("\(section.rows.count) \(section.rows.count == 1 ? "restaurant" : "restaurants")")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
                 VStack(spacing: 0) {
-                    ForEach(Array(rows.dropFirst().enumerated()), id: \.element.id) { index, row in
-                        rankingRow(row)
-                        if index < rows.count - 2 { Divider() }
+                    ForEach(Array(section.rows.enumerated()), id: \.element.id) { index, row in
+                        rankingRow(row, cityPlacement: placements[row.id])
+                        if index < section.rows.count - 1 { Divider() }
                     }
                 }
                 .editorialCard(padding: 14)
@@ -242,14 +297,14 @@ struct RankingsView: View {
         }
     }
 
-    private func rankingRow(_ row: RankingRowModel) -> some View {
+    private func rankingRow(_ row: RankingRowModel, cityPlacement: CityRankingPlacement? = nil) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Button { router.rankingPath.append(.location(row.id, rankingScope: activeScope)) } label: {
                 Group {
                     if dynamicTypeSize.isAccessibilitySize {
-                        accessibleRankingRowContent(row)
+                        accessibleRankingRowContent(row, cityPlacement: cityPlacement)
                     } else {
-                        compactRankingRowContent(row)
+                        compactRankingRowContent(row, cityPlacement: cityPlacement)
                     }
                 }
                 .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
@@ -257,7 +312,7 @@ struct RankingsView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(rankingAccessibilityLabel(row))
+            .accessibilityLabel(rankingAccessibilityLabel(row, cityPlacement: cityPlacement))
 
             if row.provisional {
                 evidenceButton(row)
@@ -320,19 +375,19 @@ struct RankingsView: View {
         .fixedSize(horizontal: true, vertical: false)
     }
 
-    private func compactRankingRowContent(_ row: RankingRowModel) -> some View {
+    private func compactRankingRowContent(_ row: RankingRowModel, cityPlacement: CityRankingPlacement?) -> some View {
         HStack(alignment: .center, spacing: 13) {
-            rankMark(row)
+            rankMark(row, cityPlacement: cityPlacement)
             rankingIdentity(row)
                 .layoutPriority(2)
             rankingScore(row)
         }
     }
 
-    private func accessibleRankingRowContent(_ row: RankingRowModel) -> some View {
+    private func accessibleRankingRowContent(_ row: RankingRowModel, cityPlacement: CityRankingPlacement?) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                rankMark(row)
+                rankMark(row, cityPlacement: cityPlacement)
                 Text(row.location.name)
                     .font(BBTheme.display(25))
                     .lineLimit(3)
@@ -348,12 +403,12 @@ struct RankingsView: View {
         }
     }
 
-    private func rankMark(_ row: RankingRowModel) -> some View {
-        Text(rankMarker(row))
+    private func rankMark(_ row: RankingRowModel, cityPlacement: CityRankingPlacement? = nil) -> some View {
+        Text(rankMarker(row, cityPlacement: cityPlacement))
             .font(BBTheme.score(21))
-            .foregroundStyle(displayedRank(row) <= 3 ? BBTheme.oxblood : BBTheme.ink)
+            .foregroundStyle(displayedRank(row, cityPlacement: cityPlacement) <= 3 ? BBTheme.oxblood : BBTheme.ink)
             .frame(width: dynamicTypeSize.isAccessibilitySize ? nil : 38, alignment: .center)
-            .accessibilityLabel(rankAccessibilityLabel(row))
+            .accessibilityLabel(rankAccessibilityLabel(row, cityPlacement: cityPlacement))
     }
 
     private func rankingIdentity(_ row: RankingRowModel) -> some View {
@@ -447,8 +502,32 @@ struct RankingsView: View {
                     .font(.caption.weight(.bold))
                     .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
             }
+            rankingViewMenu
         }
         .frame(minHeight: 32)
+    }
+
+    private var rankingViewMenu: some View {
+        Menu {
+            ForEach(RankingViewMode.allCases) { mode in
+                Button {
+                    viewMode = mode
+                    Haptics.selection()
+                } label: {
+                    Label(mode.rawValue, systemImage: viewMode == mode ? "checkmark" : "arrow.up.arrow.down")
+                }
+            }
+        } label: {
+            Label(viewMode.rawValue, systemImage: viewMode == .city ? "building.2" : "list.number")
+                .font(.callout.weight(.semibold))
+                .lineLimit(1)
+                .padding(.horizontal, 12)
+                .frame(minHeight: 44)
+                .background(BBTheme.surface, in: Capsule())
+                .overlay(Capsule().stroke(BBTheme.hairline))
+        }
+        .accessibilityLabel("Rankings view, \(viewMode.rawValue)")
+        .accessibilityIdentifier("ranking-view")
     }
 
     private var filterMenu: some View {
@@ -476,12 +555,14 @@ struct RankingsView: View {
 
     private func rebuildSnapshot() {
         isPreparingRows = true
+        let locations = store.locations
+        let resolvedAreas = DiningAreaResolver.resolve(locations: locations)
         let source: [RankingRowModel]
         switch activeScope {
         case .person(let personID):
             source = store.ranked(for: personID).map {
                 .init(
-                    id: $0.id, location: $0.location, score: $0.score,
+                    id: $0.id, location: $0.location, diningArea: resolvedAreas[$0.id], score: $0.score,
                     provisional: $0.isProvisional, overallRank: $0.overallRank,
                     categoryRank: $0.categoryRank, split: false,
                     opinionCount: 1, scoreSpread: nil,
@@ -494,7 +575,7 @@ struct RankingsView: View {
         case .circle:
             source = store.circleRanked().map {
                 .init(
-                    id: $0.id, location: $0.location, score: $0.score,
+                    id: $0.id, location: $0.location, diningArea: resolvedAreas[$0.id], score: $0.score,
                     provisional: $0.isProvisional, overallRank: $0.overallRank,
                     categoryRank: $0.categoryRank, split: $0.isSplitDecision,
                     opinionCount: $0.memberScores.count, scoreSpread: $0.scoreSpread,
@@ -510,7 +591,6 @@ struct RankingsView: View {
             category = openingFrame
             hasChosenInitialFrame = true
         }
-        let locations = store.locations
         allCuisines = locations.flatMap(\.cuisines).uniqued().sorted()
         allTags = locations.flatMap(\.tags).uniqued().sorted()
         isPreparingRows = false
@@ -520,12 +600,16 @@ struct RankingsView: View {
         baseRows.filter { row in
             let cuisines = row.location.cuisines
             let tags = row.location.tags
+            let cityValues = [row.diningArea?.name, normalizedCity(row.location.city)]
             return (category == nil || row.location.category == category) &&
             (includesClosed || !row.location.isClosed) &&
             (cuisine.map(cuisines.contains) ?? true) &&
             (tag.map(tags.contains) ?? true) &&
             (priceBand == 0 || row.location.hasVisit(inPriceBand: priceBand)) &&
-            (effectiveQuery.isEmpty || ([row.location.name] + cuisines + tags).joined(separator: " ").localizedCaseInsensitiveContains(effectiveQuery))
+            (effectiveQuery.isEmpty || ([row.location.name] + cityValues + cuisines.map(Optional.some) + tags.map(Optional.some))
+                .compactMap { $0 }
+                .joined(separator: " ")
+                .localizedCaseInsensitiveContains(effectiveQuery))
         }
     }
     private var activeFilterCount: Int { [cuisine != nil, tag != nil, priceBand > 0, includesClosed].filter { $0 }.count }
@@ -545,8 +629,9 @@ struct RankingsView: View {
         Haptics.selection()
     }
 
-    private func displayedRank(_ row: RankingRowModel) -> Int {
-        category == nil ? row.overallRank : row.categoryRank
+    private func displayedRank(_ row: RankingRowModel, cityPlacement: CityRankingPlacement? = nil) -> Int {
+        if let cityPlacement { return cityPlacement.rank }
+        return category == nil ? row.overallRank : row.categoryRank
     }
 
     private func listScore(_ row: RankingRowModel) -> Int { row.listScore }
@@ -608,11 +693,19 @@ struct RankingsView: View {
         return densest.0
     }
 
-    private func rankMarker(_ row: RankingRowModel) -> String {
-        tiedRank(row).map { "=\($0)" } ?? "\(displayedRank(row))"
+    private func rankMarker(_ row: RankingRowModel, cityPlacement: CityRankingPlacement? = nil) -> String {
+        if let cityPlacement {
+            return cityPlacement.isTied ? "=\(cityPlacement.rank)" : "\(cityPlacement.rank)"
+        }
+        return tiedRank(row).map { "=\($0)" } ?? "\(displayedRank(row))"
     }
 
-    private func rankAccessibilityLabel(_ row: RankingRowModel) -> String {
+    private func rankAccessibilityLabel(_ row: RankingRowModel, cityPlacement: CityRankingPlacement? = nil) -> String {
+        if let cityPlacement {
+            return cityPlacement.isTied
+                ? "Tied at rank \(cityPlacement.rank) in \(cityPlacement.city)"
+                : "Rank \(cityPlacement.rank) in \(cityPlacement.city)"
+        }
         let context = category == nil ? "overall" : "in \(row.location.category.shortTitle)"
         if let tiedRank = tiedRank(row) {
             return "Tied at rank \(tiedRank) \(context)"
@@ -620,8 +713,8 @@ struct RankingsView: View {
         return "Rank \(displayedRank(row)) \(context)"
     }
 
-    private func rankingAccessibilityLabel(_ row: RankingRowModel) -> String {
-        "\(rankAccessibilityLabel(row)), \(row.location.name), return score \(listScore(row)) out of 100\(row.provisional ? ", early score" : "")"
+    private func rankingAccessibilityLabel(_ row: RankingRowModel, cityPlacement: CityRankingPlacement? = nil) -> String {
+        "\(rankAccessibilityLabel(row, cityPlacement: cityPlacement)), \(row.location.name), return score \(listScore(row)) out of 100\(row.provisional ? ", early score" : "")"
     }
 
     private func earlyScoreSummary(_ row: RankingRowModel) -> String {
@@ -639,7 +732,10 @@ struct RankingsView: View {
     }
 
     private var rankContextLabel: String {
-        category.map { "RANKED IN \($0.shortTitle.uppercased())" } ?? "RANKED OVERALL"
+        if viewMode == .city {
+            return category.map { "RANKED BY CITY · \($0.shortTitle.uppercased())" } ?? "RANKED BY CITY"
+        }
+        return category.map { "RANKED IN \($0.shortTitle.uppercased())" } ?? "RANKED OVERALL"
     }
 
     private func leaderDetail(_ row: RankingRowModel) -> String {
@@ -655,6 +751,54 @@ struct RankingsView: View {
 
     private var hasResultNarrowingFilters: Bool {
         activeFilterCount > 0 || !effectiveQuery.isEmpty
+    }
+
+    private var cityRankingPlacements: [UUID: CityRankingPlacement] {
+        let frameRows = baseRows.filter { category == nil || $0.location.category == category }
+        let grouped = Dictionary(grouping: frameRows, by: citySortKey)
+        var result: [UUID: CityRankingPlacement] = [:]
+        for rows in grouped.values {
+            let scoreCounts = Dictionary(grouping: rows, by: \.listScore).mapValues(\.count)
+            var firstRankByScore: [Int: Int] = [:]
+            for (index, row) in rows.enumerated() {
+                let rank = firstRankByScore[row.listScore] ?? (index + 1)
+                firstRankByScore[row.listScore] = rank
+                result[row.id] = CityRankingPlacement(
+                    rank: rank,
+                    isTied: scoreCounts[row.listScore, default: 0] > 1,
+                    city: row.diningArea?.name ?? "City unknown"
+                )
+            }
+        }
+        return result
+    }
+
+    private func citySections(for rows: [RankingRowModel]) -> [CityRankingSection] {
+        let grouped = Dictionary(grouping: rows, by: citySortKey)
+        return grouped.keys.sorted(by: cityKeyComesBefore).map { key in
+            let cityRows = grouped[key] ?? []
+            return CityRankingSection(
+                id: "city:\(key)",
+                title: cityRows.first?.diningArea?.name ?? "City unknown",
+                rows: cityRows
+            )
+        }
+    }
+
+    private func citySortKey(_ row: RankingRowModel) -> String {
+        row.diningArea?.id ?? ""
+    }
+
+    private func cityKeyComesBefore(_ lhs: String, _ rhs: String) -> Bool {
+        if lhs.isEmpty { return false }
+        if rhs.isEmpty { return true }
+        return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+    }
+
+    private func normalizedCity(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private var activeScope: RankingScope {

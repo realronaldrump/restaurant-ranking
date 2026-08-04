@@ -16,8 +16,8 @@
 > releases answered **Data Not Collected** because sharing ran entirely through
 > the user's own iCloud account. App Store Connect publishes the seven data types
 > below as linked to the user, used for App Functionality, and not used for
-> tracking. 3.2.6 collects nothing new: ranking history and comparison review
-> are derived from existing encrypted ranking evidence;
+> tracking. 3.2.6 collects nothing new: comparison review is derived from
+> existing encrypted ranking evidence;
 > it changes no data categories and does not change what leaves the device.
 
 The developer cannot read dining records: every payload and photo is encrypted on
@@ -157,8 +157,6 @@ without them.
 
 ## What’s New in Version 3.2.6
 
-- Added a zoomable Ranking History chart so you can see how rankings moved over
-  time, from 15 minutes to one year.
 - Added a Comparisons review screen so you can revisit, change, or undo your own
   answers behind a restaurant’s return score.
 

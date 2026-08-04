@@ -87,21 +87,17 @@ struct RankingEngine {
         locations: [RestaurantLocation],
         comparisons: [ComparisonEntity],
         personID: UUID,
-        asOf date: Date = .now,
-        evidenceAvailableThrough: Date? = nil
+        asOf date: Date = .now
     ) -> [LocationScore] {
         let active = locations.filter { !$0.isClosed }
-        let personComparisons = comparisons.filter { comparison in
-            comparison.personID == personID && evidenceAvailableThrough.map { cutoff in comparison.date <= cutoff } ?? true
-        }
+        let personComparisons = comparisons.filter { $0.personID == personID }
         let anchorsByLocation = Dictionary(grouping: personComparisons.filter(\.isAnchor), by: \.locationAID)
         let pairComparisons = personComparisons.filter { !$0.isAnchor && $0.outcome != .skipped }
         var states: [UUID: State] = [:]
 
         for location in active {
             let ratings = location.visitArray.reversed().compactMap { visit -> VisitEvidence? in
-                guard let rating = visit.rating(for: personID),
-                      evidenceAvailableThrough.map({ rating.createdAt <= $0 }) ?? true else { return nil }
+                guard let rating = visit.rating(for: personID) else { return nil }
                 return VisitEvidence(visit: visit, rating: rating, value: visitValue(visit: visit, rating: rating))
             }
             let anchors = anchorsByLocation[location.id] ?? []
@@ -190,8 +186,7 @@ struct RankingEngine {
         locations: [RestaurantLocation],
         comparisons: [ComparisonEntity],
         personIDs: [UUID],
-        asOf date: Date = .now,
-        evidenceAvailableThrough: Date? = nil
+        asOf date: Date = .now
     ) -> [CircleLocationScore] {
         let orderedPersonIDs = personIDs.uniqued().sorted { $0.uuidString < $1.uuidString }
         guard orderedPersonIDs.count >= 2 else { return [] }
@@ -200,8 +195,7 @@ struct RankingEngine {
                 locations: locations,
                 comparisons: comparisons,
                 personID: personID,
-                asOf: date,
-                evidenceAvailableThrough: evidenceAvailableThrough
+                asOf: date
             )
             return (personID, Dictionary(uniqueKeysWithValues: values.map { ($0.id, $0) }))
         })

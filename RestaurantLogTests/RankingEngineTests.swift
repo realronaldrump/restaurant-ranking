@@ -2518,61 +2518,6 @@ final class RankingEngineTests: XCTestCase {
         }
     }
 
-    func testRankingHistoryReplaysEvidenceAtRecordedTimesIncludingSameDayChanges() throws {
-        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
-        let first = store.createLocation(name: "History First", category: .fullService)
-        let second = store.createLocation(name: "History Second", category: .fullService)
-        let firstVisit = store.logVisit(at: first, reaction: .loved, date: baseDate.addingTimeInterval(-86_400))
-        let secondVisit = store.logVisit(at: second, reaction: .liked, date: baseDate.addingTimeInterval(-86_400))
-
-        try XCTUnwrap(firstVisit.ratingArray.first).createdAt = baseDate.addingTimeInterval(60)
-        try XCTUnwrap(secondVisit.ratingArray.first).createdAt = baseDate.addingTimeInterval(120)
-        let comparisonID = try XCTUnwrap(store.recordComparison(a: first, b: second, outcome: .a))
-        try XCTUnwrap(store.comparisons.first { $0.id == comparisonID }).date = baseDate.addingTimeInterval(180)
-
-        let endDate = baseDate.addingTimeInterval(240)
-        let snapshots = RankingHistoryBuilder().personSnapshots(
-            locations: store.locations,
-            comparisons: store.comparisons,
-            personID: try XCTUnwrap(store.currentPerson?.id),
-            through: endDate
-        )
-
-        XCTAssertEqual(snapshots.map(\.date), [
-            baseDate.addingTimeInterval(60),
-            baseDate.addingTimeInterval(120),
-            baseDate.addingTimeInterval(180),
-            endDate
-        ])
-        XCTAssertEqual(snapshots[0].scores.map(\.locationName), ["History First"])
-        XCTAssertEqual(Set(snapshots[1].scores.map(\.locationName)), ["History First", "History Second"])
-        XCTAssertEqual(snapshots[2].scores.count, 2)
-    }
-
-    func testRankingHistoryDoesNotShowEvidenceBeforeItWasRecorded() throws {
-        let baseDate = Date(timeIntervalSince1970: 1_710_000_000)
-        let location = store.createLocation(name: "Future Evidence", category: .bakeries)
-        let visit = store.logVisit(at: location, reaction: .loved, date: baseDate.addingTimeInterval(-86_400))
-        try XCTUnwrap(visit.ratingArray.first).createdAt = baseDate.addingTimeInterval(3_600)
-
-        let beforeRating = RankingHistoryBuilder().personSnapshots(
-            locations: store.locations,
-            comparisons: store.comparisons,
-            personID: try XCTUnwrap(store.currentPerson?.id),
-            through: baseDate.addingTimeInterval(1_800)
-        )
-        let afterRating = RankingHistoryBuilder().personSnapshots(
-            locations: store.locations,
-            comparisons: store.comparisons,
-            personID: try XCTUnwrap(store.currentPerson?.id),
-            through: baseDate.addingTimeInterval(7_200)
-        )
-
-        XCTAssertTrue(beforeRating.isEmpty)
-        XCTAssertFalse(afterRating.isEmpty)
-        XCTAssertEqual(afterRating.first?.scores.first?.locationName, "Future Evidence")
-    }
-
     private func makeCircle(name: String, people: [String]) throws -> (circle: CircleEntity, people: [PersonEntity]) {
         let circle = CircleEntity(context: store.context)
         circle.id = UUID()

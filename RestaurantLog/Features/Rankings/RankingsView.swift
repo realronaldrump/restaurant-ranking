@@ -282,13 +282,6 @@ struct RankingsView: View {
                 header
                 filters
                 resultSummary(visibleRows.count)
-                if !isPreparingRows && viewMode == .ranking && !visibleRows.isEmpty {
-                    RankingHistoryPanel(
-                        scope: activeScope,
-                        category: category,
-                        locationIDs: visibleRows.map(\.id)
-                    )
-                }
                 rankingContent(visibleRows)
             }
             .padding(.horizontal, BBTheme.Spacing.page)

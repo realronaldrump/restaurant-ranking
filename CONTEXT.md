@@ -58,6 +58,7 @@ One participant’s comparison between restaurants or score anchor for a familia
 - Only the person who logged an **Outing** can edit or delete its shared restaurant, date, details, and participant list
 - A recorded **Participant** can add or edit only their own **Diner Entry**
 - Someone who is not a participant, including a person marked **not there**, has read-only access to the outing
+- A **Ranking Answer** is visible to the Circle, but only the person who made it can change or undo it
 
 ## Example dialogue
 

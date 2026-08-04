@@ -1720,6 +1720,21 @@ final class AppStore {
         return comparison.id
     }
 
+    /// Changes an existing ranking answer without adding contradictory evidence.
+    /// Only the person represented by this device can revise their own answer.
+    @discardableResult
+    func updateComparison(id: UUID, outcome: ComparisonOutcome) -> Bool {
+        guard outcome != .skipped,
+              let currentPersonID = currentPerson?.id,
+              let comparison = allComparisons.first(where: { $0.id == id }),
+              comparison.personID == currentPersonID,
+              !comparison.isAnchor else { return false }
+        guard comparison.outcome != outcome else { return true }
+        comparison.outcome = outcome
+        commit()
+        return true
+    }
+
     @discardableResult
     func recordAnchor(for location: RestaurantLocation, value: Double, personID: UUID? = nil) -> UUID? {
         guard let resolvedPersonID = personID ?? currentPerson?.id else { return nil }
@@ -1743,10 +1758,10 @@ final class AppStore {
     /// leave no trace rather than be corrected by a contradicting second answer.
     /// Ownership is checked so one member can never retract another's evidence.
     @discardableResult
-    func removeComparison(id: UUID, personID: UUID? = nil) -> Bool {
-        guard let resolvedPersonID = personID ?? currentPerson?.id,
+    func removeComparison(id: UUID) -> Bool {
+        guard let currentPersonID = currentPerson?.id,
               let comparison = allComparisons.first(where: { $0.id == id }),
-              comparison.personID == resolvedPersonID else { return false }
+              comparison.personID == currentPersonID else { return false }
         allComparisons.removeAll { $0.id == id }
         context.delete(comparison)
         commit()

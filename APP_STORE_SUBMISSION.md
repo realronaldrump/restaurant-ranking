@@ -5,19 +5,19 @@
 - Product: Big Beautiful Restaurant Log
 - Bundle identifier: `com.davis.bigbeautifulranking`
 - Sync service: Supabase project (host and anon key supplied through `Config/Supabase.local.xcconfig`)
-- Version: 3.2.4 (build 24)
+- Version: 3.2.6 (build 26)
 - Release date: August 3, 2026
 - Devices: iPhone only
 - Minimum OS: iOS 17.0
 
 ## App Privacy answers
 
-> **Completed for 3.0.2 on July 29, 2026 and unchanged for 3.2.4.** Earlier
+> **Completed for 3.0.2 on July 29, 2026 and unchanged for 3.2.6.** Earlier
 > releases answered **Data Not Collected** because sharing ran entirely through
 > the user's own iCloud account. App Store Connect publishes the seven data types
 > below as linked to the user, used for App Functionality, and not used for
-> tracking. 3.2.4 collects nothing new: it adds another encrypted sticker family
-> for social reactions;
+> tracking. 3.2.6 collects nothing new: ranking history and comparison review
+> are derived from existing encrypted ranking evidence;
 > it changes no data categories and does not change what leaves the device.
 
 The developer cannot read dining records: every payload and photo is encrypted on
@@ -87,7 +87,7 @@ reading user-selected imports and backups.
 
 ## Final release gates
 
-- App Store build: version 3.2.4, build 24. It supersedes version 3.2.3, build 23,
+- App Store build: version 3.2.6, build 26. It supersedes version 3.2.5, build 25,
   and version 3.1.3, build 19,
   whose circle reset/leave recovery could retain stale memberships, whose member
   identity could be reassigned after a leave, and whose repeated photo cleanup
@@ -106,7 +106,7 @@ reading user-selected imports and backups.
   remains applied. It prevents any client, including an older build, from
   reassigning an enrolled account to another person's profile. It is present in
   the production migration ledger as of August 3, 2026.
-- TestFlight: assign build 24 to the external **Big Beautiful Testers** group,
+- TestFlight: assign build 26 to the external **Big Beautiful Testers** group,
   complete the two-device soak below, and only then submit the App Store draft.
 - EU Digital Services Act: completed by the Account Holder and shown as
   **Active** for all 27 applicable countries or regions on July 29, 2026.
@@ -120,7 +120,7 @@ Two iPhones on different Apple Accounts. Steps 3 to 6 cover the 3.1.1
 invitation/merge fixes and the 3.1.3 mixed-record sync fix, so do not sign off
 without them.
 
-1. Install version 3.2.4, build 24 on both phones.
+1. Install version 3.2.6, build 26 on both phones.
 2. On the upgrading phone, confirm the existing restaurants, visits, rankings,
    relationships, and photos survive, and that a log left behind in a second
    circle by an older build has been folded into the one log.
@@ -155,7 +155,12 @@ without them.
     is intact, and that it resumes syncing privately under a new circle.
 14. Sign out and back in on both phones and confirm each log is still complete.
 
-## What’s New in Version 3.2.4
+## What’s New in Version 3.2.6
+
+- Added a zoomable Ranking History chart so you can see how rankings moved over
+  time, from 15 minutes to one year.
+- Added a Comparisons review screen so you can revisit, change, or undo your own
+  answers behind a restaurant’s return score.
 
 - Added a Mr. Bubbles sticker family alongside the original Coon stickers;
   reactions remain backed up and encrypted-sync compatible.
@@ -231,7 +236,7 @@ migration accompanies it.
 
 ## Permission behavior
 
-- Location: When In Use only. There is no Always authorization or background visit detection in 3.2.4.
+- Location: When In Use only. There is no Always authorization or background visit detection in 3.2.6.
 - Photos: the primary Backfill path uses PhotosPicker without library permission. The optional date-range scan requests read access.
 - Notifications: no user-visible notifications are requested.
 

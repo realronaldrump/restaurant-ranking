@@ -1313,6 +1313,40 @@ final class RankingEngineTests: XCTestCase {
         XCTAssertEqual(store.comparisons.filter { !$0.isAnchor }.count, 2)
     }
 
+    func testComparisonOwnerCanModifyAndUndoAnswerWithoutAddingEvidence() throws {
+        let first = store.createLocation(name: "Editable First", category: .fullService)
+        let second = store.createLocation(name: "Editable Second", category: .fullService)
+        _ = store.logVisit(at: first, reaction: .loved)
+        _ = store.logVisit(at: second, reaction: .liked)
+        let comparisonID = try XCTUnwrap(store.recordComparison(a: first, b: second, outcome: .a))
+        let comparisonCount = store.comparisons.count
+        let originalScores = Dictionary(uniqueKeysWithValues: store.ranked().map { ($0.id, $0.score) })
+
+        XCTAssertTrue(store.updateComparison(id: comparisonID, outcome: .b))
+        XCTAssertEqual(store.comparisons.count, comparisonCount)
+        XCTAssertEqual(store.comparisons.first(where: { $0.id == comparisonID })?.outcome, .b)
+        let revisedScores = Dictionary(uniqueKeysWithValues: store.ranked().map { ($0.id, $0.score) })
+        XCTAssertLessThan(try XCTUnwrap(revisedScores[first.id]), try XCTUnwrap(originalScores[first.id]))
+        XCTAssertGreaterThan(try XCTUnwrap(revisedScores[second.id]), try XCTUnwrap(originalScores[second.id]))
+
+        XCTAssertTrue(store.removeComparison(id: comparisonID))
+        XCTAssertFalse(store.comparisons.contains(where: { $0.id == comparisonID }))
+    }
+
+    func testAnotherPersonCannotModifyOrUndoComparison() throws {
+        let me = try XCTUnwrap(store.currentPerson)
+        let otherMember = try XCTUnwrap(store.circleMembers.first { $0.id != me.id })
+        let first = store.createLocation(name: "Private First", category: .fullService)
+        let second = store.createLocation(name: "Private Second", category: .fullService)
+        let comparisonID = try XCTUnwrap(
+            store.recordComparison(a: first, b: second, outcome: .a, personID: otherMember.id)
+        )
+
+        XCTAssertFalse(store.updateComparison(id: comparisonID, outcome: .b))
+        XCTAssertFalse(store.removeComparison(id: comparisonID))
+        XCTAssertEqual(store.comparisons.first(where: { $0.id == comparisonID })?.outcome, .a)
+    }
+
     func testMergeReassignsComparisonEvidence() {
         let keeper = store.createLocation(name: "The Keeper", category: .bakeries)
         let duplicate = store.createLocation(name: "Keeper Bakery", category: .bakeries)
@@ -2482,6 +2516,61 @@ final class RankingEngineTests: XCTestCase {
             let request = NSFetchRequest<NSManagedObject>(entityName: entityName)
             XCTAssertEqual(try store.context.count(for: request), 0, "Expected \(entityName) to be empty after reset")
         }
+    }
+
+    func testRankingHistoryReplaysEvidenceAtRecordedTimesIncludingSameDayChanges() throws {
+        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let first = store.createLocation(name: "History First", category: .fullService)
+        let second = store.createLocation(name: "History Second", category: .fullService)
+        let firstVisit = store.logVisit(at: first, reaction: .loved, date: baseDate.addingTimeInterval(-86_400))
+        let secondVisit = store.logVisit(at: second, reaction: .liked, date: baseDate.addingTimeInterval(-86_400))
+
+        try XCTUnwrap(firstVisit.ratingArray.first).createdAt = baseDate.addingTimeInterval(60)
+        try XCTUnwrap(secondVisit.ratingArray.first).createdAt = baseDate.addingTimeInterval(120)
+        let comparisonID = try XCTUnwrap(store.recordComparison(a: first, b: second, outcome: .a))
+        try XCTUnwrap(store.comparisons.first { $0.id == comparisonID }).date = baseDate.addingTimeInterval(180)
+
+        let endDate = baseDate.addingTimeInterval(240)
+        let snapshots = RankingHistoryBuilder().personSnapshots(
+            locations: store.locations,
+            comparisons: store.comparisons,
+            personID: try XCTUnwrap(store.currentPerson?.id),
+            through: endDate
+        )
+
+        XCTAssertEqual(snapshots.map(\.date), [
+            baseDate.addingTimeInterval(60),
+            baseDate.addingTimeInterval(120),
+            baseDate.addingTimeInterval(180),
+            endDate
+        ])
+        XCTAssertEqual(snapshots[0].scores.map(\.locationName), ["History First"])
+        XCTAssertEqual(Set(snapshots[1].scores.map(\.locationName)), ["History First", "History Second"])
+        XCTAssertEqual(snapshots[2].scores.count, 2)
+    }
+
+    func testRankingHistoryDoesNotShowEvidenceBeforeItWasRecorded() throws {
+        let baseDate = Date(timeIntervalSince1970: 1_710_000_000)
+        let location = store.createLocation(name: "Future Evidence", category: .bakeries)
+        let visit = store.logVisit(at: location, reaction: .loved, date: baseDate.addingTimeInterval(-86_400))
+        try XCTUnwrap(visit.ratingArray.first).createdAt = baseDate.addingTimeInterval(3_600)
+
+        let beforeRating = RankingHistoryBuilder().personSnapshots(
+            locations: store.locations,
+            comparisons: store.comparisons,
+            personID: try XCTUnwrap(store.currentPerson?.id),
+            through: baseDate.addingTimeInterval(1_800)
+        )
+        let afterRating = RankingHistoryBuilder().personSnapshots(
+            locations: store.locations,
+            comparisons: store.comparisons,
+            personID: try XCTUnwrap(store.currentPerson?.id),
+            through: baseDate.addingTimeInterval(7_200)
+        )
+
+        XCTAssertTrue(beforeRating.isEmpty)
+        XCTAssertFalse(afterRating.isEmpty)
+        XCTAssertEqual(afterRating.first?.scores.first?.locationName, "Future Evidence")
     }
 
     private func makeCircle(name: String, people: [String]) throws -> (circle: CircleEntity, people: [PersonEntity]) {

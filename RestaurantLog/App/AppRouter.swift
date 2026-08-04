@@ -38,6 +38,7 @@ enum RankingScope: Hashable {
 
 enum AppRoute: Hashable {
     case location(UUID, rankingScope: RankingScope? = nil)
+    case comparisonHistory(UUID, rankingScope: RankingScope)
     case visit(UUID)
     case atlas
     case stats
@@ -163,8 +164,12 @@ final class AppRouter {
 
     private func trimmingDeletedRestaurant(_ restaurantID: UUID, from path: [AppRoute]) -> [AppRoute] {
         guard let index = path.firstIndex(where: { route in
-            if case .location(let routeID, _) = route { return routeID == restaurantID }
-            return false
+            switch route {
+            case .location(let routeID, _), .comparisonHistory(let routeID, _):
+                return routeID == restaurantID
+            default:
+                return false
+            }
         }) else { return path }
         return Array(path[..<index])
     }

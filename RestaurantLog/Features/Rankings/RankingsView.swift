@@ -23,6 +23,213 @@ private struct RankingRowModel: Identifiable {
     var tiedCategoryRank: Int?
 }
 
+private struct RankingComparisonItem: Identifiable {
+    let id: UUID
+    let personName: String
+    let locationAName: String
+    let locationBName: String
+    let outcome: ComparisonOutcome
+    let date: Date
+    let canEdit: Bool
+}
+
+@MainActor
+struct RankingComparisonHistoryView: View {
+    @Environment(AppStore.self) private var store
+    let locationID: UUID
+    let scope: RankingScope
+    @State private var pendingUndo: RankingComparisonItem?
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 16) {
+                header
+                if comparisonItems.isEmpty {
+                    EmptyLogView(
+                        title: "No comparisons",
+                        message: "No saved comparisons are currently counted in this return score.",
+                        symbol: "arrow.left.arrow.right"
+                    )
+                } else {
+                    ForEach(comparisonItems) { comparisonCard($0) }
+                }
+            }
+            .padding(.horizontal, BBTheme.Spacing.page)
+            .padding(.bottom, 36)
+            .readablePageWidth()
+        }
+        .editorialPage()
+        .navigationTitle("Comparisons")
+        .navigationBarTitleDisplayMode(.inline)
+        .editorialPrompt(item: $pendingUndo) { item in
+            EditorialPrompt.destructive(
+                "Undo this comparison?",
+                message: "The answer comparing \(item.locationAName) and \(item.locationBName) will be removed, and the ranking will update.",
+                actionTitle: "Undo comparison",
+                actionSymbol: "arrow.uturn.backward",
+                cancelTitle: "Keep comparison"
+            ) {
+                if store.removeComparison(id: item.id) { Haptics.success() }
+            }
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Eyebrow(comparisonCountLabel)
+            Text(locationName)
+                .font(BBTheme.display(34))
+                .fixedSize(horizontal: false, vertical: true)
+            Text(scopeExplanation)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.top, 8)
+    }
+
+    private func comparisonCard(_ item: RankingComparisonItem) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Eyebrow(item.personName)
+                Spacer(minLength: 8)
+                Text(item.date.formatted(date: .abbreviated, time: .omitted))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Text("Which would you rather go back to?")
+                .font(BBTheme.display(22))
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(spacing: 8) {
+                choice(item.locationAName, outcome: .a, in: item)
+                choice("Too close to call", outcome: .tie, in: item)
+                choice(item.locationBName, outcome: .b, in: item)
+            }
+            if item.canEdit {
+                Button(role: .destructive) {
+                    pendingUndo = item
+                } label: {
+                    Label("Undo comparison", systemImage: "arrow.uturn.backward")
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .font(.callout.weight(.semibold))
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("undo-comparison-\(item.id.uuidString)")
+            } else {
+                Label("Only \(item.personName) can change this comparison.", systemImage: "lock")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .editorialCard(padding: 16)
+    }
+
+    @ViewBuilder
+    private func choice(
+        _ title: String,
+        outcome: ComparisonOutcome,
+        in item: RankingComparisonItem
+    ) -> some View {
+        let isSelected = item.outcome == outcome
+        if item.canEdit {
+            Button {
+                guard !isSelected else { return }
+                if store.updateComparison(id: item.id, outcome: outcome) { Haptics.selection() }
+            } label: {
+                choiceLabel(title, isSelected: isSelected)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(title)\(isSelected ? ", selected" : "")")
+            .accessibilityHint(isSelected ? "Current comparison answer" : "Changes this comparison answer")
+            .accessibilityIdentifier("comparison-\(item.id.uuidString)-\(outcome.rawValue)")
+        } else {
+            choiceLabel(title, isSelected: isSelected)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("\(title)\(isSelected ? ", selected" : "")")
+        }
+    }
+
+    private func choiceLabel(_ title: String, isSelected: Bool) -> some View {
+        HStack(spacing: 11) {
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(isSelected ? BBTheme.oxblood : .secondary)
+            Text(title)
+                .font(.callout.weight(isSelected ? .semibold : .regular))
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(BBTheme.ink)
+        .padding(.horizontal, 13)
+        .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
+        .background(
+            isSelected ? BBTheme.oxblood.opacity(0.08) : BBTheme.surface,
+            in: RoundedRectangle(cornerRadius: BBTheme.Radius.control, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: BBTheme.Radius.control, style: .continuous)
+                .stroke(isSelected ? BBTheme.oxblood.opacity(0.45) : BBTheme.hairline)
+        }
+    }
+
+    private var comparisonItems: [RankingComparisonItem] {
+        let eligiblePersonIDs = comparisonPersonIDs
+        let namesByPersonID = Dictionary(uniqueKeysWithValues: store.people.map { ($0.id, $0.name) })
+        let namesByLocationID = Dictionary(uniqueKeysWithValues: store.locations.map { ($0.id, $0.name) })
+        let currentPersonID = store.currentPerson?.id
+        return store.comparisons
+            .filter {
+                !$0.isAnchor && $0.outcome != .skipped && eligiblePersonIDs.contains($0.personID) &&
+                ($0.locationAID == locationID || $0.locationBID == locationID)
+            }
+            .sorted { $0.date > $1.date }
+            .map {
+                RankingComparisonItem(
+                    id: $0.id,
+                    personName: namesByPersonID[$0.personID] ?? "Unknown diner",
+                    locationAName: namesByLocationID[$0.locationAID] ?? "Unavailable restaurant",
+                    locationBName: namesByLocationID[$0.locationBID] ?? "Unavailable restaurant",
+                    outcome: $0.outcome,
+                    date: $0.date,
+                    canEdit: $0.personID == currentPersonID
+                )
+            }
+    }
+
+    private var comparisonPersonIDs: Set<UUID> {
+        switch scope {
+        case .person(let personID):
+            guard store.ranked(for: personID).contains(where: { $0.id == locationID }) else { return [] }
+            return [personID]
+        case .circle:
+            guard let circleScore = store.circleRanked().first(where: { $0.id == locationID }) else { return [] }
+            return Set(circleScore.memberScores.map(\.personID))
+        }
+    }
+
+    private var locationName: String {
+        store.locations.first(where: { $0.id == locationID })?.name ?? "Restaurant"
+    }
+
+    private var comparisonCountLabel: String {
+        let count = comparisonItems.count
+        return "\(count) \(count == 1 ? "comparison" : "comparisons")"
+    }
+
+    private var scopeExplanation: String {
+        switch scope {
+        case .person(let personID):
+            let personName = store.people.first(where: { $0.id == personID })?.name ?? "This diner"
+            if personID == store.currentPerson?.id {
+                return "These are the comparisons counted in your return score. Change a choice or undo it entirely."
+            }
+            return "These are the comparisons counted in \(personName)’s return score. Only \(personName) can change them."
+        case .circle:
+            return "These are the comparisons counted across the Circle’s return scores. You can change or undo only your own answers."
+        }
+    }
+}
+
 private struct RankingSnapshotKey: Hashable {
     let revision: Int
     let scope: RankingScope
@@ -75,6 +282,13 @@ struct RankingsView: View {
                 header
                 filters
                 resultSummary(visibleRows.count)
+                if !isPreparingRows && viewMode == .ranking && !visibleRows.isEmpty {
+                    RankingHistoryPanel(
+                        scope: activeScope,
+                        category: category,
+                        locationIDs: visibleRows.map(\.id)
+                    )
+                }
                 rankingContent(visibleRows)
             }
             .padding(.horizontal, BBTheme.Spacing.page)
@@ -454,14 +668,18 @@ struct RankingsView: View {
 
     private func evidenceButton(_ row: RankingRowModel) -> some View {
         Button {
-            router.rankingPath.append(.settleScore)
+            if row.comparisonCount > 0 {
+                router.rankingPath.append(.comparisonHistory(row.id, rankingScope: activeScope))
+            } else {
+                router.rankingPath.append(.settleScore)
+            }
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: "chart.line.uptrend.xyaxis")
                 Text(earlyScoreSummary(row))
                     .multilineTextAlignment(.leading)
                 Spacer(minLength: 6)
-                Text("Compare")
+                Text(row.comparisonCount > 0 ? "Review" : "Compare")
                     .fontWeight(.bold)
                 Image(systemName: "chevron.right")
                     .font(.caption2.weight(.bold))
@@ -473,8 +691,13 @@ struct RankingsView: View {
             .background(BBTheme.oxblood.opacity(0.07), in: RoundedRectangle(cornerRadius: BBTheme.Radius.control, style: .continuous))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(row.location.name), \(earlyScoreSummary(row)), compare")
-        .accessibilityHint("Opens Settle the Score")
+        .accessibilityLabel(
+            "\(row.location.name), \(earlyScoreSummary(row)), \(row.comparisonCount > 0 ? "review comparisons" : "compare")"
+        )
+        .accessibilityHint(
+            row.comparisonCount > 0 ? "Shows the comparisons behind this score" : "Opens Settle the Score"
+        )
+        .accessibilityIdentifier("ranking-evidence-\(row.id.uuidString)")
     }
 
     @ViewBuilder

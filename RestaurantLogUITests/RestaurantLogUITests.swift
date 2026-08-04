@@ -178,6 +178,67 @@ final class RestaurantLogUITests: XCTestCase {
         add(screenshot)
     }
 
+    func testRankingComparisonCanBeReviewedModifiedAndUndone() {
+        app.tabBars.buttons["Rankings"].tap()
+        XCTAssertTrue(app.navigationBars["Rankings"].waitForExistence(timeout: 5))
+        app.buttons["Overall"].tap()
+
+        let evidence = app.buttons.matching(
+            NSPredicate(
+                format: "label CONTAINS[c] %@ AND label CONTAINS[c] %@",
+                "Normal Ice Cream",
+                "review comparisons"
+            )
+        ).firstMatch
+        for _ in 0..<8 where !evidence.isHittable { app.swipeUp() }
+        XCTAssertTrue(evidence.waitForExistence(timeout: 3))
+        evidence.tap()
+
+        XCTAssertTrue(app.navigationBars["Comparisons"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Normal Ice Cream"].exists)
+        let yokoChoice = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH[c] %@", "Yoko Ramen")
+        ).firstMatch
+        XCTAssertTrue(yokoChoice.waitForExistence(timeout: 3))
+        yokoChoice.tap()
+        XCTAssertTrue(yokoChoice.label.localizedCaseInsensitiveContains("selected"))
+
+        let undo = app.buttons.matching(
+            NSPredicate(format: "label == %@", "Undo comparison")
+        ).firstMatch
+        XCTAssertTrue(undo.waitForExistence(timeout: 3))
+        undo.tap()
+        XCTAssertTrue(app.staticTexts["Undo this comparison?"].waitForExistence(timeout: 3))
+        app.buttons["Undo comparison"].tap()
+
+        XCTAssertTrue(app.staticTexts["No comparisons"].waitForExistence(timeout: 3))
+    }
+
+    func testRankingHistoryChartOffersMinuteToYearScale() {
+        app.tabBars.buttons["Rankings"].tap()
+        XCTAssertTrue(app.navigationBars["Rankings"].waitForExistence(timeout: 5))
+
+        let panel = app.descendants(matching: .any)["ranking-history-panel"]
+        XCTAssertTrue(panel.waitForExistence(timeout: 5))
+
+        let scaleButton = app.buttons.matching(
+            NSPredicate(format: "label CONTAINS[c] %@", "Ranking history scale")
+        ).firstMatch
+        for _ in 0..<8 where !scaleButton.isHittable { app.swipeUp() }
+        XCTAssertTrue(scaleButton.waitForExistence(timeout: 3))
+        scaleButton.tap()
+
+        XCTAssertTrue(app.buttons["15 minutes"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["1 year"].exists)
+        app.buttons["1 year"].tap()
+        XCTAssertTrue(scaleButton.label.localizedCaseInsensitiveContains("1 year"))
+
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "Ranking history chart"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+    }
+
     func testAppearancePreferenceChangesAndPersists() {
         openAppearanceSettings()
 

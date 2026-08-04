@@ -68,6 +68,11 @@ private struct DestinationView: View {
                 EstablishmentDetailView(location: location, rankingScope: rankingScope)
             }
             else { ContentUnavailableView("Restaurant not found", systemImage: "mappin.slash") }
+        case .comparisonHistory(let id, let rankingScope):
+            if store.locations.contains(where: { $0.id == id }) {
+                RankingComparisonHistoryView(locationID: id, scope: rankingScope)
+            }
+            else { ContentUnavailableView("Restaurant not found", systemImage: "mappin.slash") }
         case .visit(let id):
             if let visit = store.visits.first(where: { $0.id == id }) { VisitDetailView(visit: visit) }
             else { ContentUnavailableView("Outing not found", systemImage: "calendar.badge.exclamationmark") }

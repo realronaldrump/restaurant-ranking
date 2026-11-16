@@ -9,10 +9,26 @@ struct MergeLocationsView: View {
     @State private var suggestionToConfirm: DuplicateLocationSuggestion?
     @State private var isConfirmingSuggestion = false
     @State private var isChoosingManually = false
+    @State private var lastDismissed: DuplicateLocationSuggestion?
 
     var body: some View {
         let suggestions = store.duplicateLocationSuggestions()
         Form {
+            if let lastDismissed {
+                Section {
+                    HStack {
+                        Label("Kept as different places", systemImage: "checkmark.circle.fill")
+                        Spacer()
+                        Button("Undo") {
+                            store.reconsiderDuplicate(lastDismissed.keeper, lastDismissed.duplicate)
+                            self.lastDismissed = nil
+                        }
+                        .buttonStyle(.borderless)
+                        .frame(minWidth: 44, minHeight: 44)
+                    }
+                    .font(.callout)
+                }
+            }
             if suggestions.isEmpty {
                 Section {
                     Label("Nothing needs a decision", systemImage: "checkmark.seal")
@@ -33,7 +49,26 @@ struct MergeLocationsView: View {
                 } header: {
                     Eyebrow(suggestions.count == 1 ? "1 possible duplicate" : "\(suggestions.count) possible duplicates")
                 } footer: {
-                    Text("These share a name but not an address, so they may be two branches. Merge only the ones you know are the same place.")
+                    Text("These share a name but not an address, so they may be two branches. Choose “Not a duplicate” for different places. We’ll remember your choice.")
+                }
+            }
+
+            if !store.dismissedDuplicateSuggestions.isEmpty {
+                Section {
+                    DisclosureGroup("Marked as different places") {
+                        ForEach(store.dismissedDuplicateSuggestions) { suggestion in
+                            VStack(alignment: .leading, spacing: 8) {
+                                recordSummary(suggestion.keeper, role: "")
+                                recordSummary(suggestion.duplicate, role: "")
+                                Button("Review again") {
+                                    store.reconsiderDuplicate(suggestion.keeper, suggestion.duplicate)
+                                    lastDismissed = nil
+                                }
+                                .frame(minHeight: 44)
+                            }
+                        }
+                    }
+                    .listRowBackground(BBTheme.surface)
                 }
             }
 
@@ -98,13 +133,25 @@ struct MergeLocationsView: View {
                 .foregroundStyle(.secondary)
             recordSummary(suggestion.keeper, role: "Keep")
             recordSummary(suggestion.duplicate, role: "Merge in")
-            Button("Merge these") {
+            Button("Same place — merge") {
                 suggestionToConfirm = suggestion
                 isConfirmingSuggestion = true
             }
             .font(.callout.weight(.bold))
             .frame(minHeight: 44)
+            Button {
+                if store.markAsDifferentPlaces(suggestion.keeper, suggestion.duplicate) {
+                    lastDismissed = suggestion
+                    Haptics.success()
+                }
+            } label: {
+                Label("Not a duplicate", systemImage: "arrow.left.and.right")
+            }
+            .font(.callout.weight(.semibold))
+            .frame(minHeight: 44)
+            .accessibilityIdentifier("dismiss-duplicate-\(suggestion.id)")
         }
+        .buttonStyle(.borderless)
         .padding(.vertical, 6)
         .listRowBackground(BBTheme.surface)
     }

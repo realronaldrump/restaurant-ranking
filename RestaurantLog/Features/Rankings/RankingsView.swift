@@ -274,6 +274,7 @@ struct RankingsView: View {
     @State private var allTags: [String] = []
     @State private var isPreparingRows = true
     @State private var showsScoreExplanation = false
+    @State private var shareSnapshot: RankingShareSnapshot?
 
     var body: some View {
         let visibleRows = filteredRows
@@ -302,8 +303,28 @@ struct RankingsView: View {
         .task(id: RankingSnapshotKey(revision: store.revision, scope: activeScope)) {
             rebuildSnapshot()
         }
+        .sheet(item: $shareSnapshot) { snapshot in
+            RankingShareView(items: snapshot.items, attribution: snapshot.attribution)
+        }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) { filterMenu }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    let name: String
+                    switch activeScope {
+                    case .person(let id): name = store.person(id: id)?.name ?? "My rankings"
+                    case .circle: name = store.activeCircle?.name ?? "Our circle"
+                    }
+                    shareSnapshot = RankingShareSnapshot(
+                        items: filteredRows.map {
+                            RankingShareItem(id: $0.id, name: $0.location.name, city: $0.diningArea?.name ?? $0.location.city,
+                                             category: $0.location.category, score: $0.listScore)
+                        }, attribution: name)
+                } label: { Image(systemName: "square.and.arrow.up") }
+                .accessibilityLabel("Share rankings")
+                .accessibilityIdentifier("share-rankings-button")
+                .disabled(visibleRows.isEmpty)
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { router.sheet = .logMeal } label: { Image(systemName: "plus") }
                     .accessibilityLabel("Log an outing")
@@ -1037,4 +1058,10 @@ struct RankingsView: View {
         Binding(get: { activeScope }, set: { scope = $0 })
     }
 
+}
+
+private struct RankingShareSnapshot: Identifiable {
+    let id = UUID()
+    let items: [RankingShareItem]
+    let attribution: String
 }

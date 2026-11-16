@@ -1,5 +1,38 @@
 # App Store submission checklist
 
+## Version 3.3.0 (build 29) — November 16, 2026
+
+- Adds “Not a duplicate,” with Undo and review-again controls. Decisions are
+  stored with restaurants, survive encrypted sync and backups, and prevent
+  those pairs from being automatically merged.
+- Adds an explicit “Who was there?” page immediately after saving an outing's
+  reaction. Members and guests are selected without inventing their reactions
+  or silently carrying attendance over from the previous outing.
+- Lists guests alongside members in Circle management. Removal preserves
+  historical names, entries, and photos while hiding the profile from future
+  outing pickers. Connected-member removal still requires owner access and a
+  successful server-side revocation first.
+- Adds ranking PNG export with three styles, optional wording, restaurant and
+  city/category selection, and optional scores/city labels. Cards contain up
+  to 20 restaurants at 1080 pixels wide. Default copy is limited to labels.
+- Adds the photo-library add permission description for the standard Save
+  Image action. No new tracking, data collection, backend service, or server
+  schema changes. Duplicate decisions use an optional local model attribute;
+  a SQLite upgrade regression verifies existing restaurants survive migration.
+- Unit verification: 277 executed, 276 passed, one optional private Beli export
+  skipped. All 30 UI scenarios passed across the full run and targeted reruns.
+  The final targeted checks include independent duplicate-card actions, member
+  and guest removal, the people step, PNG customization, and Save Image in the
+  native share sheet. Submission is being prepared.
+- Signed archive and export succeeded. Source and IPA preflight are GREENLIT.
+  Scanner warnings refer to a loading skeleton, an HTTP-rejection test, and
+  the modern UILaunchScreen dictionary rather than a storyboard; tracking is
+  explicitly false in the actual privacy manifest.
+- Release notes: `docs/app-store/whats-new-3.3.0.txt`. This release includes the
+  pending 3.2.8 wizard changes and replaces its review submission.
+- No physical two-device sync soak was performed; sync payload convergence,
+  backup restoration, and people-history preservation have automated coverage.
+
 ## Version 3.2.8 (build 28) — November 16, 2026
 
 - Replaces the logging sheet with a full-screen outing wizard, guided details,

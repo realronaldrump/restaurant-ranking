@@ -182,6 +182,11 @@ struct RestaurantLogApp: App {
             )
         }
 #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-seedPeopleAndDuplicates") {
+            _ = preparedStore.createLocation(name: "Chili's", address: "1800 S Valley Mills Dr, Waco, TX", city: "Waco, TX")
+            _ = preparedStore.createLocation(name: "Chili's", address: "400 W Meadows Dr, Glenwood Springs, CO", city: "Glenwood Springs, CO")
+            _ = preparedStore.addNamedCompanion(name: "Sam Guest")
+        }
         if ProcessInfo.processInfo.arguments.contains("-seedSettleRoundData"),
            let personID = preparedStore.currentPerson?.id {
             for index in 0..<8 {

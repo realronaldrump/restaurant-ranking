@@ -37,6 +37,8 @@
 	<false/>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Your location helps find nearby restaurants while you log an outing. It is never tracked in the background.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Save a ranking card to your photos when you choose Save Image.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Photo access lets you attach outing photos and privately rebuild your dining history.</string>
 	<key>SupabaseAnonKey</key>

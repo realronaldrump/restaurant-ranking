@@ -613,8 +613,8 @@ final class AppStore {
     /// Takes somebody out of the circle.
     ///
     /// History is never rewritten to do it. A person who has eaten with you
-    /// keeps their outings, ratings and photos and simply stops being a member,
-    /// which also keeps them taggable on past and future visits. Only a profile
+    /// keeps their outings, ratings and photos in an archived profile,
+    /// without appearing in the people picker for future visits. Only a profile
     /// that has never been used is removed outright.
     ///
     /// Nothing is deleted while a view might still be holding it: the store
@@ -629,6 +629,7 @@ final class AppStore {
 
         if personHasHistory(personID) {
             person.isCircleMember = false
+            person.isArchived = true
             person.colorHex = "7A7166"
             commit()
             return true
@@ -1908,6 +1909,7 @@ final class AppStore {
 
     func merge(_ duplicate: RestaurantLocation, into keeper: RestaurantLocation) {
         guard duplicate != keeper else { return }
+        transferDistinctPlaces(from: duplicate, to: keeper)
         if let circle = activeCircle {
             for link in externalImportLinks(in: circle) where link.recordType == "restaurant" && link.targetID == duplicate.id {
                 link.targetID = keeper.id
@@ -2354,7 +2356,7 @@ final class AppStore {
                 return $0.id.uuidString < $1.id.uuidString
             }
             guard let keeper = ordered.first else { continue }
-            for duplicate in ordered.dropFirst() {
+            for duplicate in ordered.dropFirst() where !areKnownDifferentPlaces(keeper, duplicate) {
                 mergeLocationRecord(duplicate, into: keeper)
                 changed = true
             }
@@ -2376,7 +2378,7 @@ final class AppStore {
             }
             guard let keeper = ordered.first else { continue }
             for duplicate in ordered.dropFirst()
-            where locationsShareMutuallyTaggedOuting(keeper, duplicate) {
+            where !areKnownDifferentPlaces(keeper, duplicate) && locationsShareMutuallyTaggedOuting(keeper, duplicate) {
                 mergeLocationRecord(duplicate, into: keeper)
                 changed = true
             }
@@ -2420,6 +2422,53 @@ final class AppStore {
         return result
     }
 
+    private func transferDistinctPlaces(from duplicate: RestaurantLocation, to keeper: RestaurantLocation) {
+        keeper.distinctLocationIDs = (keeper.distinctLocationIDs + duplicate.distinctLocationIDs)
+            .filter { $0 != keeper.id && $0 != duplicate.id }
+        for location in allLocations where location.isAlive && location.distinctLocationIDs.contains(duplicate.id) {
+            location.distinctLocationIDs = location.distinctLocationIDs.filter { $0 != duplicate.id }
+                + (location.id == keeper.id ? [] : [keeper.id])
+        }
+    }
+
+    func areKnownDifferentPlaces(_ first: RestaurantLocation, _ second: RestaurantLocation) -> Bool {
+        first.distinctLocationIDs.contains(second.id) || second.distinctLocationIDs.contains(first.id)
+    }
+
+    @discardableResult
+    func markAsDifferentPlaces(_ first: RestaurantLocation, _ second: RestaurantLocation) -> Bool {
+        guard first.isAlive, second.isAlive, first.id != second.id,
+              first.circle?.id == activeCircleID, second.circle?.id == activeCircleID else { return false }
+        first.distinctLocationIDs = first.distinctLocationIDs + [second.id]
+        second.distinctLocationIDs = second.distinctLocationIDs + [first.id]
+        first.updatedAt = .now
+        second.updatedAt = .now
+        commit()
+        return areKnownDifferentPlaces(first, second)
+    }
+
+    func reconsiderDuplicate(_ first: RestaurantLocation, _ second: RestaurantLocation) {
+        guard first.isAlive, second.isAlive,
+              first.circle?.id == activeCircleID, second.circle?.id == activeCircleID else { return }
+        first.distinctLocationIDs.removeAll { $0 == second.id }
+        second.distinctLocationIDs.removeAll { $0 == first.id }
+        first.updatedAt = .now
+        second.updatedAt = .now
+        commit()
+    }
+
+    var dismissedDuplicateSuggestions: [DuplicateLocationSuggestion] {
+        let byID = Dictionary(uniqueKeysWithValues: locations.map { ($0.id, $0) })
+        var seen = Set<PairKey>()
+        return locations.flatMap { location in
+            location.distinctLocationIDs.compactMap { id in
+                guard let other = byID[id], id != location.id,
+                      seen.insert(PairKey(location.id, id)).inserted else { return nil }
+                return DuplicateLocationSuggestion(keeper: location, duplicate: other, reason: "Marked as different places")
+            }
+        }
+    }
+
     private func computeDuplicateLocationSuggestions() -> [DuplicateLocationSuggestion] {
         let candidates = locations
         var suggestions: [DuplicateLocationSuggestion] = []
@@ -2445,6 +2494,7 @@ final class AppStore {
         where group.count > 1 {
             for (offset, first) in group.enumerated() {
                 for second in group.dropFirst(offset + 1) {
+                    guard !areKnownDifferentPlaces(first, second) else { continue }
                     let key = pairKey(first, second)
                     guard pairedIDs.insert(key).inserted else { continue }
                     let pair = ordered(first, second)
@@ -2496,6 +2546,7 @@ final class AppStore {
                 guard let firstCoordinate = first.coordinate else { continue }
                 let firstKey = restaurantNameKey(first.name)
                 for second in neighbours where second.id != first.id {
+                    guard !areKnownDifferentPlaces(first, second) else { continue }
                     guard let secondCoordinate = second.coordinate else { continue }
                     let secondKey = restaurantNameKey(second.name)
                     guard firstKey != secondKey,
@@ -2543,6 +2594,7 @@ final class AppStore {
     }
 
     private func mergeLocationRecord(_ duplicate: RestaurantLocation, into keeper: RestaurantLocation) {
+        transferDistinctPlaces(from: duplicate, to: keeper)
         for visit in duplicate.visitArray { visit.location = keeper }
         for dish in duplicate.dishArray {
             if let existing = keeper.dishArray.first(where: {

@@ -10,22 +10,24 @@ struct CircleMemberRow: Identifiable, Equatable {
     let isMember: Bool
     let membership: SupabaseClient.MembershipRow?
     let presence: String?
+    var isGuest = false
 
     var isConnected: Bool { membership != nil }
 
     var statusTitle: String {
-        guard let membership else { return "Name only · not synced" }
+        guard let membership else { return isGuest ? "Guest · saved name" : "Circle member · saved name" }
         return membership.role == "owner" ? "Owner · synced" : "Synced"
     }
 
     var statusDetail: String? {
-        isMember ? presence : "They will appear after the next sync."
+        isGuest ? nil : (isMember ? presence : "They will appear after the next sync.")
     }
 
     static func == (lhs: CircleMemberRow, rhs: CircleMemberRow) -> Bool {
         lhs.id == rhs.id
             && lhs.name == rhs.name
             && lhs.isMember == rhs.isMember
+            && lhs.isGuest == rhs.isGuest
             && lhs.membership?.userID == rhs.membership?.userID
             && lhs.presence == rhs.presence
     }
@@ -193,9 +195,9 @@ struct CircleView: View {
         }
         .editorialPrompt(item: $memberToRemove) { member in
             .destructive(
-                "Remove this person?",
+                "Remove \(member.name)?",
                 message: removalExplanation(for: member),
-                actionTitle: "Remove from circle"
+                actionTitle: member.isGuest ? "Remove guest" : "Remove from circle"
             ) {
                 remove(member)
             }
@@ -364,7 +366,7 @@ struct CircleView: View {
     private func canRemove(_ member: CircleMemberRow) -> Bool {
         guard !member.isMe else { return false }
         if member.membership != nil { return sync.isOwner }
-        return member.isMember
+        return member.isMember || member.isGuest
     }
 
     private func historyCandidates(for member: CircleMemberRow) -> [PersonEntity] {
@@ -391,16 +393,17 @@ struct CircleView: View {
     /// crashed the previous build. Copying the few fields a row needs makes
     /// that impossible.
     private var memberRows: [CircleMemberRow] {
-        let people = store.circleMembers
+        let people = store.circleMembers + store.namedCompanions
         var rows = people.map { person in
             CircleMemberRow(
                 id: person.id,
                 name: person.name,
                 colorHex: person.colorHex,
                 isMe: person.id == store.currentPerson?.id,
-                isMember: true,
+                isMember: person.isCircleMember,
                 membership: sync.members.first { $0.personID == person.id },
-                presence: sync.members.first { $0.personID == person.id }.map(presence(for:))
+                presence: sync.members.first { $0.personID == person.id }.map(presence(for:)),
+                isGuest: !person.isCircleMember
             )
         }
         // An account that has joined but whose profile has not arrived here yet.
@@ -652,16 +655,14 @@ struct CircleView: View {
         if member.membership != nil {
             parts.append("\(member.name) stops receiving this log and can no longer add to it. The copy already on their iPhone stays there.")
         }
-        if member.isMember {
-            parts.append(store.personHasHistory(member.id)
-                ? "Everything they logged stays in this circle, and you can still add them to an outing."
-                : "Their profile has no outings yet, so it is removed completely.")
+        if member.isMember || member.isGuest {
+            parts.append("Past outings, photos, and reactions stay exactly as they are. This name won’t appear when you add people to a new outing.")
         }
         return parts.joined(separator: " ")
     }
 
     private func remove(_ member: CircleMemberRow) {
-        guard let circleID = store.activeCircleID else { return }
+        guard canRemove(member), let circleID = store.activeCircleID else { return }
         run {
             // Service access first: if that fails, the person is still a member
             // here and the owner can try again, rather than the roster claiming
@@ -672,7 +673,11 @@ struct CircleView: View {
                     return
                 }
             }
-            if member.isMember { _ = store.removeCircleMember(member.id) }
+            if member.isMember {
+                guard store.removeCircleMember(member.id) else { actionMessage = store.lastError; return }
+            } else if member.isGuest {
+                guard store.deleteNamedCompanion(member.id) else { actionMessage = store.lastError; return }
+            }
             memberToRemove = nil
             Haptics.success()
         }

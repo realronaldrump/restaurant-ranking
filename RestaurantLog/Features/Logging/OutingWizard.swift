@@ -169,6 +169,8 @@ private struct OutingWizard: View {
             WizardPlaceStep(model: model)
         case .reaction:
             WizardReactionStep(model: model, finish: finish)
+        case .people:
+            WizardPeopleStep(model: model, advance: advance)
         case .dishes:
             WizardDishesStep(model: model, advance: advance)
         case .ranking:
@@ -203,6 +205,91 @@ private struct OutingWizard: View {
         guard !reduceMotion, particles > 0 else { return }
         celebrationSize = particles
         celebration += 1
+    }
+}
+
+/// A separate attendance question keeps circle sharing visible and intentional.
+@MainActor
+private struct WizardPeopleStep: View {
+    @Bindable var model: OutingWizardModel
+    let advance: () -> Void
+    @Environment(AppStore.self) private var store
+    @State private var guestName = ""
+    @State private var addingGuest = false
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 22) {
+                WizardContextChip(model: model)
+                WizardTitle(text: "Who was there?")
+                Text("Tap everyone who joined you. Circle members can add their own reaction.")
+                    .font(.callout)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(WizardPalette.cream.opacity(0.85))
+                VStack(spacing: 10) {
+                    ForEach(model.people) { person in
+                        Button {
+                            model.toggleCompanion(person.id)
+                            Haptics.selection()
+                        } label: {
+                            HStack(spacing: 14) {
+                                Text(person.name.prefix(1).uppercased())
+                                    .font(.title3.weight(.bold))
+                                    .frame(width: 44, height: 44)
+                                    .background(Color(hex: person.colorHex), in: Circle())
+                                    .foregroundStyle(.white)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(person.name).font(.headline)
+                                    Text(person.isCircleMember ? "In your circle" : "Guest")
+                                        .font(.caption)
+                                }
+                                Spacer()
+                                Image(systemName: model.companionIDs.contains(person.id) ? "checkmark.circle.fill" : "circle")
+                                    .font(.title2)
+                            }
+                            .foregroundStyle(WizardPalette.redDeep)
+                            .padding(16)
+                            .background(WizardPalette.card, in: RoundedRectangle(cornerRadius: 22))
+                        }
+                        .buttonStyle(BouncyPressStyle())
+                        .accessibilityLabel(person.name)
+                        .accessibilityValue(model.companionIDs.contains(person.id) ? "Selected" : "Not selected")
+                        .accessibilityIdentifier("wizard-person-\(person.name)")
+                    }
+                    Button { addingGuest = true } label: {
+                        Label("Add a guest", systemImage: "person.badge.plus")
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                    }
+                    .buttonStyle(WizardSecondaryButtonStyle())
+                }
+                Button(model.companionIDs.isEmpty ? "Just me — continue" : "Continue") {
+                    Haptics.tick()
+                    advance()
+                }
+                .buttonStyle(WizardSecondaryButtonStyle())
+                .accessibilityIdentifier("wizard-people-continue")
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 24)
+            .readablePageWidth()
+        }
+        .editorialPrompt(isPresented: $addingGuest) {
+            EditorialPrompt(
+                "Who joined you?",
+                message: "Save their name so you can include them next time, too.",
+                tone: .decision,
+                field: .init("Name", text: $guestName),
+                actions: [
+                    .primary("Add guest", isEnabled: !guestName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
+                        if let person = store.addNamedCompanion(name: guestName), !model.companionIDs.contains(person.id) {
+                            model.toggleCompanion(person.id)
+                        }
+                        guestName = ""
+                    },
+                    .cancel("Cancel")
+                ]
+            )
+        }
     }
 }
 
@@ -609,7 +696,6 @@ private struct WizardReactionStep: View {
                     pick: pick
                 )
                 .allowsHitTesting(!isCommitting)
-                if !model.people.isEmpty, model.canEditOutingDetails { company }
                 if let error = model.saveError {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
                         .font(.callout)
@@ -719,33 +805,7 @@ private struct WizardReactionStep: View {
         .tint(BBTheme.oxblood)
     }
 
-    private var company: some View {
-        VStack(spacing: 10) {
-            Eyebrow("With", color: WizardPalette.cream.opacity(0.85))
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) { companyChips }
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) { companyChips }
-                }
-            }
-        }
-    }
 
-    @ViewBuilder
-    private var companyChips: some View {
-        ForEach(model.people) { person in
-            let isSelected = model.companionIDs.contains(person.id)
-            WizardChip(
-                title: person.name,
-                symbol: isSelected ? "checkmark.circle.fill" : "plus.circle",
-                isSelected: isSelected
-            ) {
-                Haptics.selection()
-                model.toggleCompanion(person.id)
-            }
-            .accessibilityIdentifier("visit-member-\(person.id.uuidString)")
-        }
-    }
 }
 
 // MARK: - One-tap questions

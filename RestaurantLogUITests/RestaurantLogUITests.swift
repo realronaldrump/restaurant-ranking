@@ -307,12 +307,17 @@ final class RestaurantLogUITests: XCTestCase {
 
     func testReactionTapSavesOutingAndShowsRanking() {
         chooseOutingRestaurant(named: "Codex Test Kitchen", isNew: true)
-        let michelle = app.buttons["Michelle"]
-        revealInForm(michelle)
-        if !michelle.isSelected { michelle.tap() }
         let reaction = app.buttons["reaction-Liked It"]
         for _ in 0..<6 where !reaction.isHittable { app.swipeDown() }
         reaction.tap()
+        XCTAssertTrue(app.buttons["wizard-people-continue"].waitForExistence(timeout: 4))
+        app.buttons["wizard-person-Michelle"].tap()
+        XCTAssertEqual(app.buttons["wizard-person-Michelle"].value as? String, "Selected")
+        let peopleScreen = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        peopleScreen.name = "Who was there"
+        peopleScreen.lifetime = .keepAlways
+        add(peopleScreen)
+        app.buttons["wizard-people-continue"].tap()
         XCTAssertTrue(app.staticTexts["Go back?"].waitForExistence(timeout: 4))
         app.buttons["wizard-option-yes"].tap()
         XCTAssertTrue(app.staticTexts["Worth it?"].waitForExistence(timeout: 4))
@@ -447,6 +452,86 @@ final class RestaurantLogUITests: XCTestCase {
         app.tabBars.buttons["History"].tap()
         XCTAssertFalse(app.staticTexts["Undo Probe"].exists)
         XCTAssertEqual(app.state, .runningForeground)
+    }
+
+    func testDuplicateSuggestionCanBeDismissedAndRestored() {
+        app.terminate()
+        app.launchArguments = ["-resetForUITests", "-seedSampleData", "-seedPeopleAndDuplicates"]
+        app.launch()
+        XCTAssertTrue(app.buttons["log-meal-button"].waitForExistence(timeout: 12))
+        app.tabBars.buttons["More"].tap()
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Merge duplicates")).firstMatch.tap()
+        let reject = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "dismiss-duplicate-")).firstMatch
+        XCTAssertTrue(reject.waitForExistence(timeout: 4))
+        reject.tap()
+        XCTAssertTrue(app.staticTexts["Kept as different places"].waitForExistence(timeout: 3))
+        XCTAssertFalse(reject.exists)
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "Different places remembered"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        app.buttons["Undo"].tap()
+        XCTAssertTrue(reject.waitForExistence(timeout: 3))
+        reject.tap()
+        app.navigationBars.buttons.firstMatch.tap()
+        XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Merge duplicates")).firstMatch.exists)
+    }
+
+    func testCircleCanRemoveGuestAndMemberWithoutErasingHistory() {
+        app.terminate()
+        app.launchArguments = ["-resetForUITests", "-seedSampleData", "-seedPeopleAndDuplicates"]
+        app.launch()
+        XCTAssertTrue(app.buttons["log-meal-button"].waitForExistence(timeout: 12))
+        app.tabBars.buttons["More"].tap()
+        app.buttons["open-sharing-button"].tap()
+        XCTAssertTrue(app.buttons["Remove Sam Guest from this circle"].waitForExistence(timeout: 4))
+        app.buttons["Remove Sam Guest from this circle"].tap()
+        app.buttons["Remove guest"].tap()
+        XCTAssertFalse(app.buttons["Remove Sam Guest from this circle"].waitForExistence(timeout: 1))
+        app.buttons["Remove Michelle from this circle"].tap()
+        app.buttons["Remove from circle"].tap()
+        XCTAssertFalse(app.buttons["Remove Michelle from this circle"].waitForExistence(timeout: 1))
+        XCTAssertEqual(app.state, .runningForeground)
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "People removed with history preserved"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+    }
+
+    func testRankingCardPreviewCanBeCustomizedAndSharedAsPNG() {
+        app.tabBars.buttons["Rankings"].tap()
+        let share = app.buttons["share-rankings-button"]
+        XCTAssertTrue(share.waitForExistence(timeout: 4))
+        share.tap()
+        XCTAssertTrue(app.images["ranking-card-preview"].waitForExistence(timeout: 5))
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "Ranking card preview"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        let scores = app.switches["Show scores"]
+        revealInForm(scores)
+        scores.tap()
+        let cities = app.switches["Show cities"]
+        revealInForm(cities)
+        cities.tap()
+        let sharePNG = app.buttons["share-ranking-png"]
+        XCTAssertTrue(sharePNG.isEnabled)
+        sharePNG.tap()
+        XCTAssertTrue(app.cells["Copy"].waitForExistence(timeout: 5), app.debugDescription)
+        let activity = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        activity.name = "PNG share sheet"
+        activity.lifetime = .keepAlways
+        add(activity)
+        app.cells["Save Image"].tap()
+        let system = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        if system.alerts.firstMatch.waitForExistence(timeout: 2) {
+            let allow = system.alerts.buttons.matching(NSPredicate(format: "(label CONTAINS[c] 'allow' AND NOT label CONTAINS[c] 'don') OR label CONTAINS[c] 'add photos'")).firstMatch
+            XCTAssertTrue(allow.exists, system.debugDescription)
+            allow.tap()
+        }
+        let ready = NSPredicate(format: "hittable == true")
+        expectation(for: ready, evaluatedWith: sharePNG)
+        waitForExpectations(timeout: 5)
     }
 
     private func chooseOutingRestaurant(named name: String, isNew: Bool) {

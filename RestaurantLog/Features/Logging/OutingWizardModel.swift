@@ -46,7 +46,7 @@ extension PlaceChoice {
 @Observable
 final class OutingWizardModel {
     enum Step: Hashable {
-        case place, reaction, clarity, goBack, value, service, vibe, kind, price, occasion, dishes, ranking
+        case place, reaction, people, clarity, goBack, value, service, vibe, kind, price, occasion, dishes, ranking
     }
 
     enum SaveOutcome { case saved, needsDecision, failed }
@@ -176,7 +176,6 @@ final class OutingWizardModel {
     }
 
     func start() {
-        prefillCompanions()
         if let initialLocationID, let location = store.locations.first(where: { $0.id == initialLocationID }) {
             choice = location.placeChoice
             step = .reaction
@@ -196,6 +195,7 @@ final class OutingWizardModel {
     /// still captures what matters most.
     var steps: [Step] {
         var result: [Step] = [.place, .reaction]
+        if canEditOutingDetails { result.append(.people) }
         if needsClarity { result.append(.clarity) }
         result += [.goBack, .value, .service, .vibe]
         if canEditOutingDetails { result += [.kind, .price, .occasion] }
@@ -613,6 +613,7 @@ final class OutingWizardModel {
     var people: [PersonEntity] { store.otherCircleMembers + store.namedCompanions }
 
     func toggleCompanion(_ id: UUID) {
+        guard people.contains(where: { $0.id == id }), canEditOutingDetails else { return }
         var updated = companionIDs
         if updated.contains(id) { updated.remove(id) } else { updated.insert(id) }
         if !isSaved { draftCompanionIDs = updated }
@@ -622,18 +623,6 @@ final class OutingWizardModel {
             visit, type: visit.visitType, priceBand: Int(visit.priceBand), occasion: visit.occasion,
             memory: visit.memory, companions: Array(updated), editorID: savedPersonID
         )
-    }
-
-    /// Starts from whoever was at the last outing this person logged. People
-    /// tend to eat with the same people, so the usual answer is already given
-    /// and stays one tap away from being changed.
-    private func prefillCompanions() {
-        let known = Set(people.map(\.id))
-        guard !known.isEmpty, let me = store.currentPerson?.id,
-              let lastLogged = store.visits
-                .filter({ $0.isAlive && $0.createdByID == me })
-                .max(by: { $0.createdAt < $1.createdAt }) else { return }
-        draftCompanionIDs = Set(lastLogged.companionIDs).intersection(known)
     }
 
     // MARK: - Saving
@@ -803,6 +792,7 @@ final class OutingWizardModel {
         switch step {
         case .place: "Where?"
         case .reaction: "How was it?"
+        case .people: "Who was there?"
         case .clarity: "Remember it well?"
         case .goBack: "Go back?"
         case .value: "Worth it?"
@@ -851,7 +841,7 @@ final class OutingWizardModel {
             return (1...4).map { .init(id: String($0), title: Self.priceTitle($0), glyph: String(repeating: "$", count: $0)) }
         case .occasion:
             return Occasion.allCases.map { .init(id: $0.rawValue, title: $0.rawValue, symbol: $0.wizardSymbol) }
-        case .place, .dishes, .ranking:
+        case .place, .people, .dishes, .ranking:
             return []
         }
     }
@@ -883,7 +873,7 @@ final class OutingWizardModel {
         case .kind: return visit.visitType?.rawValue
         case .price: return visit.priceBand > 0 ? String(visit.priceBand) : nil
         case .occasion: return visit.occasion?.rawValue
-        case .place, .dishes, .ranking: return nil
+        case .place, .people, .dishes, .ranking: return nil
         }
     }
 
@@ -918,7 +908,7 @@ final class OutingWizardModel {
                 personID: personID
             )
             noteNudge(from: before)
-        case .place, .reaction, .dishes, .ranking:
+        case .place, .reaction, .people, .dishes, .ranking:
             break
         }
     }
@@ -1006,6 +996,9 @@ final class OutingWizardModel {
             switch step {
             case .place, .ranking:
                 return nil
+            case .people:
+                let names = people.filter { companionIDs.contains($0.id) }.map(\.name)
+                return .init(step: step, title: names.isEmpty ? "Just me" : names.joined(separator: ", "), symbol: "person.2.fill")
             case .dishes:
                 let count = dishEntries.count
                 guard count > 0 else { return nil }
@@ -1036,7 +1029,7 @@ final class OutingWizardModel {
     var firstUnansweredStep: Step? {
         steps.first { step in
             switch step {
-            case .place, .reaction, .ranking: false
+            case .place, .reaction, .people, .ranking: false
             case .dishes: dishEntries.isEmpty
             default: selection(for: step) == nil
             }

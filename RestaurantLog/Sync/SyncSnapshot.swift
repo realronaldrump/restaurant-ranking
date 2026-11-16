@@ -60,7 +60,7 @@ enum SyncSnapshotBuilder {
                 sourceIdentifier: location.sourceIdentifier, cuisines: location.cuisines,
                 tags: location.tags, createdAt: location.createdAt, createdByID: location.createdByID,
                 updatedAt: location.updatedAt,
-                circleID: circleID, brandID: location.brand?.id
+                circleID: circleID, brandID: location.brand?.id, distinctLocationIDs: location.distinctLocationIDs
             )))
         }
         for brand in brands.values {

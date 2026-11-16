@@ -69,3 +69,10 @@ One participant’s comparison between restaurants or score anchor for a familia
 
 - “visit” previously meant both the shared real-world outing and one person’s submission — resolved: **Outing** is shared; **Diner Entry** is personal.
 - “tag” previously implied both visibility and attendance — resolved: circle sharing controls visibility; a **Participant** records attendance and response state.
+
+## Restaurant and people decisions
+
+- **Different places** is an explicit circle-level decision about a pair of restaurants. “Not a duplicate” saves it with both restaurants, hides future suggestions, and prevents automatic reconciliation of that pair. Undo or “Review again” removes the decision. It survives encrypted sync and backups.
+- Removing a member or guest hides them from future people pickers while preserving their named participation, diner entries, dishes, photos, and ranking answers in past outings. A connected member's access must be revoked successfully before their local profile is archived; only the circle owner can revoke that access.
+- New outings ask **Who was there?** after the reaction is saved. Attendance starts empty and is explicitly selected. Participants retain independent reactions; selecting someone never supplies a reaction for them.
+- A **ranking card** is a user-selected snapshot of the current ranking scope and filters. It exports up to 20 restaurants in ranked order to a 1080-pixel-wide PNG, with customizable styling, wording, city/category filtering, scores, and city labels. Export only includes the visible preview's content.

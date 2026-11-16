@@ -180,6 +180,7 @@ struct AppBackupArchive: Codable, Sendable {
         var updatedAt: Date
         var circleID: UUID?
         var brandID: UUID?
+        var distinctLocationIDs: [UUID]? = nil
     }
 
     struct VisitRecord: Codable, Sendable {
@@ -820,7 +821,7 @@ enum AppBackupService {
                           latitude: $0.latitude, longitude: $0.longitude, hasCoordinates: $0.hasCoordinates,
                           isClosed: $0.isClosed, sourceIdentifier: $0.sourceIdentifier, cuisines: $0.cuisines,
                           tags: $0.tags, createdAt: $0.createdAt, createdByID: $0.createdByID, updatedAt: $0.updatedAt,
-                          circleID: $0.circle?.id, brandID: $0.brand?.id)
+                          circleID: $0.circle?.id, brandID: $0.brand?.id, distinctLocationIDs: $0.distinctLocationIDs)
                 },
                 visits: visits.map {
                     .init(id: $0.id, date: $0.date, dateKnowledge: $0.dateKnowledge,
@@ -975,6 +976,7 @@ enum AppBackupService {
                 object.latitude = 0; object.longitude = 0; object.hasCoordinates = false
             }
             object.isClosed = record.isClosed
+            object.distinctLocationIDs = record.distinctLocationIDs ?? []
             object.sourceIdentifier = record.sourceIdentifier; object.cuisines = record.cuisines; object.tags = record.tags
             object.createdAt = record.createdAt; object.createdByID = record.createdByID; object.updatedAt = record.updatedAt
             object.circle = record.circleID.flatMap { circles[$0] }; object.brand = record.brandID.flatMap { brands[$0] }

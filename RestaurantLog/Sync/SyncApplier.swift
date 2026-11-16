@@ -158,6 +158,7 @@ enum SyncApplier {
                 object.hasCoordinates = false
             }
             object.isClosed = value.isClosed
+            if let distinctIDs = value.distinctLocationIDs { object.distinctLocationIDs = distinctIDs }
             object.sourceIdentifier = value.sourceIdentifier
             object.cuisines = value.cuisines
             object.tags = value.tags

@@ -35,6 +35,7 @@ enum ManagedObjectModel {
             attribute("hoursText", .stringAttributeType, optional: true), attribute("latitude", .doubleAttributeType, defaultValue: 0),
             attribute("longitude", .doubleAttributeType, defaultValue: 0), attribute("hasCoordinates", .booleanAttributeType, defaultValue: false),
             attribute("isClosed", .booleanAttributeType, defaultValue: false), attribute("sourceIdentifier", .stringAttributeType, optional: true),
+            attribute("distinctLocationIDsBlob", .binaryDataAttributeType, optional: true),
             attribute("cuisineBlob", .binaryDataAttributeType, optional: true), attribute("tagBlob", .binaryDataAttributeType, optional: true),
             attribute("createdAt", .dateAttributeType), attribute("createdByID", .UUIDAttributeType, optional: true),
             attribute("updatedAt", .dateAttributeType)

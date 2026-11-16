@@ -1,0 +1,5 @@
+- Share your rankings as beautifully styled PNG cards, with three looks, custom wording, restaurant selection, and optional scores and cities.
+- Mark restaurant suggestions as “Not a duplicate” and keep different branches separate without repeated reminders.
+- Choose who joined you on a dedicated page in the outing wizard, including circle members and guests.
+- Easily remove members and guests from your people list while preserving past outings, photos, and reactions.
+- Log outings with guided questions, editable details, and live ranking updates.

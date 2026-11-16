@@ -58,6 +58,7 @@ final class RestaurantLocation: NSManagedObject, Identifiable {
     @NSManaged var hasCoordinates: Bool
     @NSManaged var isClosed: Bool
     @NSManaged var sourceIdentifier: String?
+    @NSManaged var distinctLocationIDsBlob: Data?
     @NSManaged var cuisineBlob: Data?
     @NSManaged var tagBlob: Data?
     @NSManaged var createdAt: Date
@@ -70,6 +71,12 @@ final class RestaurantLocation: NSManagedObject, Identifiable {
     @NSManaged var visits: NSSet?
     @NSManaged var dishes: NSSet?
     @NSManaged var wantEntries: NSSet?
+
+    /// Explicit “different places” decisions travel with the encrypted log.
+    var distinctLocationIDs: [UUID] {
+        get { distinctLocationIDsBlob.flatMap { try? JSONDecoder().decode([UUID].self, from: $0) } ?? [] }
+        set { distinctLocationIDsBlob = try? JSONEncoder().encode(Array(Set(newValue)).sorted { $0.uuidString < $1.uuidString }) }
+    }
 
     var category: DiningCategory {
         get { DiningCategory(rawValue: categoryRaw) ?? .fullService }

@@ -2,6 +2,7 @@ import CoreLocation
 import CoreData
 import ImageIO
 import MapKit
+import Observation
 import UIKit
 import UniformTypeIdentifiers
 import XCTest
@@ -155,6 +156,59 @@ final class RankingEngineTests: XCTestCase {
         let rating = try! XCTUnwrap(visit.ratingArray.first)
         store.updateRating(rating, service: .loved, atmosphere: .loved, value: .loved, wouldOrderAgain: true)
         XCTAssertLessThanOrEqual(abs(store.rankingEngine.visitValue(visit: visit, rating: rating) - Reaction.fine.anchor), 7.0001)
+    }
+
+    func testCachedScoreObservesDetailChangesAndSubsequentOutings() async throws {
+        let restaurant = store.createLocation(name: "Score Refresh", category: .fullService)
+        _ = store.ranked()
+        let visit = store.performBatch { store.logVisit(at: restaurant, reaction: .liked) }
+        let initial = try XCTUnwrap(store.score(for: restaurant))
+        XCTAssertEqual(initial.listScore, 71)
+
+        // A view must remain subscribed even when its read hits the score cache.
+        let changed = expectation(description: "Cached score reader invalidated")
+        withObservationTracking {
+            _ = store.score(for: restaurant)
+        } onChange: {
+            changed.fulfill()
+        }
+        let personID = try XCTUnwrap(store.currentPerson?.id)
+        let rating = try XCTUnwrap(visit.rating(for: personID))
+        store.performBatch { _ = store.updateRating(rating, value: .loved) }
+        await fulfillment(of: [changed], timeout: 1)
+        XCTAssertEqual(try XCTUnwrap(store.score(for: restaurant)).listScore, 73)
+        store.reload()
+        XCTAssertEqual(try XCTUnwrap(store.score(for: restaurant)).listScore, 73)
+
+        _ = store.performBatch { store.logVisit(at: restaurant, reaction: .notForMe) }
+        let subsequent = try XCTUnwrap(store.score(for: restaurant))
+        XCTAssertEqual(subsequent.ratedVisitCount, 2)
+        XCTAssertEqual(subsequent.score, (60 * 0.08 + 74 + 35) / 2.08, accuracy: 0.000001)
+    }
+
+    func testRemoteRatingSaveInvalidatesCachedScoreReaders() async throws {
+        let restaurant = store.createLocation(name: "Synced Score", category: .fullService)
+        let visit = store.logVisit(at: restaurant, reaction: .liked)
+        let ratingID = try XCTUnwrap(visit.ratingArray.first?.id)
+        XCTAssertEqual(try XCTUnwrap(store.score(for: restaurant)).listScore, 71)
+        let changed = expectation(description: "Sync publishes a new score revision")
+        withObservationTracking {
+            _ = store.revision
+        } onChange: {
+            changed.fulfill()
+        }
+
+        let background = persistence.container.newBackgroundContext()
+        try await background.perform {
+            let request = NSFetchRequest<RatingEntity>(entityName: "RatingEntity")
+            request.predicate = NSPredicate(format: "id == %@", ratingID as CVarArg)
+            let rating = try XCTUnwrap(background.fetch(request).first)
+            rating.reaction = .loved
+            try background.save()
+        }
+        NotificationCenter.default.post(name: .syncDidApplyRemoteChanges, object: nil)
+        await fulfillment(of: [changed], timeout: 3)
+        XCTAssertEqual(try XCTUnwrap(store.score(for: restaurant)).listScore, 83)
     }
 
     func testCoonReactionIsOnePerAuthorAndDoesNotChangeTheRanking() throws {

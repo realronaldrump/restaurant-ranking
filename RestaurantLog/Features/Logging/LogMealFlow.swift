@@ -41,6 +41,16 @@ private extension RestaurantLocation {
 @MainActor
 struct LogMealFlow: View {
     private enum Stage { case place, reaction, payoff, quickComparisons }
+    /// Only the pre-outing evidence is a snapshot. Current scores, reactions,
+    /// and comparison candidates always come from the store.
+    private struct PriorEvidence {
+        let locationID: UUID
+        let category: DiningCategory
+        let score: Double?
+        let rank: Int?
+        let ratedVisitCount: Int
+        let reaction: Reaction?
+    }
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(AppStore.self) private var store
@@ -64,12 +74,8 @@ struct LogMealFlow: View {
     @State private var selectedReaction: Reaction?
     @State private var detailsExpanded = false
     @State private var savedVisit: VisitEntity?
-    @State private var savedScore: LocationScore?
-    @State private var scoreBeforeSave: Double?
-    @State private var priorRatedVisitCount = 0
-    @State private var priorReaction: Reaction?
-    @State private var savedReaction: Reaction?
-    @State private var oldRank: Int?
+    @State private var savedPersonID: UUID?
+    @State private var priorEvidence: PriorEvidence?
     @State private var taggedMemberIDs: Set<UUID> = []
     @State private var duplicateOuting: VisitEntity?
     @State private var duplicateReaction: Reaction?
@@ -101,7 +107,7 @@ struct LogMealFlow: View {
             }
         }
         .sheet(item: $addMoreVisit) { visit in
-            AddMoreVisitView(visit: visit, personID: store.currentPerson?.id, startsWithDetails: true)
+            AddMoreVisitView(visit: visit, personID: savedPersonID, startsWithDetails: true)
         }
         .onChange(of: selectedPhotoItem) { _, item in
             Task { await loadMealPhoto(item) }
@@ -173,7 +179,6 @@ struct LogMealFlow: View {
         case .reaction:
             stage = .place
         case .quickComparisons:
-            refreshPayoff()
             stage = .payoff
         case .payoff:
             break
@@ -578,39 +583,59 @@ struct LogMealFlow: View {
     }
 
     private var payoff: some View {
-        ScrollView {
+        // Core Data objects are not Observation models. Subscribe even when
+        // an outing or its score disappears, so the fallback also stays live.
+        let _ = store.revision
+        return ScrollView {
             VStack(spacing: 24) {
                 Spacer(minLength: 16)
-                if let visit = savedVisit, visit.isAlive, let location = visit.location, let score = savedScore {
+                if let visit = savedVisit, visit.isAlive, let location = visit.location, location.isAlive {
+                    let score = savedPersonID.flatMap { store.score(for: location, personID: $0) }
                     VStack(spacing: 8) {
                         Image(systemName: "checkmark.seal.fill")
                             .font(.system(size: 42, weight: .light))
                             .foregroundStyle(BBTheme.oxblood)
                         Eyebrow("Outing saved")
                         Text(location.name).font(BBTheme.display(35)).multilineTextAlignment(.center)
-                        ScoreMark(
-                            score: score.score,
-                            caption: "return score",
-                            size: 74,
-                            provisional: score.isProvisional,
-                            alignment: .center
-                        )
+                        if let score {
+                            ScoreMark(
+                                score: score.score,
+                                caption: "return score",
+                                size: 74,
+                                provisional: score.isProvisional,
+                                alignment: .center
+                            )
+                        } else {
+                            Text(location.isClosed ? "Closed restaurants are not ranked." : "No return score yet.")
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .padding(.bottom, 4)
                     .scaleEffect(payoffAppeared ? 1 : 0.85)
                     .opacity(payoffAppeared ? 1 : 0)
-                    scoreChangeSummary(score)
-                    rankingInsertion(score)
-                    if !quickQuestions.isEmpty {
-                        Button { quickIndex = 0; stage = .quickComparisons } label: {
+                    if let score {
+                        let reaction = savedPersonID.flatMap { visit.rating(for: $0)?.reaction }
+                        scoreChangeSummary(score, reaction: reaction)
+                        rankingInsertion(score)
+                    }
+                    if !availableQuickQuestions.isEmpty {
+                        Button {
+                            quickQuestions = availableQuickQuestions
+                            quickIndex = 0
+                            stage = .quickComparisons
+                        } label: {
                             Label("Compare", systemImage: "arrow.left.arrow.right")
                         }
                         .buttonStyle(SecondaryButtonStyle())
                     }
-                    Button("Add outing details") { addMoreVisit = visit }
-                        .buttonStyle(PrimaryButtonStyle())
-                    Button("Done") { dismiss() }.font(.headline).frame(minHeight: 48)
+                    if let savedPersonID, store.canEditDinerEntry(visit, personID: savedPersonID) {
+                        Button("Add outing details") { addMoreVisit = visit }
+                            .buttonStyle(PrimaryButtonStyle())
+                    }
+                } else {
+                    ContentUnavailableView("Outing unavailable", systemImage: "fork.knife.circle")
                 }
+                Button("Done") { dismiss() }.font(.headline).frame(minHeight: 48)
                 Spacer(minLength: 20)
             }.padding(20).readablePageWidth()
         }
@@ -622,18 +647,9 @@ struct LogMealFlow: View {
     }
 
     private var quickComparison: some View {
-        ScrollView {
-            if quickIndex >= quickQuestions.count {
-                VStack(spacing: 18) {
-                    Spacer(minLength: 12)
-                    Image(systemName: "checkmark.seal.fill").font(.system(size: 54, weight: .light)).foregroundStyle(BBTheme.oxblood)
-                    Eyebrow("Done")
-                    Text("Ranking updated").font(BBTheme.display(34)).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
-                    Button("Back to the return score") { refreshPayoff(); stage = .payoff }.buttonStyle(PrimaryButtonStyle())
-                    Spacer(minLength: 12)
-                }.padding(22).readablePageWidth()
-            } else {
-                let question = quickQuestions[quickIndex]
+        let _ = store.revision
+        return ScrollView {
+            if let question = currentQuickQuestion {
                 VStack(spacing: 18) {
                     HStack { Eyebrow("Optional \(quickIndex + 1) of \(quickQuestions.count)"); Spacer() }
                     Spacer(minLength: 12)
@@ -649,8 +665,17 @@ struct LogMealFlow: View {
                     .foregroundStyle(.secondary)
                     .buttonStyle(.plain)
                     .frame(minHeight: 44)
-                    Button("Finish now") { refreshPayoff(); stage = .payoff }.font(.callout).foregroundStyle(.secondary).frame(minHeight: 44)
+                    Button("Finish now") { stage = .payoff }.font(.callout).foregroundStyle(.secondary).frame(minHeight: 44)
                 }.padding(22).padding(.bottom, 12).readablePageWidth()
+            } else {
+                VStack(spacing: 18) {
+                    Spacer(minLength: 12)
+                    Image(systemName: "checkmark.seal.fill").font(.system(size: 54, weight: .light)).foregroundStyle(BBTheme.oxblood)
+                    Eyebrow("Done")
+                    Text("Ranking updated").font(BBTheme.display(34)).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                    Button("Back to the return score") { stage = .payoff }.buttonStyle(PrimaryButtonStyle())
+                    Spacer(minLength: 12)
+                }.padding(22).readablePageWidth()
             }
         }
     }
@@ -702,9 +727,10 @@ struct LogMealFlow: View {
         }
     }
 
-    private func scoreChangeSummary(_ score: LocationScore) -> some View {
-        VStack(spacing: 8) {
-            if let scoreBeforeSave {
+    private func scoreChangeSummary(_ score: LocationScore, reaction: Reaction?) -> some View {
+        let prior = priorEvidence.flatMap { $0.locationID == score.id ? $0 : nil }
+        return VStack(spacing: 8) {
+            if let scoreBeforeSave = prior?.score {
                 let move = ScoreMove(from: scoreBeforeSave, to: score.score)
                 HStack(spacing: 8) {
                     Text("\(move.before)")
@@ -725,11 +751,11 @@ struct LogMealFlow: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
-            } else {
+            } else if prior != nil {
                 Text("This is its starting score.")
                     .font(.headline)
             }
-            Text(scoreExplanation)
+            Text(scoreExplanation(prior: prior, reaction: reaction))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -739,29 +765,38 @@ struct LogMealFlow: View {
         .editorialCard(padding: 14)
     }
 
-    private var scoreExplanation: String {
-        let current = savedReaction?.title.lowercased() ?? "new"
-        if scoreBeforeSave == nil {
+    private func scoreExplanation(prior: PriorEvidence?, reaction: Reaction?) -> String {
+        guard let reaction else {
+            return "This restaurant’s return score reflects your rated outings and comparisons."
+        }
+        let current = reaction.title.lowercased()
+        guard let prior else {
+            return "Your reaction, “\(current)”, and outing details are included in this restaurant’s current return score."
+        }
+        if prior.score == nil {
             return "Your reaction, “\(current)”, sets the starting score. More outings and comparisons will move it."
         }
-        if priorRatedVisitCount == 1, let priorReaction {
+        if prior.ratedVisitCount == 1, let priorReaction = prior.reaction {
             return "This score now blends two outings: “\(priorReaction.title.lowercased())” last time and “\(current)” this time."
         }
-        if priorRatedVisitCount > 1 {
-            return "This score now blends “\(current)” with your \(priorRatedVisitCount) earlier outings here."
+        if prior.ratedVisitCount > 1 {
+            return "This score now blends “\(current)” with your \(prior.ratedVisitCount) earlier outings here."
         }
         return "This score now blends “\(current)” with your earlier outings and comparisons here."
     }
 
     private func rankingInsertion(_ score: LocationScore) -> some View {
-        let categoryScores = store.ranked().filter { $0.location.category == score.location.category }
+        let categoryScores = store.ranked(for: savedPersonID).filter { $0.location.category == score.location.category }
+        let prior = priorEvidence.flatMap {
+            $0.locationID == score.id && $0.category == score.location.category ? $0 : nil
+        }
         let above = categoryScores.first { $0.categoryRank == score.categoryRank - 1 }
         let below = categoryScores.first { $0.categoryRank == score.categoryRank + 1 }
         return VStack(spacing: 12) {
             RankChip(text: "#\(score.categoryRank) in \(score.location.category.shortTitle)", emphasized: true)
-            if let oldRank, oldRank != score.categoryRank {
+            if let oldRank = prior?.rank, oldRank != score.categoryRank {
                 Text("Moved from #\(oldRank) to #\(score.categoryRank)").font(.callout.weight(.semibold))
-            } else if oldRank == nil { Text("Added to your ranking.").font(BBTheme.display(18, weight: .regular)) }
+            } else if let prior, prior.rank == nil { Text("Added to your ranking.").font(BBTheme.display(18, weight: .regular)) }
             if above != nil || below != nil {
                 HStack(spacing: 14) {
                     if let above { neighbor(above, label: "Just ahead") }
@@ -902,10 +937,7 @@ struct LogMealFlow: View {
             return
         }
         saveError = nil
-        let existing = existingLocation(for: choice)
-        savedReaction = reaction
-        capturePriorEvidence(for: existing, personID: personID)
-        let (location, visit) = store.performBatch { () -> (RestaurantLocation, VisitEntity) in
+        let visit = store.performBatch { () -> VisitEntity in
             let location: RestaurantLocation
             switch choice.source {
             case .existing(let value): location = value
@@ -918,6 +950,7 @@ struct LogMealFlow: View {
             case .manual(let name):
                 location = store.createLocation(name: name, category: DiningCategory.suggested(for: name))
             }
+            capturePriorEvidence(for: location, personID: personID)
             let visitCoordinate = mealPhoto?.coordinate.map { ($0.latitude, $0.longitude) }
                 ?? locationService.currentVisitCoordinate(near: location.coordinate)
             let visit = store.logVisit(
@@ -940,11 +973,14 @@ struct LogMealFlow: View {
                     captureTimeZoneOffsetSeconds: mealPhoto.captureTimeZoneOffsetSeconds
                 )
             }
-            return (location, visit)
+            return visit
+        }
+        guard visit.isAlive, visit.location?.isAlive == true else {
+            saveError = store.lastError ?? "The outing could not be saved. Please try again."
+            return
         }
         savedVisit = visit
-        savedScore = store.score(for: location)
-        prepareQuickQuestions(for: location, score: savedScore)
+        savedPersonID = personID
         stage = .payoff
         Haptics.success()
     }
@@ -952,7 +988,6 @@ struct LogMealFlow: View {
     private func join(_ outing: VisitEntity) {
         guard outing.isAlive, let reaction = duplicateReaction, let personID = store.currentPerson?.id,
               let location = outing.location else { return }
-        savedReaction = reaction
         capturePriorEvidence(for: location, personID: personID)
         store.performBatch {
             _ = store.addRating(to: outing, personID: personID, reaction: reaction)
@@ -968,49 +1003,63 @@ struct LogMealFlow: View {
                 )
             }
         }
+        guard outing.isAlive, outing.rating(for: personID) != nil else {
+            saveError = store.lastError ?? "Your diner entry could not be saved. Please try again."
+            clearDuplicateChoice()
+            return
+        }
         savedVisit = outing
-        savedScore = store.score(for: location, personID: personID)
-        prepareQuickQuestions(for: location, score: savedScore)
+        savedPersonID = personID
         clearDuplicateChoice()
         stage = .payoff
         Haptics.success()
     }
 
-    private func capturePriorEvidence(for location: RestaurantLocation?, personID: UUID?) {
-        guard let location else {
-            oldRank = nil
-            scoreBeforeSave = nil
-            priorRatedVisitCount = 0
-            priorReaction = nil
-            return
-        }
+    private func capturePriorEvidence(for location: RestaurantLocation, personID: UUID) {
         let before = store.score(for: location, personID: personID)
-        oldRank = before?.categoryRank
-        scoreBeforeSave = before?.score
-        priorRatedVisitCount = before?.ratedVisitCount ?? 0
-        guard let personID else {
-            priorReaction = nil
-            return
-        }
-        priorReaction = location.visitArray
+        let latestReaction = location.visitArray
             .compactMap { visit -> (date: Date, reaction: Reaction)? in
                 guard let rating = visit.rating(for: personID) else { return nil }
                 return (visit.date, rating.reaction)
             }
             .max { $0.date < $1.date }?
             .reaction
+        priorEvidence = PriorEvidence(
+            locationID: location.id,
+            category: location.category,
+            score: before?.score,
+            rank: before?.categoryRank,
+            ratedVisitCount: before?.ratedVisitCount ?? 0,
+            reaction: latestReaction
+        )
     }
 
-    private func prepareQuickQuestions(for location: RestaurantLocation, score: LocationScore?) {
-        guard let score else {
-            quickQuestions = []
-            return
-        }
-        quickQuestions = store.ranked()
+    private var availableQuickQuestions: [ComparisonQuestion] {
+        guard let visit = savedVisit, visit.isAlive,
+              let location = visit.location, location.isAlive,
+              let savedPersonID,
+              let score = store.score(for: location, personID: savedPersonID) else { return [] }
+        return store.ranked(for: savedPersonID)
             .filter { $0.id != location.id && $0.location.category == location.category }
             .sorted { abs($0.score - score.score) < abs($1.score - score.score) }
             .prefix(3)
             .map { ComparisonQuestion(a: location, b: $0.location) }
+    }
+
+    /// Keep a comparison round stable as answers move scores, but do not show
+    /// or record a question whose restaurants were removed or moved by sync.
+    private var currentQuickQuestion: ComparisonQuestion? {
+        guard quickQuestions.indices.contains(quickIndex),
+              let visit = savedVisit, visit.isAlive,
+              let location = visit.location, location.isAlive,
+              let savedPersonID else { return nil }
+        let question = quickQuestions[quickIndex]
+        guard question.a.isAlive, question.b.isAlive,
+              location.id == question.a.id,
+              question.a.category == question.b.category,
+              store.score(for: question.a, personID: savedPersonID) != nil,
+              store.score(for: question.b, personID: savedPersonID) != nil else { return nil }
+        return question
     }
 
     private func clearDuplicateChoice() {
@@ -1068,15 +1117,14 @@ struct LogMealFlow: View {
     }
 
     private func recordQuick(_ outcome: ComparisonOutcome, question: ComparisonQuestion) {
-        store.recordComparison(a: question.a, b: question.b, outcome: outcome)
+        guard let savedPersonID, let current = currentQuickQuestion,
+              question.a.isAlive, question.b.isAlive, current.id == question.id else {
+            stage = .payoff
+            return
+        }
+        store.recordComparison(a: question.a, b: question.b, outcome: outcome, personID: savedPersonID)
         quickIndex += 1
         Haptics.selection()
-    }
-
-    private func refreshPayoff() {
-        if let visit = savedVisit, visit.isAlive, let location = visit.location {
-            savedScore = store.score(for: location)
-        }
     }
 }
 

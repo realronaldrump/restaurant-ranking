@@ -69,6 +69,15 @@ enum AppSheet: Identifiable, Hashable {
         case .circle: "circle"
         }
     }
+
+    /// Logging takes over the whole screen: it is a short run of taps that
+    /// should not be half-hidden behind, or swiped away with, a sheet.
+    var isFullScreen: Bool {
+        switch self {
+        case .logMeal, .logMealAt: true
+        case .rateVisit, .addWant, .compare, .circle: false
+        }
+    }
 }
 
 @MainActor

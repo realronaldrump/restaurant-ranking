@@ -305,71 +305,57 @@ final class RestaurantLogUITests: XCTestCase {
         add(screenshot)
     }
 
-    func testManualThreeTapLogCreatesRankingPayoff() {
-        app.buttons["log-meal-button"].tap()
-        XCTAssertTrue(app.buttons["start-meal-with-photo"].waitForExistence(timeout: 3))
-        let search = app.textFields["log-place-search"]
-        XCTAssertTrue(search.waitForExistence(timeout: 3))
-        search.tap()
-        search.typeText("Codex Test Kitchen")
-
-        let searchKey = app.keyboards.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", "search")).firstMatch
-        if searchKey.waitForExistence(timeout: 2) { searchKey.tap() }
-
-        let manual = app.buttons["manual-place-choice"]
-        XCTAssertTrue(manual.waitForExistence(timeout: 4))
-        for _ in 0..<6 where !manual.isHittable { app.scrollViews.firstMatch.swipeUp() }
-        XCTAssertTrue(manual.isHittable)
-        manual.tap()
-
-        let reaction = app.buttons["reaction-Liked It"]
-        XCTAssertTrue(reaction.waitForExistence(timeout: 3))
-        reaction.tap()
-        XCTAssertFalse(app.scrollViews["log-payoff"].exists, "Choosing a reaction should not save before confirmation")
-
-        let scrollView = app.scrollViews.firstMatch
-        let optionalDetails = app.buttons["Add people or change details"]
-        XCTAssertTrue(optionalDetails.waitForExistence(timeout: 3))
-        for _ in 0..<5 where !optionalDetails.isHittable { scrollView.swipeUp() }
-        XCTAssertTrue(optionalDetails.isHittable)
-        optionalDetails.tap()
-
+    func testReactionTapSavesOutingAndShowsRanking() {
+        chooseOutingRestaurant(named: "Codex Test Kitchen", isNew: true)
         let michelle = app.buttons["Michelle"]
-        XCTAssertTrue(michelle.waitForExistence(timeout: 3))
-        for _ in 0..<5 where !michelle.isHittable { scrollView.swipeUp() }
-        XCTAssertTrue(michelle.isHittable)
-        michelle.tap()
-
-        let saveOuting = app.buttons["save-outing"]
-        for _ in 0..<5 where !saveOuting.isHittable { scrollView.swipeDown() }
-        XCTAssertTrue(saveOuting.isHittable)
-        XCTAssertTrue(saveOuting.isEnabled)
-        saveOuting.tap()
+        revealInForm(michelle)
+        if !michelle.isSelected { michelle.tap() }
+        let reaction = app.buttons["reaction-Liked It"]
+        for _ in 0..<6 where !reaction.isHittable { app.swipeDown() }
+        reaction.tap()
+        XCTAssertTrue(app.staticTexts["Go back?"].waitForExistence(timeout: 4))
+        app.buttons["wizard-option-yes"].tap()
+        XCTAssertTrue(app.staticTexts["Worth it?"].waitForExistence(timeout: 4))
+        app.buttons["wizard-option-Loved It"].tap()
+        XCTAssertTrue(app.staticTexts["The service?"].waitForExistence(timeout: 4))
+        app.buttons["wizard-rank-it"].tap()
 
         XCTAssertTrue(app.scrollViews["log-payoff"].waitForExistence(timeout: 4))
-        XCTAssertTrue(app.staticTexts["Codex Test Kitchen"].exists)
         XCTAssertTrue(app.staticTexts["OUTING SAVED"].exists)
-        XCTAssertTrue(app.buttons["Add outing details"].exists)
-        app.buttons["Done"].tap()
-
+        XCTAssertTrue(app.staticTexts["log-score-locked"].exists)
+        XCTAssertFalse(app.staticTexts["log-score"].exists, "One outing alone must not unlock a score.")
+        app.buttons["log-done"].tap()
         app.tabBars.buttons["History"].tap()
         let loggedVisit = app.staticTexts["Codex Test Kitchen"].firstMatch
-        XCTAssertTrue(loggedVisit.waitForExistence(timeout: 6))
+        XCTAssertTrue(loggedVisit.waitForExistence(timeout: 4))
         loggedVisit.tap()
         XCTAssertTrue(app.staticTexts["George, Michelle"].waitForExistence(timeout: 3))
     }
 
     func testPayoffTracksDetailsComparisonsAndReactionEdits() throws {
-        logOutingForScoreTest(named: "Score Refresh Probe", isNew: true)
-        XCTAssertEqual(try payoffScore(), 71)
-
+        // A repeat outing has an earned score; a new restaurant is tested separately.
+        logOutingForScoreTest(named: "Yoko Ramen", isNew: false)
+        let initialScore = try payoffScore()
         openOutingDetails()
-        let value = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Value")).firstMatch
-        revealInForm(value)
-        value.tap()
-        app.buttons["Loved"].tap()
+        // Detail changes are diluted across repeat outings and comparisons.
+        // Use all four signals so the change exceeds whole-score rounding.
+        for title in ["Service", "Atmosphere", "Value"] {
+            let detail = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", title + ", ")).firstMatch
+            revealInForm(detail)
+            detail.tap()
+            app.buttons["Loved"].tap()
+            let selected = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "label CONTAINS %@", "Loved"), object: detail
+            )
+            XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 3), .completed)
+        }
+        let returnPicker = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Would eat here again")).firstMatch
+        revealInForm(returnPicker)
+        returnPicker.tap()
+        app.buttons["Yes"].tap()
         saveOutingDetails()
-        XCTAssertEqual(try payoffScore(), 73, "Details must update the confirmation immediately.")
+        let detailedScore = try payoffScore()
+        XCTAssertGreaterThan(detailedScore, initialScore)
 
         openOutingDetails()
         let reaction = app.buttons["reaction-Not For Me"]
@@ -377,19 +363,14 @@ final class RestaurantLogUITests: XCTestCase {
         reaction.tap()
         saveOutingDetails()
         let editedScore = try payoffScore()
-        XCTAssertLessThan(editedScore, 73)
-        XCTAssertTrue(app.staticTexts["#3 in Full Service"].exists, "The rank must follow the edited score.")
-        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "“not for me”")).firstMatch.exists)
+        XCTAssertLessThan(editedScore, detailedScore)
+        XCTAssertEqual(app.staticTexts["log-rank"].label, "Number 2 in Full Service")
+        XCTAssertTrue(app.images["Not for me"].exists || app.images["Not For Me"].exists)
 
-        let compare = app.buttons["Compare"]
-        revealInPayoff(compare)
-        compare.tap()
-        XCTAssertTrue(app.buttons["Score Refresh Probe"].waitForExistence(timeout: 3))
-        app.buttons["Score Refresh Probe"].tap()
-        app.buttons["Finish now"].tap()
+        answerFaceOff(preferringLogged: true)
         let comparisonScore = try payoffScore()
-        XCTAssertGreaterThan(comparisonScore, editedScore, "Comparison changes must appear without reopening the flow.")
-        assertRankingScore(named: "Score Refresh Probe", equals: comparisonScore)
+        XCTAssertGreaterThan(comparisonScore, editedScore)
+        assertRankingScore(named: "Yoko Ramen", equals: comparisonScore)
     }
 
     func testPayoffPreservesBeforeScoreWhileUpdatingRepeatOuting() throws {
@@ -401,7 +382,7 @@ final class RestaurantLogUITests: XCTestCase {
         logOutingForScoreTest(named: "Yoko Ramen", isNew: false, reaction: "Not For Me")
         let initialScore = try payoffScore()
         XCTAssertLessThan(initialScore, beforeScore)
-        XCTAssertTrue(app.staticTexts["Return score \(beforeScore) to \(initialScore)"].exists)
+        XCTAssertTrue(app.staticTexts["log-score"].label.contains("from \(beforeScore)"))
 
         openOutingDetails()
         let reaction = app.buttons["reaction-Loved It"]
@@ -410,16 +391,15 @@ final class RestaurantLogUITests: XCTestCase {
         saveOutingDetails()
         let editedScore = try payoffScore()
         XCTAssertGreaterThan(editedScore, beforeScore)
-        XCTAssertTrue(app.staticTexts["Return score \(beforeScore) to \(editedScore)"].exists,
-                      "The before score must remain the score from before logging, not before the latest edit.")
-        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "“loved it”")).firstMatch.exists)
+        XCTAssertTrue(app.staticTexts["log-score"].label.contains("from \(beforeScore)"),
+                      "The baseline must remain the score from before logging.")
         assertRankingScore(named: "Yoko Ramen", equals: editedScore)
     }
 
     func testPayoffFollowsChangedRestaurantAndDropsOldComparisons() throws {
         logOutingForScoreTest(named: "Score Refresh Probe", isNew: true)
-        XCTAssertEqual(try payoffScore(), 71)
-        XCTAssertTrue(app.buttons["Compare"].exists)
+        XCTAssertTrue(app.staticTexts["log-score-locked"].exists)
+        answerFaceOff(preferringLogged: true)
 
         openOutingDetails()
         let changeRestaurant = app.buttons["change-visit-restaurant"]
@@ -435,57 +415,100 @@ final class RestaurantLogUITests: XCTestCase {
         saveOutingDetails()
 
         let movedScore = try payoffScore()
-        XCTAssertGreaterThan(movedScore, 71, "The score must belong to the new restaurant.")
-        XCTAssertTrue(app.staticTexts["Normal Ice Cream"].exists)
-        XCTAssertTrue(app.staticTexts["#1 in Dessert"].exists)
-        XCTAssertFalse(app.staticTexts["This is its starting score."].exists,
-                       "Moving an outing must not reuse the previous restaurant's baseline.")
-        XCTAssertFalse(app.staticTexts["Added to your ranking."].exists)
-        XCTAssertFalse(app.buttons["Compare"].exists,
-                       "The only dessert restaurant has no valid opponents; old Full Service comparisons must disappear.")
+        XCTAssertGreaterThan(movedScore, 71)
+        XCTAssertEqual(app.staticTexts["log-rank"].label, "Number 1 in Dessert")
+        XCTAssertFalse(app.staticTexts["log-score"].label.contains("from "))
+        XCTAssertFalse(app.buttons["face-off-logged"].exists)
+        XCTAssertFalse(app.buttons["face-off-opponent"].exists)
         assertRankingScore(named: "Normal Ice Cream", equals: movedScore)
     }
 
-    private func logOutingForScoreTest(named name: String, isNew: Bool, reaction: String = "Liked It") {
+    func testTwoFaceOffsUnlockANewRestaurantScore() throws {
+        logOutingForScoreTest(named: "Score Unlock Probe", isNew: true)
+        XCTAssertTrue(app.staticTexts["log-score-locked"].exists)
+        answerFaceOff(preferringLogged: true)
+        XCTAssertTrue(app.staticTexts["log-score-locked"].exists)
+        answerFaceOff(preferringLogged: true)
+        let score = try payoffScore()
+        XCTAssertFalse(app.staticTexts["log-score-locked"].exists)
+        XCTAssertFalse(app.buttons["face-off-logged"].exists)
+        assertRankingScore(named: "Score Unlock Probe", equals: score)
+    }
+
+    func testWizardUndoRemovesSavedOutingAndCanClose() {
+        logOutingForScoreTest(named: "Undo Probe", isNew: true)
+        let undo = app.buttons["log-undo"]
+        revealInPayoff(undo)
+        undo.tap()
+        XCTAssertTrue(app.buttons["reaction-Liked It"].waitForExistence(timeout: 4))
+        app.buttons["log-back"].tap()
+        XCTAssertTrue(app.textFields["log-place-search"].waitForExistence(timeout: 4))
+        app.buttons["log-close"].tap()
+        app.tabBars.buttons["History"].tap()
+        XCTAssertFalse(app.staticTexts["Undo Probe"].exists)
+        XCTAssertEqual(app.state, .runningForeground)
+    }
+
+    private func chooseOutingRestaurant(named name: String, isNew: Bool) {
         app.buttons["log-meal-button"].tap()
         let search = app.textFields["log-place-search"]
         XCTAssertTrue(search.waitForExistence(timeout: 3))
+        XCTAssertTrue(search.isHittable, "Decorative overlays must not hide the search field from accessibility hit testing.")
         search.tap()
-        search.typeText(name)
-        let searchKey = app.keyboards.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", "search")).firstMatch
-        if searchKey.waitForExistence(timeout: 2) { searchKey.tap() }
+        search.typeText(name + "\n")
         let place = isNew
             ? app.buttons["manual-place-choice"]
             : app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", name)).firstMatch
         XCTAssertTrue(place.waitForExistence(timeout: 4))
         for _ in 0..<6 where !place.isHittable { app.scrollViews.firstMatch.swipeUp() }
         place.tap()
+        XCTAssertTrue(app.buttons["reaction-Liked It"].waitForExistence(timeout: 4))
+    }
+
+    private func logOutingForScoreTest(named name: String, isNew: Bool, reaction: String = "Liked It") {
+        chooseOutingRestaurant(named: name, isNew: isNew)
         app.buttons["reaction-\(reaction)"].tap()
-        let save = app.buttons["save-outing"]
-        for _ in 0..<5 where !save.isHittable { app.scrollViews.firstMatch.swipeUp() }
-        save.tap()
+        XCTAssertTrue(app.buttons["wizard-rank-it"].waitForExistence(timeout: 4))
+        app.buttons["wizard-rank-it"].tap()
         XCTAssertTrue(app.scrollViews["log-payoff"].waitForExistence(timeout: 4))
     }
 
     private func payoffScore() throws -> Int {
         let payoff = app.scrollViews["log-payoff"]
         XCTAssertTrue(payoff.waitForExistence(timeout: 4))
-        let score = payoff.staticTexts.matching(NSPredicate(
-            format: "label BEGINSWITH %@ AND label CONTAINS %@", "Return score ", "out of 100"
-        )).firstMatch
-        for _ in 0..<5 where !score.isHittable { payoff.swipeDown() }
+        let score = app.staticTexts["log-score"]
+        for _ in 0..<6 where !score.isHittable { payoff.swipeDown() }
         XCTAssertTrue(score.waitForExistence(timeout: 3))
-        return try XCTUnwrap(Int(score.label.split(separator: " ").dropFirst(2).first ?? ""))
+        let number = score.label.components(separatedBy: "Return score ").last?.split(separator: " ").first
+        return try XCTUnwrap(number.flatMap { Int($0) }, score.label)
     }
 
     private func revealInPayoff(_ element: XCUIElement) {
-        for _ in 0..<6 where !element.isHittable { app.scrollViews["log-payoff"].swipeUp() }
+        let payoff = app.scrollViews["log-payoff"]
+        let footer = app.buttons["log-done"]
+        for _ in 0..<8 {
+            if element.exists, element.isHittable, element.frame.maxY < footer.frame.minY { break }
+            payoff.swipeUp()
+        }
         XCTAssertTrue(element.isHittable)
     }
 
+    private func answerFaceOff(preferringLogged: Bool) {
+        let opponent = app.buttons["face-off-opponent"]
+        XCTAssertTrue(opponent.waitForExistence(timeout: 3))
+        let oldLabel = opponent.label
+        let answer = app.buttons[preferringLogged ? "face-off-logged" : "face-off-opponent"]
+        revealInPayoff(answer)
+        answer.tap()
+        let advanced = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false OR label != %@", oldLabel), object: opponent
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [advanced], timeout: 5), .completed)
+    }
+
     private func openOutingDetails() {
-        let details = app.buttons["Add outing details"]
-        revealInPayoff(details)
+        let details = app.buttons["log-add-details"]
+        XCTAssertTrue(details.waitForExistence(timeout: 3))
         details.tap()
         XCTAssertTrue(app.navigationBars["Add Outing Details"].waitForExistence(timeout: 3))
     }
@@ -501,9 +524,7 @@ final class RestaurantLogUITests: XCTestCase {
     }
 
     private func assertRankingScore(named name: String, equals score: Int) {
-        let done = app.buttons["Done"]
-        revealInPayoff(done)
-        done.tap()
+        app.buttons["log-done"].tap()
         let row = rankingRow(named: name)
         XCTAssertTrue(row.label.contains("return score \(score) out of 100"), row.label)
     }
@@ -523,7 +544,9 @@ final class RestaurantLogUITests: XCTestCase {
         let buttons = app.buttons.allElementsBoundByIndex.filter { $0.isHittable }
         XCTAssertFalse(buttons.isEmpty)
         let undersized = buttons.compactMap { button -> String? in
-            guard button.frame.width < 44 || button.frame.height < 44 else { return nil }
+            // Accessibility frame subtraction can turn exactly 44 into 43.999999999999986.
+            let tolerance = 0.001
+            guard button.frame.width < 44 - tolerance || button.frame.height < 44 - tolerance else { return nil }
             return "\(button.label.isEmpty ? "Unlabeled button" : button.label): \(button.frame)"
         }
         XCTAssertEqual(undersized, [], "Every visible home button must expose at least a 44×44-point hit target")

@@ -18,4 +18,24 @@ enum Haptics {
         guard isEnabled else { return }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
     }
+    /// A light tick for small things: a chip, a skip, a step back.
+    static func tick() {
+        guard isEnabled else { return }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.8)
+    }
+    /// A crisp click for choosing an answer.
+    static func snap() {
+        guard isEnabled else { return }
+        UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+    }
+    /// A soft bump for something settling downward.
+    static func soft() {
+        guard isEnabled else { return }
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+    }
+    /// A heavy thump for a moment that lands: a rank won, a score unlocked.
+    static func thump() {
+        guard isEnabled else { return }
+        UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+    }
 }

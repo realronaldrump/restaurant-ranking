@@ -11,6 +11,13 @@ struct LocationScore: Identifiable {
     var categoryRank: Int = 0
 
     var isProvisional: Bool { ratedVisitCount < 2 && comparisonCount < 4 }
+    /// How many comparisons turn a single reaction into a score worth quoting.
+    static let comparisonsToEarnScore = 2
+    /// Whether the number has anything behind it beyond one reaction's
+    /// starting point. Until it does, the logging wizard shows where the
+    /// restaurant ranks and keeps the number back rather than presenting an
+    /// anchor as a measurement.
+    var hasEarnedScore: Bool { ratedVisitCount >= 2 || comparisonCount >= Self.comparisonsToEarnScore }
     /// The precise score, for detail surfaces that have room to explain it.
     var displayScore: String { score.formatted(.number.precision(.fractionLength(1))) }
     /// The score as lists show it. Ranked lists round to whole numbers so that

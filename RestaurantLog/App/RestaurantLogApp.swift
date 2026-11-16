@@ -105,7 +105,7 @@ struct RestaurantLogApp: App {
             .presentationDragIndicator(.visible)
             .tint(BBTheme.oxblood)
         }
-        .sheet(item: $router.sheet) { sheet in
+        .sheet(item: presentation(fullScreen: false)) { sheet in
             appSheet(sheet, store: store, sync: sync)
                 .environment(router)
                 .environment(store)
@@ -113,6 +113,14 @@ struct RestaurantLogApp: App {
                 .environment(locationService)
                 .presentationBackground(BBTheme.paper)
                 .presentationDragIndicator(.visible)
+                .tint(BBTheme.oxblood)
+        }
+        .fullScreenCover(item: presentation(fullScreen: true)) { sheet in
+            appSheet(sheet, store: store, sync: sync)
+                .environment(router)
+                .environment(store)
+                .environment(sync)
+                .environment(locationService)
                 .tint(BBTheme.oxblood)
         }
         .editorialPrompt(isPresented: Binding(
@@ -262,6 +270,22 @@ struct RestaurantLogApp: App {
         case .failed:
             break
         }
+    }
+
+    /// The router holds one presentation at a time. Each presenter sees only
+    /// the kind it owns, and dismissing one never clears a presentation that
+    /// belongs to the other.
+    private func presentation(fullScreen: Bool) -> Binding<AppSheet?> {
+        Binding(
+            get: { router.sheet.flatMap { $0.isFullScreen == fullScreen ? $0 : nil } },
+            set: { newValue in
+                if let newValue {
+                    router.sheet = newValue
+                } else if router.sheet?.isFullScreen == fullScreen {
+                    router.sheet = nil
+                }
+            }
+        )
     }
 
     @ViewBuilder

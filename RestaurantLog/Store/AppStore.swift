@@ -26,6 +26,13 @@ enum SettleScorePrompt {
     case anchor(RestaurantLocation)
 }
 
+/// How the last face-off went for the restaurant being placed.
+enum DialInVerdict {
+    case preferred
+    case passedOver
+    case tooClose
+}
+
 struct CircleJoinImpact: Equatable {
     let restaurants: Int
     let outings: Int
@@ -2081,6 +2088,37 @@ final class AppStore {
             prompts.insert(anchor, at: min(2, prompts.count))
         }
         return prompts
+    }
+
+    /// Picks the restaurant a freshly logged one should be weighed against next.
+    ///
+    /// Logging ends in a short run of face-offs that walk the new restaurant
+    /// to its place rather than sampling its neighbours at random: preferring
+    /// it sends the next question up the ranking, passing it over sends the
+    /// next one down, and running out of restaurants in that direction means
+    /// it has found its spot. Only the restaurant's own category is searched,
+    /// because that is the list the rank shown beside it refers to.
+    func dialInOpponent(
+        for location: RestaurantLocation,
+        excluding asked: Set<UUID> = [],
+        after verdict: DialInVerdict? = nil,
+        personID: UUID? = nil
+    ) -> RestaurantLocation? {
+        let peers = ranked(for: personID).filter { $0.location.category == location.category }
+        guard let index = peers.firstIndex(where: { $0.id == location.id }) else { return nil }
+        let ownScore = peers[index].score
+        let above = peers[..<index].last { !asked.contains($0.id) }
+        let below = peers[(index + 1)...].first { !asked.contains($0.id) }
+        switch verdict {
+        case .preferred:
+            return above?.location
+        case .passedOver:
+            return below?.location
+        case .tooClose, nil:
+            guard let above else { return below?.location }
+            guard let below else { return above.location }
+            return abs(above.score - ownScore) <= abs(below.score - ownScore) ? above.location : below.location
+        }
     }
 
     /// Runs related mutations as one transaction. Mutation methods keep the

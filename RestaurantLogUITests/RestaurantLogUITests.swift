@@ -244,7 +244,7 @@ final class RestaurantLogUITests: XCTestCase {
         XCTAssertTrue(footer.waitForExistence(timeout: 3))
         XCTAssertNotNil(
             footer.label.range(
-                of: #"^Big Beautiful Restaurant Log [0-9]+\.[0-9]+(?:\.[0-9]+)? \(build [0-9]+\) • Released August 3, 2026$"#,
+                of: #"^Big Beautiful Restaurant Log [0-9]+\.[0-9]+(?:\.[0-9]+)? \(build [0-9]+\) • Released November 16, 2026$"#,
                 options: .regularExpression
             )
         )

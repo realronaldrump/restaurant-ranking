@@ -1,0 +1,5 @@
+- Log outings with a new full-screen flow that saves your reaction as soon as you tap it.
+- Add dishes, dining details, photos, and companions with guided questions you can skip or revisit.
+- Compare nearby-ranked restaurants and see where your latest outing lands.
+- Keep scores and outing details current when you make edits.
+- Fix photo removal and protect saved restaurants, companions, and comparisons when correcting an outing.

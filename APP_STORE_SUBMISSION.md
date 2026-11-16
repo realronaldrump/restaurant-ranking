@@ -1,5 +1,25 @@
 # App Store submission checklist
 
+## Version 3.2.8 (build 28) — November 16, 2026
+
+- Replaces the logging sheet with a full-screen outing wizard, guided details,
+  dishes, comparisons, score unlocking, and undo.
+- Fixes restaurant cleanup, editor state reconciliation, comparison cleanup,
+  photo replacement/removal, and decorative-overlay accessibility hit testing.
+- Adds model and UI regression coverage; the full simulator suite passed with
+  295 tests passed, zero failures, and one optional private Beli export skipped.
+- Swift compiler warnings are treated as errors. Unused App Intents metadata
+  extraction is disabled. No new app crash reports appeared during validation.
+- Preflight: GREENLIT. The scanner's placeholder finding is a noninteractive
+  loading skeleton, its HTTP finding is a rejection test, and the actual
+  privacy manifest explicitly sets tracking to false.
+- Privacy, encryption, signing capabilities, and production sync schema are
+  unchanged. No physical two-device sync soak was performed for this update.
+- Release notes: `docs/app-store/whats-new-3.2.8.txt`.
+- Submission status: preparing signed archive; update after App Store submission.
+
+The older release checklist below is historical context for version 3.2.6.
+
 ## Product identity
 
 - Product: Big Beautiful Restaurant Log
